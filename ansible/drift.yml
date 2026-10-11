@@ -35,13 +35,21 @@
 
     - name: Compare running against intended
       ansible.builtin.command: /usr/lib/frr/frr-reload.py --test /tmp/intended.conf
-      register: diff
+      register: reload_test
       changed_when: false
+
+    # IP forwarding mirrors a kernel sysctl that the topology owns, so it varies by host
+    # (for example, GitHub runners enable IPv6 forwarding). Everything else must match.
+    - name: Collect real config differences
+      ansible.builtin.set_fact:
+        drift_lines: >-
+          {{ reload_test.stdout_lines
+             | reject('match', '^(Lines To (Add|Delete)|=+|\\s*)$')
+             | reject('match', '^(no )?ipv6? forwarding$')
+             | list }}
 
     - name: Fail on drift
       ansible.builtin.assert:
-        that:
-          - "'Lines To Delete' not in diff.stdout"
-          - "'Lines To Add' not in diff.stdout"
-        fail_msg: "{{ inventory_hostname }} has drifted from intended config:\n{{ diff.stdout }}"
+        that: drift_lines | length == 0
+        fail_msg: "{{ inventory_hostname }} has drifted from intended config:\n{{ reload_test.stdout }}"
         success_msg: "{{ inventory_hostname }} matches intended config"
