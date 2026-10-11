@@ -4,6 +4,10 @@ name: {{ inv.lab_name }}
 topology:
   defaults:
     image: {{ image }}
+    # No management interface. Otherwise Docker's eth0 default route (admin distance 0)
+    # beats the OSPF default and traffic leaks out of the lab. Nodes are reached with
+    # `docker exec`, which needs no network.
+    network-mode: none
   nodes:
 {% for name in inv.routers %}
     {{ name }}:

@@ -43,5 +43,8 @@ def test_isp_sees_only_the_aggregate(node):
 
 def test_default_route_reaches_core_via_ospf(node):
     for router in ("r1", "r3"):
-        route = wait_for(lambda: node(router).vtysh_json("show ip route 0.0.0.0/0").get("0.0.0.0/0"))
-        assert route and route[0]["protocol"] == "ospf", f"{router} has no OSPF default route"
+        def selected():
+            routes = node(router).vtysh_json("show ip route 0.0.0.0/0").get("0.0.0.0/0", [])
+            return next((r["protocol"] for r in routes if r.get("selected")), None)
+        # Selected, not just present: a stray kernel default would win and silently bypass the edge.
+        assert wait_for(lambda: selected() == "ospf"), f"{router} forwards default traffic via {selected()}, not OSPF"
