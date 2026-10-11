@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline:
+    name: Validate inventory and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: make validate render
+      - run: make test
+
+  lab:
+    name: Deploy the lab and test it live
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CLAB_VERSION: "0.68.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt -r requirements-ansible.txt
+      - name: Install Containerlab
+        run: bash -c "$(curl -sL https://get.containerlab.dev)" -- -v "$CLAB_VERSION"
+      - name: Pull router image
+        run: docker pull frrouting/frr:v8.4.1
+      - name: Deploy
+        run: make deploy
+      - name: Live tests (OSPF, BGP, reachability, firewall policy, link failover)
+        run: make live
+      - name: Config drift check (Ansible)
+        run: make drift
+      - name: Show routing tables on failure
+        if: failure()
+        run: |
+          for r in r1 r2 r3 isp; do
+            echo "=== $r"; docker exec clab-netauto-$r vtysh -c "show ip route" -c "show ip ospf neighbor" -c "show bgp summary" || true
+          done
+          docker exec clab-netauto-fw1 iptables -vnL FORWARD || true
+      - name: Upload config backups
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: config-backups
+          path: backups/
+          if-no-files-found: ignore
+      - name: Destroy
+        if: always()
+        run: make destroy || true

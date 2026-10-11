@@ -1,0 +1,47 @@
+# Config drift check: back up every router's running config and fail if it no longer
+# matches the intended config rendered from the source of truth.
+# Usage: cd ansible && ansible-playbook drift.yml
+- name: Back up running configs and detect drift
+  hosts: routers
+  gather_facts: false
+  vars:
+    backup_dir: "{{ playbook_dir }}/../backups"
+  tasks:
+    - name: Pull running config
+      ansible.builtin.command: vtysh -c "show running-config"
+      register: running
+      changed_when: false
+
+    - name: Make sure the backup folder exists
+      ansible.builtin.file:
+        path: "{{ backup_dir }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      run_once: true
+
+    - name: Save backup on the control node
+      ansible.builtin.copy:
+        content: "{{ running.stdout }}\n"
+        dest: "{{ backup_dir }}/{{ inventory_hostname }}.conf"
+        mode: "0644"
+      delegate_to: localhost
+
+    - name: Stage intended config on the router
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../build/{{ inventory_hostname }}/frr.conf"
+        dest: /tmp/intended.conf
+        mode: "0644"
+
+    - name: Compare running against intended
+      ansible.builtin.command: /usr/lib/frr/frr-reload.py --test /tmp/intended.conf
+      register: diff
+      changed_when: false
+
+    - name: Fail on drift
+      ansible.builtin.assert:
+        that:
+          - "'Lines To Delete' not in diff.stdout"
+          - "'Lines To Add' not in diff.stdout"
+        fail_msg: "{{ inventory_hostname }} has drifted from intended config:\n{{ diff.stdout }}"
+        success_msg: "{{ inventory_hostname }} matches intended config"

@@ -1,0 +1,33 @@
+# Push the rendered (intended) config to every router and apply only the difference.
+# Usage: cd ansible && ansible-playbook deploy.yml [--check] [--limit r2]
+- name: Deploy intended FRR configuration
+  hosts: routers
+  gather_facts: false
+  vars:
+    intended: "{{ playbook_dir }}/../build/{{ inventory_hostname }}/frr.conf"
+  tasks:
+    - name: Copy intended config to a staging file
+      ansible.builtin.copy:
+        src: "{{ intended }}"
+        dest: /tmp/intended.conf
+        mode: "0644"
+
+    - name: Show what would change (frr-reload dry run)
+      ansible.builtin.command: /usr/lib/frr/frr-reload.py --test /tmp/intended.conf
+      register: plan
+      changed_when: false
+
+    - name: Print the change plan
+      ansible.builtin.debug:
+        msg: "{{ plan.stdout_lines | select('match', '^(\\s*-|\\s*\\+|Lines To)') | list }}"
+
+    - name: Apply only the difference, without restarting daemons
+      ansible.builtin.command: /usr/lib/frr/frr-reload.py --reload /tmp/intended.conf
+      when: not ansible_check_mode and ('Lines To Delete' in plan.stdout or 'Lines To Add' in plan.stdout)
+      register: applied
+      changed_when: true
+
+    - name: Save running config to startup
+      ansible.builtin.command: vtysh -c "write memory"
+      when: applied is changed
+      changed_when: true

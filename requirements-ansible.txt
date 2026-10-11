@@ -1,0 +1,2 @@
+# Full Ansible package: includes the community.docker connection plugin.
+ansible>=10

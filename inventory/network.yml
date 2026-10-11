@@ -1,0 +1,62 @@
+# Single source of truth for the lab. Every config, the Containerlab topology
+# and the expected state the tests check are generated from this file.
+lab_name: netauto
+
+asn:
+  campus: 65001
+  isp: 65100
+
+routers:
+  r1:
+    role: core
+    loopback: 10.255.0.1/32
+    ospf: { area: 0 }
+    static_routes:
+      - { prefix: 10.10.10.0/24, next_hop: 10.0.100.2, redistribute: true }   # LAN-A sits behind the firewall
+  r2:
+    role: edge
+    loopback: 10.255.0.2/32
+    ospf: { area: 0, default_originate: true }
+    bgp:
+      local_as: campus
+      neighbors:
+        - { peer: isp, remote_as: isp, address: 198.51.100.1 }
+      aggregate: 10.0.0.0/8
+  r3:
+    role: core
+    loopback: 10.255.0.3/32
+    ospf: { area: 0 }
+  isp:
+    role: isp
+    loopback: 203.0.113.1/32
+    bgp:
+      local_as: isp
+      neighbors:
+        - { peer: r2, remote_as: campus, address: 198.51.100.0 }
+      networks: [203.0.113.0/24]
+
+firewalls:
+  fw1:
+    inside:  { interface: eth1, address: 10.10.10.1/24 }
+    outside: { interface: eth2, address: 10.0.100.2/30, gateway: 10.0.100.1 }
+    # Default policy for forwarded traffic is DROP. Order matters.
+    rules:
+      - { name: allow-established, state: [ESTABLISHED, RELATED], action: accept }
+      - { name: allow-icmp,        proto: icmp,                      action: accept }
+      - { name: allow-web,         proto: tcp, dst: 10.20.20.0/24, dport: 80,  action: accept }
+      - { name: deny-ssh-to-servers, proto: tcp, dst: 10.20.20.0/24, dport: 22, action: drop }
+      - { name: allow-internet,    src: 10.10.10.0/24, dst: 203.0.113.0/24,    action: accept }
+
+hosts:
+  h1: { interface: eth1, address: 10.10.10.10/24, gateway: 10.10.10.1, segment: LAN-A }
+  h2: { interface: eth1, address: 10.20.20.10/24, gateway: 10.20.20.1, segment: LAN-B, services: [80, 22] }
+
+# Point-to-point and LAN links. Each endpoint is device:interface@address.
+links:
+  - [r1:eth1@10.0.12.0/31, r2:eth1@10.0.12.1/31]
+  - [r2:eth2@10.0.23.0/31, r3:eth1@10.0.23.1/31]
+  - [r1:eth2@10.0.13.0/31, r3:eth2@10.0.13.1/31]
+  - [r2:eth3@198.51.100.0/31, isp:eth1@198.51.100.1/31]
+  - [fw1:eth2@10.0.100.2/30, r1:eth3@10.0.100.1/30]
+  - [h1:eth1@10.10.10.10/24, fw1:eth1@10.10.10.1/24]
+  - [h2:eth1@10.20.20.10/24, r3:eth3@10.20.20.1/24]
