@@ -44,7 +44,7 @@
       ansible.builtin.set_fact:
         drift_lines: >-
           {{ reload_test.stdout_lines
-             | reject('match', '^(Lines To (Add|Delete)|=+|\\s*)$')
+             | map('trim') | reject('match', '^(Lines To (Add|Delete)|=*)$')
              | reject('match', '^(no )?ipv6? forwarding$')
              | list }}
 
