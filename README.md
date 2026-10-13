@@ -3,7 +3,7 @@
 [![CI](https://github.com/DoctorMen/network-automation-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/DoctorMen/network-automation-lab/actions/workflows/ci.yml)
 
 **A small enterprise network, defined in one YAML file, built and tested by code.**
-Three OSPF core routers, an eBGP uplink to an ISP, a stateful firewall in front of a user LAN, and a server LAN. Every router config, the firewall policy and the lab topology are generated from [`inventory/network.yml`](inventory/network.yml). Then every push to GitHub deploys the whole network and proves it works: adjacencies come up, routes are where they should be, firewall policy is enforced, traffic survives a link failure, and no router has drifted from its intended config.
+Three OSPF core routers, an eBGP uplink to an ISP, a stateful firewall in front of a user LAN, and a server LAN. Every router config, the firewall policy and the lab topology are generated from [`inventory/network.yml`](inventory/network.yml). Then every push to `main` and every pull request deploys the whole network and proves it works: adjacencies come up, routes are where they should be, firewall policy is enforced, traffic survives a link failure, and no router has drifted from its intended config.
 
 ```mermaid
 flowchart LR
@@ -41,6 +41,7 @@ flowchart LR
 | The firewall blocks SSH from users to servers. The test also proves SSH is actually listening, so the block came from policy, not a dead service | [`test_firewall_blocks_ssh_to_servers`](tests/live/test_dataplane.py) |
 | Pulling the r1–r3 link makes OSPF reroute through r2 with no manual action, then fail back | [`test_traffic_survives_r1_r3_link_failure`](tests/live/test_failover.py) |
 | Nobody changed a router by hand. An Ansible playbook diffs running config against intended config and fails on any drift | [`ansible/drift.yml`](ansible/drift.yml) |
+| A hand change saved with `write memory` can't overwrite the intended config and hide from that drift check | [`test_write_memory_cannot_overwrite_intent`](tests/live/test_drift.py) |
 | The inventory can't ship with duplicate IPs, mismatched subnets, overlapping networks, wrong BGP peer addresses or off-subnet gateways | [`tests/test_inventory.py`](tests/test_inventory.py), with all problems reported at once |
 
 ## How it works
@@ -57,7 +58,7 @@ inventory/network.yml ──► netlab validate ──► netlab render ──�
 
 - **Routers** run [FRRouting](https://frrouting.org/) 8.4, the same open-source routing suite used in production by many cloud and ISP networks. Its CLI is close to Cisco IOS.
 - **The firewall** is a Linux node with an ordered, stateful iptables policy (`ESTABLISHED,RELATED` first, explicit deny, logged default drop) rendered from the rule list in the inventory.
-- **Ansible** connects to each node through the Docker connection plugin, so no SSH keys are needed in the lab. [`deploy.yml`](ansible/deploy.yml) uses `frr-reload.py` to apply only the lines that differ, without restarting routing daemons, which is how you change a live router safely.
+- **Ansible** connects to each node through the Docker connection plugin, so no SSH keys are needed in the lab. [`deploy.yml`](ansible/deploy.yml) uses `frr-reload.py` to apply only the lines that differ, without restarting routing daemons, which is how you change a live router safely. `--check` prints the plan without applying it.
 
 ## Run it yourself
 
@@ -71,7 +72,7 @@ bash -c "$(curl -sL https://get.containerlab.dev)"   # installs Containerlab
 
 make test      # offline: inventory validation + rendering (17 tests)
 make deploy    # render configs and start 7 containers
-make live      # 11 live tests against the running network
+make live      # 12 live tests against the running network
 make drift     # Ansible drift check
 make destroy
 ```
@@ -112,6 +113,7 @@ isp# show ip bgp
 - **LAN-A sits behind a firewall and is reached by a static route redistributed into OSPF**, not by running OSPF on the firewall. Security devices shouldn't take part in the routing protocol unless they have to.
 - **Aggregate at the edge (`summary-only`)**. The ISP sees one stable `/8`, so internal link flaps never reach the internet routing table.
 - **Server LAN interface is OSPF passive.** The subnet is advertised, but no adjacency can form toward hosts.
+- **Intent is mounted read-only.** Each router's `/etc/frr/frr.conf` is its rendered file from `build/`, bind-mounted read-only. With a writable mount, `write memory` after a hand change would save straight into `build/`, and the drift check would then compare the router against its own drifted config and pass. Now `write memory` fails, the change stays only in the running config, and `make drift` catches it.
 - **Expected state is generated, not hand-written.** The tests read `expected_state.json` from the same inventory that built the configs, so adding a router to the YAML automatically adds it to the tests.
 - **Documentation ranges** (`198.51.100.0/24`, `203.0.113.0/24`) for the ISP side, so nothing in the lab collides with real internet addresses.
 
