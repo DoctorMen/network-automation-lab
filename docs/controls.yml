@@ -10,8 +10,9 @@
 #   fails_when  how it stops working, or what it never covered
 #
 # Schedule: .github/workflows/ci.yml runs every test nightly (cron 23 4 * * *), on every push to
-# main and on every pull request. It keeps results/live.xml (JUnit, with a timestamp) for the live
-# tests as a run artifact for 90 days; offline results are in the run's log.
+# main and on every pull request. It keeps results/live.xml and results/offline.xml (JUnit, with a
+# timestamp) as run artifacts for 90 days; .github/workflows/drills.yml runs the restore and power
+# drills weekly and keeps theirs the same way. The control-status job in ci.yml reads them all.
 # GitHub disables scheduled runs in a public repo after 60 days with no repository activity,
 # so a quiet repo can miss its period without any test going red.
 #
@@ -764,3 +765,125 @@ controls:
       answers. The ISP contact is a lab stand-in; the others are public channels (RDAP abuse contacts,
       ICANN's registrar duties, IC3) checked by reading their published pages on 2026-10-15, not by
       contacting anyone. No payment processor or scrubbing vendor is listed: the lab has neither.
+
+  - id: backup-at-destination
+    claim: "A backup is judged where it lands. `make backup` sends every router's and the firewall's captured config to a restic repository, then reads the snapshot back from there: one file per device, each with the capture's sha256, and `restic check --read-data` clean. Data rotted at the destination fails the job, although `restic backup` itself exits 0"
+    test:
+      - tests/live/test_backup.py::test_backup_is_verified_at_destination
+      - tests/live/test_backup.py::test_corrupt_destination_fails_the_backup
+    period: P31D
+    threat: >-
+      A backup job that reports success while the copy at the destination is incomplete or
+      unreadable, found out on the day of the restore.
+    fails_when: >-
+      It backs up what make drift captured (routers and fw1); h1 and h2 are not backed up. In CI the
+      destination is the Actions cache, evicted after 7 days without use, and a pull request's run
+      never writes it. The password file sits beside the repository (decision 0014), so anyone who
+      can read the cache can read the backups. Two runs at once each save their own copy; the newer
+      one wins and the other's snapshot is lost.
+
+  - id: backup-target-missing
+    claim: "A missing or unmounted backup target fails the job loudly and nothing is written: the job never creates a repository, which would hide exactly that. In CI the cache restore is set to fail on a miss"
+    test: tests/live/test_backup.py::test_missing_target_fails_loudly
+    period: P31D
+    threat: >-
+      A backup written quietly to local disk (the empty directory of an unmounted mountpoint) or
+      into a brand-new empty repository, so every run looks green and nothing reaches the real target.
+    fails_when: >-
+      It looks for a restic repository (its config file), not for which disk holds it: a repository
+      created by hand on the local disk passes. CI fails until the repository is created once, by
+      hand (drills.yml, input init_backup_repo). The CI side has not run on GitHub yet: that a cache
+      miss fails the restore step (fail-on-cache-miss, in ci.yml and drills.yml) is from the
+      actions/cache documentation, not from a run.
+
+  - id: backup-no-skip
+    claim: "A capture missing a router is not backed up without it: the job names the router and sends nothing"
+    test: tests/live/test_backup.py::test_missing_router_is_not_skipped
+    period: P31D
+    threat: A device dropped from the backup without a word (unreachable that night, a collection error), missed only when it is needed.
+    fails_when: >-
+      The device list is the inventory's routers and firewalls. A file that is present but old (a
+      stale capture left in backups/) is backed up as it is; `make drift` rewrites every file first,
+      and CI runs them in that order.
+
+  - id: restore-drill
+    claim: "Every router's latest backup boots on a throwaway FRR router with no network, built like the real one from the topology, and `frr-reload.py --test` finds no difference, while the live routers' running configs stay the same. A backup that doesn't load (one that kept `show running-config`'s header) is named. A weekly job is set up to drill against the real destination"
+    test:
+      - tests/live/test_restore.py::test_every_router_restores_cleanly
+      - tests/live/test_restore.py::test_drill_notices_a_bad_backup
+    # OROS REC-3: the last successful drill within 90 days.
+    period: P90D
+    threat: Backups that were never restored and turn out not to load on the day they are needed.
+    fails_when: >-
+      The throwaway router has no links, so the drill shows the config loads, not that the restored
+      router forms adjacencies. Its image, daemons file and sysctls come from build/, not from the
+      backup. A backup missing a line still boots cleanly; that is caught when it is captured
+      (capture-complete) and by the sha256 check at the destination (backup-at-destination). The
+      weekly job in drills.yml has not run on GitHub yet: every drill so far ran here, against a
+      scratch repository, not the CI destination in the Actions cache.
+
+  - id: single-item-restore
+    claim: "One item comes back on its own: r2's `router bgp` stanza, from one `restic dump` of one file, pasted into a throwaway router that booted empty, in 2.3 to 2.4 s here against a stated limit of 5 minutes. No full restore, and the live lab is not touched"
+    test: tests/live/test_restore.py::test_single_item_restore_within_limit
+    period: P90D
+    threat: Needing one piece of config back in a hurry and finding that the only way is a full restore.
+    fails_when: >-
+      One item is drilled, the BGP stanza. The time includes booting the throwaway router. On a live
+      router the stanza would go in the same way, but frr-reload.py --reload is the safer way there.
+
+  - id: backup-fresh
+    claim: "The newest backup at the destination is under 36 hours old, so a backup job that has stopped fails the restore drill"
+    test: tests/live/test_restore.py::test_latest_backup_is_recent
+    period: P31D
+    threat: A backup job that stopped (a broken step, a disabled schedule) while the last good backup quietly ages.
+    fails_when: >-
+      It runs with the weekly drill, so a stop is caught up to a week late. It runs on the same
+      GitHub scheduler as the backups: if GitHub disables the repository's schedules (60 days without
+      activity), neither runs and nothing alerts. That needs a check from outside GitHub.
+
+  - id: power-event-drill
+    claim: "After a whole-lab power cycle every node comes back by itself from its startup config: an unsaved change on r2 is gone, OSPF, BFD and BGP are up, h1 reaches the web server through fw1, and nothing has drifted. Routing was back 19.6 s after the cut here. A weekly job is set up to run it"
+    test: tests/live/test_power_event.py::test_power_event_recovers_from_startup_config
+    period: P31D
+    threat: >-
+      A power cut after which a node comes back without its config (fw1's rules live only in the
+      kernel), or with config that only ever lived in its running state.
+    fails_when: >-
+      The cut is a Containerlab redeploy, which also gives every node a fresh filesystem, so it is a
+      colder start than a real power blip. Every node restarts at once; one node coming back while its
+      neighbours stay up is not drilled (`docker restart` loses the node's links, decision 0015). The
+      weekly job has not run on GitHub yet, where the cut is `containerlab deploy --reconfigure`;
+      here it was the sandbox's whole-lab redeploy.
+
+  - id: runbooks
+    claim: "Runbooks for link failure, BGP down, config drift, restoring a router from backup, a power event and carrier loss each name an owner, a coordinator, who updates stakeholders, a review date and their hosts. The check fails on a missing field, a review older than 180 days, or a host that isn't in the inventory or in the runbook's own host list"
+    test:
+      - tests/test_runbooks.py::test_runbooks_lint_clean
+      - tests/test_runbooks.py::test_top_incident_dr_and_power_event_types_have_runbooks
+      - tests/test_runbooks.py::test_unknown_host_is_reported
+      - tests/test_runbooks.py::test_missing_or_stale_review_date_is_reported
+      - tests/test_runbooks.py::test_every_problem_is_reported_at_once
+      - tests/test_runbooks.py::test_hosts_list_covers_every_device_acted_on
+    period: P31D
+    threat: A runbook that names a renamed router, or hasn't been read since the last redesign, followed at 3 a.m.
+    fails_when: >-
+      It checks the front matter and the device names, not that the steps work; only someone running
+      the runbook finds that out, and docs/runbooks/dry-runs.yml has no run yet. Devices are found in
+      clab-<lab>-X names, --limit and SRC=, so a device named only in prose is not checked.
+
+  - id: control-status
+    claim: "Every control in the register has its latest test green and inside its period. `make control-status` reads the dated JUnit results of this run and earlier runs on `main`, newest first, and fails naming any control whose latest result is red, missing or too old. A CI job is set up to run it on `main`"
+    test:
+      - tests/test_control_status.py::test_green_and_fresh_passes
+      - tests/test_control_status.py::test_latest_green_older_than_its_period_fails
+      - tests/test_control_status.py::test_latest_red_fails_even_with_an_older_green
+      - tests/test_control_status.py::test_skips_are_not_evidence
+      - tests/test_control_status.py::test_fetch_reads_newest_runs_first_and_stops_when_every_test_has_a_result
+    period: P31D
+    threat: Controls claimed to an auditor whose tests stopped running, or have been red for weeks, with nobody looking.
+    fails_when: >-
+      It runs in the scheduled workflow it checks: if GitHub stops scheduling, the check stops too and
+      says nothing. Artifacts are kept 90 days, the longest period. It doesn't run on pull requests.
+      The CI job has not run on GitHub yet, and fetching earlier runs' artifacts with gh is proven
+      only with a fake gh (the proxy here blocks artifact downloads).
+      It trusts that each named test proves its claim (control-register).

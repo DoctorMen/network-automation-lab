@@ -27,7 +27,15 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - run: make validate render
-      - run: make test
+      - run: make test  # also writes results/offline.xml (JUnit, timestamped)
+      - name: Upload offline test results (dated evidence for the control-status check)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: offline-results
+          path: results/offline.xml
+          if-no-files-found: error
+          retention-days: 90
       - name: The runner's own kernel, by netlab.verify's rule (lab nodes install no kernel to check)
         continue-on-error: true  # a reboot the runner is waiting for is GitHub's to do, so this reports, not gates
         run: |
@@ -77,14 +85,39 @@ jobs:
         if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: make drift
       - name: Secret scan of this run's backups, results and build/
+        id: secret-scan
         # Runs after drift, so it sees every file this run wrote. gitleaks knows the patterns; the
         # grep knows this run's actual password, read from its file (-f), never from a command line.
+        # The backup runs only when this passed, so a password that reached backups/ never reaches restic.
         if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: |
           make gitleaks
           for f in "$NETLAB_SECRETS"/*; do
             if grep -rlF -f "$f" backups results build; then echo "::error::this run's BGP password is in the files above"; exit 1; fi
           done
+      # The backup destination is a restic repository kept between runs in the Actions cache. It is
+      # created once by hand (drills.yml, input init_backup_repo) and never here: a job that creates
+      # its target when none is found can't tell a lost target from a first run. A cache miss fails
+      # the step. Pull requests skip it: a PR's cache is scoped to the PR, so main could never use it.
+      - name: Restore the backup repository (fails if it is missing)
+        id: backup-repo
+        if: ${{ !cancelled() && steps.secret-scan.outcome == 'success' && github.event_name != 'pull_request' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/backup
+          key: restic-${{ github.run_id }}
+          restore-keys: restic-
+          fail-on-cache-miss: true
+      - name: Back up configs to restic and verify them at the destination
+        id: backup
+        if: ${{ !cancelled() && steps.backup-repo.outcome == 'success' }}
+        run: make backup BACKUP_REPO="$RUNNER_TEMP/backup/repo" BACKUP_PASSWORD="$RUNNER_TEMP/backup/password"
+      - name: Keep the repository for the next run
+        if: ${{ !cancelled() && steps.backup.outcome == 'success' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/backup
+          key: restic-${{ github.run_id }}
       - name: Measure RAM (raw data for docs/sizing)
         continue-on-error: true  # a sizing reading is evidence, not a network test
         run: |
@@ -164,3 +197,29 @@ jobs:
           name: finding-rerun
           path: finding/rerun-*/
           if-no-files-found: ignore
+
+  control-status:
+    name: Every control's latest test is green and inside its period
+    needs: [offline, lab]
+    # Main's claims, proven by main's runs. A pull request's run tests other code, so it is skipped.
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read  # list earlier runs on main and download their JUnit artifacts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: This run's results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*results*"
+          path: build/evidence/${{ github.run_id }}
+      - name: Check every control in docs/controls.yml
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: make control-status

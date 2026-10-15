@@ -4,6 +4,7 @@ from pathlib import Path
 
 import yaml
 
+from netlab.backup import IMAGE as RESTIC_IMAGE
 from netlab.inventory import load
 from netlab.render import render_all, render_firewall, render_router
 
@@ -99,10 +100,15 @@ def test_render_is_deterministic(tmp_path):
 
 
 def test_ci_pulls_the_image_the_inventory_names():
-    """CI deploys the image the inventory records, so the live version check tests the real thing."""
+    """CI deploys the image the inventory records, so the live version check tests the real thing. The
+    drills workflow pulls that image too, and exactly the restic image netlab.backup runs."""
     ci = yaml.safe_load((INVENTORY.parents[1] / ".github" / "workflows" / "ci.yml").read_text())
     steps = [step for job in ci["jobs"].values() for step in job["steps"]]
     pulls = [step["run"].split()[-1] for step in steps if step.get("run", "").startswith("docker pull")]
+    drills = yaml.safe_load((INVENTORY.parents[1] / ".github" / "workflows" / "drills.yml").read_text())["jobs"]
+    drill_pulls = {job: [line.split()[-1] for step in drills[job]["steps"] for line in step.get("run", "").splitlines()
+                         if line.strip().startswith("docker pull")] for job in drills}
+    assert drill_pulls == {"backup-init": [RESTIC_IMAGE], "drills": [inv.platform["image"], RESTIC_IMAGE]}
     assert pulls == [inv.platform["image"]]
 
 
