@@ -45,6 +45,22 @@ topology:
       exec:
         - ip addr add {{ h.address }} dev {{ h.interface }}
         - ip route replace default via {{ h.gateway }}
+{% if name in inv.qos %}
+{% set q = inv.qos[name] %}
+        # The inventory's qos block (decision 0011): the port capped at the link's rate, with a
+        # parent class so the classes can lend each other what they don't use. Quoted, because
+        # "1: " would make YAML read the line as a mapping.
+{% for c in q.classes if c.default is defined and c.default %}
+        - "tc qdisc add dev {{ q.interface }} root handle 1: htb default {{ c.id }}"
+{% endfor %}
+        - "tc class add dev {{ q.interface }} parent 1: classid 1:1 htb rate {{ q.rate }}"
+{% for c in q.classes %}
+        - "tc class add dev {{ q.interface }} parent 1:1 classid 1:{{ c.id }} htb rate {{ c.rate }} ceil {{ q.rate }} prio {{ c.prio }}"
+{% endfor %}
+{% for c in q.classes if c.sport is defined %}
+        - "tc filter add dev {{ q.interface }} parent 1: protocol ip prio 1 u32 match ip sport {{ c.sport }} 0xffff flowid 1:{{ c.id }}"
+{% endfor %}
+{% endif %}
 {% endfor %}
   links:
 {% for link in inv.links %}

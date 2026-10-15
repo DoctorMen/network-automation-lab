@@ -1,4 +1,4 @@
-# Apply the rendered (intended) config to every router, changing only the difference.
+# Roll the rendered (intended) config out to the routers, canary first, changing only the difference.
 # Usage: cd ansible && ansible-playbook deploy.yml [--check] [--limit r2]
 #
 # Each router's /etc/frr/frr.conf is build/<router>/frr.conf, bind-mounted read-only,
@@ -6,11 +6,50 @@
 # compares it with the running config and applies only the lines that differ. Because
 # the file it reloads is FRR's own config file, it doesn't try to `write` afterwards
 # (which a read-only mount would refuse).
-- name: Deploy intended FRR configuration
+#
+# The rollout (decision 0010; settings in the inventory's rollout block):
+#   - nothing starts outside the change window
+#   - the canary goes alone first, then every other router at once (`serial: [1, "100%"]`)
+#   - each router saves its running config first: that is the fallback
+#   - after a batch, the health gate (python -m netlab.health) must show no problem the batch added
+#   - the canary must stay healthy through the vetting delay before production starts
+#   - a router whose batch fails goes back to its fallback, and the rollout stops
+#   - netlab.verify then checks that what is installed is what is running
+- name: Roll out intended FRR configuration, canary first
   hosts: routers
   gather_facts: false
+  serial: [1, "100%"]
+  # Stop everything at the first failed router. By default Ansible only stops once every router in
+  # a batch has failed, so a production batch of three would carry on with the other two.
+  any_errors_fatal: true
+  max_fail_percentage: 0
   vars:
     intended: /etc/frr/frr.conf
+    fallback: /tmp/rollback/frr.conf
+    netlab: "{{ ansible_playbook_python }} -m netlab"
+  pre_tasks:
+    - name: Refuse to start outside the change window
+      vars:
+        utc: "{{ now(utc=true, fmt='%H:%M') }}"
+        w: "{{ change_window }}"
+      ansible.builtin.assert:
+        # A window like 22:00-04:00 runs past midnight.
+        that: (w.start <= utc < w.end) if w.start < w.end else (utc >= w.start or utc < w.end)
+        fail_msg: "{{ utc }} UTC is outside the change window ({{ w.start }}-{{ w.end }} UTC); nothing was changed"
+        quiet: true
+      run_once: true
+
+    - name: Note the network's problems before this batch changes anything
+      ansible.builtin.command:
+        cmd: "{{ netlab }}.health"
+        chdir: "{{ playbook_dir }}/.."
+      delegate_to: localhost
+      run_once: true
+      register: before
+      changed_when: false
+      failed_when: false
+      check_mode: false  # read-only
+
   tasks:
     - name: Show what would change (frr-reload dry run)
       ansible.builtin.command: /usr/lib/frr/frr-reload.py --test {{ intended }}
@@ -22,7 +61,81 @@
       ansible.builtin.debug:
         msg: "{{ plan.stdout_lines | reject('match', '^=*$') | list }}"
 
-    - name: Apply only the difference, without restarting daemons
-      ansible.builtin.command: /usr/lib/frr/frr-reload.py --reload {{ intended }}
-      when: not ansible_check_mode and ('Lines To Delete' in plan.stdout or 'Lines To Add' in plan.stdout)
-      changed_when: true
+    # The rollback reloads this folder with --confdir (see rescue), so vtysh.conf goes in it too.
+    # Outside the block: if saving fails, nothing has changed yet, so the play just stops. Inside
+    # it, the rescue would reload an empty or half-written fallback and delete the router's config.
+    - name: Save the running config as this router's fallback
+      ansible.builtin.shell: |
+        set -e
+        mkdir -p {{ fallback | dirname }}
+        cp /etc/frr/vtysh.conf {{ fallback | dirname }}/
+        vtysh -c "show running-config no-header" > {{ fallback }}
+      when: not ansible_check_mode
+      changed_when: false
+
+    - name: Apply, gate, and roll back on failure
+      when: not ansible_check_mode
+      block:
+        - name: Apply only the difference, without restarting daemons
+          ansible.builtin.command: /usr/lib/frr/frr-reload.py --reload {{ intended }}
+          when: "'Lines To Delete' in plan.stdout or 'Lines To Add' in plan.stdout"
+          changed_when: true
+
+        - name: Confirm the router now runs the whole intended config
+          ansible.builtin.include_tasks: tasks/compare_frr.yml
+          vars:
+            config: "{{ playbook_dir }}/../build/{{ inventory_hostname }}/frr.conf"
+            label: intended
+            mismatch: did not take the whole change
+
+        # Every router in the batch runs the gate (not run_once), so if it fails they all roll back.
+        # Only problems this batch added fail it, so a rollout can still repair a router that was broken.
+        - name: Health gate, waiting up to gate_timeout for the network to settle
+          ansible.builtin.command:
+            cmd: "{{ netlab }}.health --known - --wait {{ gate_timeout }}"
+            chdir: "{{ playbook_dir }}/.."
+            stdin: "{{ before.stdout }}"
+          delegate_to: localhost
+          changed_when: false
+
+        - name: Vetting delay, canary only
+          ansible.builtin.pause:
+            seconds: "{{ vetting_delay }}"
+          when: canary in ansible_play_batch
+
+        - name: The canary must still be healthy after the vetting delay
+          ansible.builtin.command:
+            cmd: "{{ netlab }}.health --known -"
+            chdir: "{{ playbook_dir }}/.."
+            stdin: "{{ before.stdout }}"
+          delegate_to: localhost
+          changed_when: false
+          when: canary in ansible_play_batch
+
+      rescue:
+        # frr-reload.py runs `write` after reloading any file other than <confdir>/frr.conf, which the
+        # read-only intent refuses, so it exits 1 after rolling back. Pointing --confdir at the
+        # fallback's own folder makes the fallback that file, so it doesn't try.
+        - name: Roll back to the fallback
+          ansible.builtin.command: /usr/lib/frr/frr-reload.py --confdir {{ fallback | dirname }} --reload {{ fallback }}
+          changed_when: true
+
+        # Without this the rescue succeeds, the router counts as "rescued", not failed, and the
+        # rollout carries on to the next batch.
+        - name: Stop the rollout
+          ansible.builtin.fail:
+            msg: >-
+              {{ inventory_hostname }} failed "{{ ansible_failed_task.name }}" and was rolled back to its
+              pre-change config. The rollout stopped here. {{ ansible_failed_result.stdout | default(ansible_failed_result.msg) }}
+              The intent in build/ still holds the change, so revert it in the inventory; until then
+              make drift reports this router.
+
+  post_tasks:
+    - name: Confirm the batch runs what is installed (netlab.verify)
+      ansible.builtin.command:
+        cmd: "{{ netlab }}.verify {{ ansible_play_batch | join(' ') }}"
+        chdir: "{{ playbook_dir }}/.."
+      delegate_to: localhost
+      run_once: true
+      changed_when: false
+      check_mode: false  # read-only

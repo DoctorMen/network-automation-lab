@@ -89,3 +89,29 @@ def test_ci_pulls_the_image_the_inventory_names():
     steps = [step for job in ci["jobs"].values() for step in job["steps"]]
     pulls = [step["run"].split()[-1] for step in steps if step.get("run", "").startswith("docker pull")]
     assert pulls == [inv.platform["image"]]
+
+
+def test_canary_goes_first_with_the_rollout_settings(tmp_path):
+    """deploy.yml takes routers in inventory order, one and then the rest, so the canary must be first."""
+    raw = yaml.safe_load(INVENTORY.read_text())
+    raw["rollout"]["canary"] = "r3"  # not first in the inventory
+    (tmp_path / "net.yml").write_text(yaml.safe_dump(raw, sort_keys=False))
+    render_all(load(tmp_path / "net.yml"), tmp_path / "build")
+    routers = yaml.safe_load((tmp_path / "build" / "ansible_inventory.yml").read_text())["all"]["children"]["routers"]
+    assert list(routers["hosts"]) == ["r3", "r1", "r2", "isp"]
+    assert routers["vars"] == raw["rollout"]
+
+
+def test_h2_port_is_shaped_with_a_web_class(tmp_path):
+    render_all(inv, tmp_path)
+    steps = yaml.safe_load((tmp_path / "topology.clab.yml").read_text())["topology"]["nodes"]["h2"]["exec"]
+    tc = [s for s in steps if s.startswith("tc ")]
+    assert tc == [
+        "tc qdisc add dev eth1 root handle 1: htb default 20",
+        "tc class add dev eth1 parent 1: classid 1:1 htb rate 20mbit",
+        "tc class add dev eth1 parent 1:1 classid 1:10 htb rate 15mbit ceil 20mbit prio 0",
+        "tc class add dev eth1 parent 1:1 classid 1:20 htb rate 5mbit ceil 20mbit prio 1",
+        "tc filter add dev eth1 parent 1: protocol ip prio 1 u32 match ip sport 80 0xffff flowid 1:10",
+    ]
+    assert not [s for s in yaml.safe_load((tmp_path / "topology.clab.yml").read_text())["topology"]["nodes"]["h1"]["exec"]
+                if s.startswith("tc ")], "only hosts with a qos block are shaped"
