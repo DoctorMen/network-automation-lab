@@ -53,6 +53,10 @@ class Inventory:
         return self.raw["lab_name"]
 
     @property
+    def operator(self) -> str | None:
+        return self.raw.get("operator")
+
+    @property
     def routers(self) -> dict:
         return self.raw.get("routers", {})
 
@@ -67,6 +71,23 @@ class Inventory:
     @property
     def devices(self) -> list[str]:
         return [*self.routers, *self.firewalls, *self.hosts]
+
+    def owner(self, device: str) -> str | None:
+        for group in (self.routers, self.firewalls, self.hosts):
+            if device in group:
+                return group[device].get("owner")
+        return None
+
+    def device_at(self, address: str) -> str | None:
+        """Which device answers on this address (link end or loopback)."""
+        for link in self.links:
+            for ep in (link.a, link.b):
+                if str(ep.address.ip) == address:
+                    return ep.device
+        for name, r in self.routers.items():
+            if str(ipaddress.IPv4Interface(r["loopback"]).ip) == address:
+                return name
+        return None
 
     def asn(self, name_or_number) -> int:
         if isinstance(name_or_number, int):
@@ -167,5 +188,12 @@ def validate(inv: Inventory) -> list[str]:
             ep = by_if.get(fw[side]["interface"])
             if ep is None or str(ep.address) != fw[side]["address"]:
                 problems.append(f"{name}: {side} address {fw[side]['address']} does not match its link")
+
+    # Someone has to act when a device breaks, and tools may log in only where the operator owns it.
+    for name in inv.devices:
+        if not inv.owner(name):
+            problems.append(f"{name}: no owner (who must act when it breaks?)")
+    if inv.operator not in {inv.owner(d) for d in inv.devices}:
+        problems.append(f"operator {inv.operator!r} owns no device, so no tool may log in anywhere")
 
     return problems

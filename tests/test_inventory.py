@@ -88,3 +88,17 @@ def test_reports_every_problem_at_once(tmp_path):
         raw["hosts"]["h1"]["gateway"] = "10.99.0.1"
     out = problems(tmp_path, m)
     assert "different subnets" in out and "gateway" in out
+
+
+def test_every_device_needs_an_owner(tmp_path):
+    def m(raw):
+        del raw["routers"]["isp"]["owner"]
+        del raw["hosts"]["h1"]["owner"]
+    out = problems(tmp_path, m)
+    assert "isp: no owner" in out and "h1: no owner" in out
+
+
+def test_operator_must_own_a_device(tmp_path):
+    def m(raw):
+        raw["operator"] = "nobody"
+    assert "operator 'nobody' owns no device" in problems(tmp_path, m)

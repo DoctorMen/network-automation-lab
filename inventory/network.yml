@@ -2,18 +2,24 @@
 # and the expected state the tests check are generated from this file.
 lab_name: netauto
 
+# Who runs this lab. Tools log in only to devices this team owns; everything else is
+# someone else's network, observed from outside and escalated to its owner.
+operator: campus NOC
+
 asn:
   campus: 65001
   isp: 65100
 
 routers:
   r1:
+    owner: campus NOC
     role: core
     loopback: 10.255.0.1/32
     ospf: { area: 0 }
     static_routes:
       - { prefix: 10.10.10.0/24, next_hop: 10.0.100.2, redistribute: true }   # LAN-A sits behind the firewall
   r2:
+    owner: campus NOC
     role: edge
     loopback: 10.255.0.2/32
     ospf: { area: 0, default_originate: true }
@@ -23,10 +29,12 @@ routers:
         - { peer: isp, remote_as: isp, address: 198.51.100.1 }
       aggregate: 10.0.0.0/8
   r3:
+    owner: campus NOC
     role: core
     loopback: 10.255.0.3/32
     ospf: { area: 0 }
   isp:
+    owner: AS65100 carrier NOC
     role: isp
     loopback: 203.0.113.1/32
     bgp:
@@ -37,6 +45,7 @@ routers:
 
 firewalls:
   fw1:
+    owner: campus NOC
     inside:  { interface: eth1, address: 10.10.10.1/24 }
     outside: { interface: eth2, address: 10.0.100.2/30, gateway: 10.0.100.1 }
     # Default policy for forwarded traffic is DROP. Order matters.
@@ -48,8 +57,8 @@ firewalls:
       - { name: allow-internet,    src: 10.10.10.0/24, dst: 203.0.113.0/24,    action: accept }
 
 hosts:
-  h1: { interface: eth1, address: 10.10.10.10/24, gateway: 10.10.10.1, segment: LAN-A }
-  h2: { interface: eth1, address: 10.20.20.10/24, gateway: 10.20.20.1, segment: LAN-B, services: [80, 22] }
+  h1: { owner: campus NOC, interface: eth1, address: 10.10.10.10/24, gateway: 10.10.10.1, segment: LAN-A }
+  h2: { owner: campus NOC, interface: eth1, address: 10.20.20.10/24, gateway: 10.20.20.1, segment: LAN-B, services: [80, 22] }
 
 # Point-to-point and LAN links. Each endpoint is device:interface@address.
 links:

@@ -72,6 +72,8 @@ def expected_state(inv: Inventory) -> dict:
         "bgp_sessions": bgp_sessions,
         "loopbacks": {r: str(ipaddress.IPv4Interface(v["loopback"]).ip) for r, v in inv.routers.items()},
         "hosts": {h: v["address"].split("/")[0] for h, v in inv.hosts.items()},
+        "operator": inv.operator,
+        "owners": {d: inv.owner(d) for d in inv.devices},
     }
 
 

@@ -3,7 +3,7 @@ PY      ?= python3
 CLAB    ?= sudo containerlab
 TOPO    := build/topology.clab.yml
 
-.PHONY: help validate render test deploy live drift apply destroy all
+.PHONY: help validate render test deploy live drift apply locate destroy all
 
 help:            ## List targets
 	@grep -E '^[a-z]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
@@ -28,6 +28,9 @@ drift:           ## Back up routers and firewall, fail on drift or on a backup m
 
 apply:           ## Push intended config to routers (diff only, no restarts)
 	cd ansible && ansible-playbook deploy.yml
+
+locate:          ## Find where loss starts on a path and who owns it: make locate SRC=h1 DST=203.0.113.1
+	$(PY) -m netlab locate --src "$(SRC)" --dst "$(DST)"
 
 destroy:         ## Tear the lab down
 	$(CLAB) destroy -t $(TOPO) --cleanup

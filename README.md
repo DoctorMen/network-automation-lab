@@ -47,7 +47,11 @@ flowchart LR
 | A router backup that is missing part of the running config fails, and the check names the missing line. Each backup is loaded back on its router in test mode; the untouched backup passes | [`test_incomplete_capture_is_flagged`](tests/live/test_collection.py) |
 | A rule added by hand on the firewall fails the drift check, which names it. The intended rules are replayed in a separate, empty network namespace, so the check never touches the live rules | [`test_firewall_hand_change_is_flagged`](tests/live/test_collection.py) |
 | A hand change saved with `write memory` can't overwrite the intended config and hide from that drift check | [`test_write_memory_cannot_overwrite_intent`](tests/live/test_drift.py) |
-| The inventory can't ship with duplicate IPs, mismatched subnets, overlapping networks, wrong BGP peer addresses or off-subnet gateways | [`tests/test_inventory.py`](tests/test_inventory.py), with all problems reported at once |
+| Loss on the carrier link is placed on the carrier from our side alone. `make locate` clears every campus segment in path order, names `r2-isp` and its owner from the inventory, and our edge router sees the loss directly. We never log into the carrier | [`test_carrier_loss_is_placed_on_the_carrier`](tests/live/test_locate.py) |
+| Loss on a campus link is named as ours, and from our edge the carrier is clean | [`test_campus_loss_is_not_blamed_on_the_carrier`](tests/live/test_locate.py) |
+| A clean path raises no alarm | [`test_clean_path_raises_no_alarm`](tests/live/test_locate.py) |
+| `locate` refuses to run on any device the operator doesn't own, loss at a middle hop that doesn't carry on to the destination (ICMP rate limiting) is not called loss, and a hop that didn't answer traceroute is traced again instead of being skipped, which would hand our segment to the carrier | [`tests/test_locate.py`](tests/test_locate.py) |
+| The inventory can't ship with duplicate IPs, mismatched subnets, overlapping networks, wrong BGP peer addresses, off-subnet gateways or a device with no owner | [`tests/test_inventory.py`](tests/test_inventory.py), with all problems reported at once |
 
 ## How it works
 
@@ -75,9 +79,9 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt -r requirements-ansible.txt
 bash -c "$(curl -sL https://get.containerlab.dev)"   # installs Containerlab
 
-make test      # offline: inventory validation + rendering (17 tests)
+make test      # offline: inventory validation, rendering, locate rules (23 tests)
 make deploy    # render configs and start 7 containers
-make live      # 17 live tests against the running network
+make live      # 20 live tests against the running network
 make drift     # back up routers and firewall, fail on drift or an incomplete backup
 make destroy
 ```
@@ -97,6 +101,7 @@ docker exec clab-netauto-fw1 iptables -vnL FORWARD
 - Open SSH on the firewall by hand (`docker exec clab-netauto-fw1 iptables -I FORWARD -p tcp --dport 22 -j ACCEPT`) and run `make drift`. It fails and names the rule. Delete it with the same command and `-D` instead of `-I`.
 - Take a link down (`docker exec clab-netauto-r1 ip link set eth2 down`) and watch `show ip route 10.20.20.0/24` on r1 move to the path through r2.
 - Make the same link fail silently: `docker exec clab-netauto-r1 iptables -I INPUT -i eth2 -j DROP`, then the same with `-I OUTPUT -o eth2`. The link stays up, but in about a second BFD declares r3 down, OSPF drops that neighbor (`show ip ospf neighbor`) and the route moves to r2. Run both again with `-D` instead of `-I` to put it back.
+- Make the carrier lossy (`docker exec clab-netauto-isp iptables -I INPUT -i eth1 -p icmp -m statistic --mode random --probability 0.2 -j DROP`) and run `make locate SRC=h1 DST=203.0.113.1`. It clears each campus segment, names `r2-isp` and the carrier NOC, and writes the evidence to `build/finding.json`. The same command with `-D` removes the loss. The steps and what to send the carrier are in [`docs/runbooks/carrier-loss.md`](docs/runbooks/carrier-loss.md).
 
 ## Sample output
 
