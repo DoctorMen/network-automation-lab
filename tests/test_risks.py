@@ -49,6 +49,19 @@ def test_fixing_the_config_flags_the_risk_as_stale(build, tmp_path):
     assert check(ENTRIES, fixed) == ["RISK-4: no config line matches icmp-any-type any more; close the risk, or fix the detector"]
 
 
+def test_an_edge_router_line_is_scanned_like_a_firewall_line(build, tmp_path):
+    """r2's edge.sh is scanned too: take RISK-23 out and the scan names its every-ICMP-type line; give that line an --icmp-type and RISK-23 is flagged to close."""
+    line = next(n for n, text in enumerate((build / "r2" / "edge.sh").read_text().splitlines(), 1) if '"wan-icmp"' in text)
+    assert [p for p in check(without("RISK-23"), build) if "(detector edge-icmp-any-type)" in p] == [
+        f"build/r2/edge.sh:{line}: `iptables -A INPUT -i eth3 -p icmp -j ACCEPT -m comment --comment \"wan-icmp\"`: the "
+        "internet edge lets every ICMP type in to the router itself, and no entry in docs/risks.yml covers it (detector edge-icmp-any-type)"]
+    fixed = tmp_path / "build"
+    render_all(load(ROOT / "inventory" / "network.yml"), fixed)
+    script = fixed / "r2" / "edge.sh"
+    script.write_text(script.read_text().replace("-p icmp -j ACCEPT", "-p icmp --icmp-type echo-request -j ACCEPT"))
+    assert check(ENTRIES, fixed) == ["RISK-23: no config line matches edge-icmp-any-type any more; close the risk, or fix the detector"]
+
+
 def test_every_risk_a_decision_record_accepts_is_in_the_register(build, tmp_path):
     """A decision record that accepts a risk must name its register entry, and that entry must exist: take
     the name off 0009's BFD mode, or take RISK-12 out of the register, and both are reported."""

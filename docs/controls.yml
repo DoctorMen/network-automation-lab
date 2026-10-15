@@ -274,6 +274,23 @@ controls:
       store itself is a plaintext 0600 file (RISK-8). It checks this password only; a new kind of
       secret needs its own check.
 
+  - id: rollback-keeps-password
+    claim: "A router with a BGP password that fails its health gate goes back to the config it ran before with the password untouched: the session never drops, and neither the saved fallback, FRR's log, a command line nor the playbook output holds the password. Every playbook task that reads or reloads a router's config does it through the redacting vtysh"
+    test:
+      - tests/live/test_rollout.py::test_rollback_keeps_the_bgp_password_and_writes_it_nowhere
+      # Deterministic: it reads every task in ansible/, the rescue's rollback included.
+      - tests/test_secrets.py::test_every_running_config_read_goes_through_the_redacting_vtysh
+    period: P31D
+    threat: >-
+      A rollback that deletes the password (frr-reload.py sees a line the fallback lacks and removes it,
+      with the password on vtysh's command line and in its log), sets the sha256 tag as the password,
+      or leaves the password in clear in /tmp/rollback on the router.
+    fails_when: >-
+      The live test rolls back r2 alone (--limit r2). A production batch rolling back r2, r3 and isp
+      together with passwords set is not in the suite. A rollback leaves the password whatever the
+      password task last set, so a change that rotated it is not undone. The offline check reads the
+      commands as written in ansible/, not what a tool they call does.
+
   - id: secret-never-rendered
     claim: "The password is never rendered: `build/` names only the secret's file, the store is 0600 and never overwritten, and backups and drift output show a sha256 tag in its place"
     test:

@@ -66,6 +66,24 @@ DETECTORS = {
                                     "an accept rule for every protocol, so it can't require a TCP opening packet (--syn)"),
     "host-not-collected": Detector("build", "topology.clab.yml", r"^\s+- ip (addr|route) ", None,
                                    "a host's address or route, set at deploy and never read back by `make drift`"),
+    # The rollout (decision 0010) and h2's QoS (0011).
+    "short-vetting-delay": Detector("repo", "inventory/network.yml", r"^\s*vetting_delay:\s*[0-5]?\d\b", None,
+                                    "the canary soaks for under a minute before production gets the change"),
+    "batch-rolls-back-alone": Detector("repo", "ansible/deploy.yml", r'^\s*serial: \[1, "100%"\]', None,
+                                       "every production router changes in one batch, and a rescue rolls back only the router that failed"),
+    "verify-without-baseline": Detector("repo", "ansible/deploy.yml", r"\{\{ netlab \}\}\.verify ", None,
+                                        "the rollout's in-effect check has no baseline, so a problem from before the change fails it afterwards"),
+    "qos-by-source-port": Detector("build", "topology.clab.yml", r"u32 match ip sport \d+ 0xffff", None,
+                                   "web traffic is classed by its source port alone"),
+    # The edges (decision 0012): what edge.sh and fw1's raw table don't cover.
+    "subnet-anti-spoof": Detector("build", "*/firewall.sh", r"^iptables -t raw -A PREROUTING -i \S+ ! -s \S+ -j DROP", None,
+                                  "anti-spoofing checks the subnet, not the host, so a user can send as another user"),
+    "edge-ipv4-only": Detector("build", "*/edge.sh", r"^iptables -A INPUT -i \S+ -j DROP", r"^ip6tables ",
+                               "the internet edge filters IPv4 only, and nothing filters IPv6"),
+    "edge-icmp-any-type": Detector("build", "*/edge.sh", r"-p icmp\b(?!.*--icmp-type).*-j ACCEPT", None,
+                                   "the internet edge lets every ICMP type in to the router itself"),
+    "sysctl-not-collected": Detector("build", "*/edge.sh", r"^sysctl -qw \S+=", None,
+                                     "a kernel setting set at deploy, which `make drift` never reads back"),
 }
 
 

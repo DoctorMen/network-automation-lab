@@ -11,6 +11,21 @@ INVENTORY = Path(__file__).resolve().parent.parent / "inventory" / "network.yml"
 inv = load(INVENTORY)
 
 
+class OneKeyLoader(yaml.SafeLoader):
+    """YAML that refuses a key given twice in one mapping. PyYAML keeps the last one without a word, so
+    a second `exec:` on a node would silently drop the first list."""
+
+
+def _mapping(loader, node, deep=False):
+    keys = [loader.construct_object(k, deep=deep) for k, _ in node.value]
+    if twice := sorted({k for k in keys if keys.count(k) > 1}):
+        raise yaml.constructor.ConstructorError(None, None, f"duplicate key(s) {twice}", node.start_mark)
+    return loader.construct_mapping(node, deep=deep)
+
+
+OneKeyLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapping)
+
+
 def test_core_router_runs_ospf_on_router_links_only():
     conf = render_router(inv, "r1")["frr.conf"]
     assert "router ospf\n ospf router-id 10.255.0.1" in conf
@@ -115,3 +130,13 @@ def test_h2_port_is_shaped_with_a_web_class(tmp_path):
     ]
     assert not [s for s in yaml.safe_load((tmp_path / "topology.clab.yml").read_text())["topology"]["nodes"]["h1"]["exec"]
                 if s.startswith("tc ")], "only hosts with a qos block are shaped"
+
+
+def test_every_node_has_one_exec_list(tmp_path):
+    """Each node's deploy steps are one exec list with no key given twice: h2's address, route and QoS, r2's and r3's edge.sh, fw1's firewall.sh."""
+    render_all(inv, tmp_path)
+    nodes = yaml.load((tmp_path / "topology.clab.yml").read_text(), Loader=OneKeyLoader)["topology"]["nodes"]
+    assert {n: v["exec"] for n, v in nodes.items() if n in inv.routers and "exec" in v} == {"r2": ["sh /edge.sh"], "r3": ["sh /edge.sh"]}
+    assert nodes["fw1"]["exec"] == ["sh /firewall.sh"]
+    h2 = nodes["h2"]["exec"]
+    assert h2[0].startswith("ip addr add ") and h2[1].startswith("ip route replace default ") and h2[2].startswith("tc qdisc add ")

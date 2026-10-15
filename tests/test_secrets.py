@@ -271,3 +271,24 @@ def test_secrets_reach_a_router_only_on_stdin():
                 on_stdin.append(task.get("name"))
     assert not leaks, f"a secret reaches a command line or an environment: {leaks}"
     assert on_stdin, "no task reads the secret store any more, so this check sees nothing"
+
+
+def test_every_running_config_read_goes_through_the_redacting_vtysh():
+    """Every task that reads a router's running config (a plan, a backup, the rollout's fallback) or reloads one uses the redacting vtysh, and a reload or a fallback saved on the router leaves the password lines out, so a rollback neither deletes nor sets a password."""
+    problems = []
+    for path in sorted(ANSIBLE.glob("*.yml")) + sorted((ANSIBLE / "tasks").glob("*.yml")):
+        for task in tasks(yaml.safe_load(path.read_text())):
+            found, _ = exposed(task)
+            command = "\n".join(str(v) for where, v in found if where != "environment" and v)
+            drop = (task.get("environment") or {}).get("NETLAB_PASSWORDS") == "drop"
+            name = f"{path.relative_to(ROOT)}: {task.get('name', 'unnamed task')}"
+            if "frr-reload.py" in command and "--bindir {{ vtysh_dir }}" not in command:
+                problems.append(f"{name}: frr-reload.py reads the running config with the real vtysh")
+            if "frr-reload.py" in command and "--reload" in command and not drop:
+                problems.append(f"{name}: a reload that sees password lines deletes a password it doesn't expect")
+            for line in command.splitlines():
+                if "show running-config" in line and "{{ vtysh_dir }}/vtysh" not in line:
+                    problems.append(f"{name}: reads the running config with the real vtysh, password in clear")
+                elif "show running-config" in line and ">" in line and not drop:
+                    problems.append(f"{name}: saves the running config on the router with its password lines")
+    assert not problems, problems

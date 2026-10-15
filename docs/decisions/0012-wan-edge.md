@@ -42,13 +42,13 @@ failure_modes:
     test: tests/live/test_rtbh.py::test_rtbh_blackholes_only_the_attacked_host
   - mode: a blackhole left on after the attack
     mitigation: The trigger is never in the intent, so `make drift` fails and names it while it is on (checked by hand on 2026-10-15)
-    test: none (accepted risk, no test leaves a trigger on; the drift check's own tests prove it flags unsaved lines)
+    test: none (accepted risk RISK-20 in docs/risks.yml; no test leaves a trigger on, and the drift check's own tests prove it flags unsaved lines)
   - mode: something on r2 answers the ISP over IPv6
     mitigation: Accepted risk. Nothing filters IPv6 and the scan is IPv4 only. Under real containerlab the links may get IPv6 link-local addresses, so bgpd may also listen on [::]:179; only the directly attached ISP can reach a link-local address, and BGP from it is allowed anyway
-    test: none (accepted risk, this sandbox kernel has no IPv6 to test with)
+    test: none (accepted risk RISK-21 in docs/risks.yml; this sandbox kernel has no IPv6 to test with)
   - mode: a host on LAN-A forges another LAN-A address
     mitigation: Accepted risk. Subnet-level checks can't see it; that needs per-port binding on a switch (OROS CON-1), and the lab has no switch
-    test: none (accepted risk, no switch to bind ports on)
+    test: none (accepted risk RISK-22 in docs/risks.yml; no switch to bind ports on)
 ---
 
 ## Context

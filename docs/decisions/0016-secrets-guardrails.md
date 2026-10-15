@@ -46,6 +46,9 @@ failure_modes:
   - mode: frr-reload.py deletes the password on a reload and the session drops
     mitigation: The redacting vtysh drops password lines from what frr-reload.py reads (NETLAB_PASSWORDS=drop), so there is nothing for it to delete; the password is set in its own task afterwards
     test: tests/live/test_secrets.py::test_no_secret_in_env_argv_logs_or_files
+  - mode: the rollout's rollback (decision 0010) deletes the password, sets its tag as the password, or saves it in clear on the router
+    mitigation: The fallback is saved and reloaded through the redacting vtysh with password lines dropped, like the apply; every task in ansible/ that reads or reloads a running config is checked offline for that
+    test: tests/live/test_rollout.py::test_rollback_keeps_the_bgp_password_and_writes_it_nowhere
   - mode: MD5 configured on one end only, or not enforced
     mitigation: Both ends must report authentication enabled, and a wrong password on the carrier end must take the session down and keep it down
     test: tests/live/test_secrets.py::test_bgp_session_uses_its_secret_and_a_wrong_one_drops_it
@@ -71,7 +74,7 @@ FRR makes that hard. It prints the password in clear in `show running-config`, w
 - **Guardrails.** gitleaks v8.21.2 with the default rules plus two of ours in `.gitleaks.toml`: `frr-bgp-neighbor-password` (FRR's line, which has no `=` for the generic rule to anchor on) and `netauto-confidential-marker`. A pre-commit hook scans the staged diff, a pre-push hook scans the history, and the CI `secrets` job scans every commit. Backups' sha256 tags are allowlisted.
 - **The secret.** `bgp_auth` in the inventory names the session and a secret file, never the password. `make secrets` creates 128 random bits, 0600, in `.secrets/` (gitignored) or `$NETLAB_SECRETS`; CI points that at `$RUNNER_TEMP` and masks the value. Nothing renders it.
 - **Delivery.** `make apply` sets it with `vtysh -f /dev/stdin` under `no_log`, with Ansible pipelining on, so it is in no argv, no environment and no file on either end.
-- **Redaction.** A small vtysh wrapper (ansible/files/vtysh_redacted.py) on each router replaces password lines in `show running-config` with `sha256:<hex>` for backups, drift and the capture check, and drops them for frr-reload.py. Drift compares tags, so a wrong or missing password still shows as drift.
+- **Redaction.** A small vtysh wrapper (ansible/files/vtysh_redacted.py) on each router replaces password lines in `show running-config` with `sha256:<hex>` for backups, drift and the capture check, and drops them for frr-reload.py and for the fallback the rollout saves and reloads (decision 0010). Drift compares tags, so a wrong or missing password still shows as drift.
 
 ## Consequences
 

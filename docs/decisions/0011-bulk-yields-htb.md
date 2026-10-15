@@ -33,7 +33,7 @@ failure_modes:
     test: tests/live/test_qos.py::test_backup_yields_to_web
   - mode: bulk traffic that leaves h2 from port 80 (or web on another port) lands in the wrong class
     mitigation: Accepted risk. The filter matches the source port only, and h2 serves web on port 80 only
-    test: none (accepted risk, one web port in the lab)
+    test: none (accepted risk RISK-19 in docs/risks.yml; one web port in the lab)
 ---
 
 ## Context

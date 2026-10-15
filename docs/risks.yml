@@ -299,3 +299,176 @@
   presented_to: pending
   presented_on: null
   presented_evidence: null
+
+- id: RISK-16
+  kind: accepted-risk
+  title: a fault that shows after the canary's 10 s vetting delay reaches production
+  detectors: [short-vetting-delay]
+  likelihood: 2
+  impact: 3
+  reasoning: >-
+    The canary must stay healthy through the vetting delay before every other router gets the change
+    (decision 0010), and the lab's delay is 10 s so CI can afford it. A fault that takes longer to show,
+    such as a neighbor lost only when the 40 s OSPF dead timer runs out, or a route that leaks slowly,
+    passes the canary and reaches r2, r3 and isp in one batch. A real canary soaks for hours, which a
+    CI job can't. Raising vetting_delay to a minute or more closes this entry (the detector stops matching).
+  compensating_control: tests/live/test_rollout.py::test_failing_canary_rolls_back_and_blocks
+  compensates: a change that breaks the canary at once is rolled back there and reaches no other router
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-17
+  kind: accepted-risk
+  title: a production router that fails a step other than the gate rolls back alone
+  detectors: [batch-rolls-back-alone]
+  likelihood: 1
+  impact: 3
+  reasoning: >-
+    After the canary, r2, r3 and isp change in one batch. If one of them fails frr-reload's apply, the
+    password task or the compare with intent while the others don't, only it rolls back:
+    any_errors_fatal ends the play after the rescue's first task, so the other routers keep a change
+    the gate never checked, and nothing rolls them back (decision 0010; checked with mock hosts and
+    ansible-core 2.21.5). The rollout exits non-zero. A rescue that rolls back the whole batch is more
+    than a few lines to get right and would be untested.
+  compensating_control: tests/live/test_rollout.py::test_failing_canary_rolls_back_and_blocks
+  compensates: the canary has already taken the same change and passed the gate, and a failed rollout exits non-zero
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-18
+  kind: accepted-risk
+  title: the rollout's in-effect check fails on what was broken before the change
+  detectors: [verify-without-baseline]
+  likelihood: 2
+  impact: 2
+  reasoning: >-
+    netlab.verify runs after each batch (decision 0010). Unlike the health gate it keeps no list of
+    problems known before the change, so a daemon already stopped or a kernel already waiting for a
+    reboot fails the rollout after the batch has changed, and nothing rolls back. On the canary that
+    stops every rollout after r1; on a production router every rollout changes every router and then
+    fails. Run make verify before make apply and fix what it reports first.
+  compensating_control: tests/live/test_verify.py::test_daemon_patch_without_restart_is_not_in_effect
+  compensates: the check itself names what is not in effect, so the failure says what to fix
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-19
+  kind: accepted-risk
+  title: h2's web class matches source port 80 only
+  detectors: [qos-by-source-port]
+  likelihood: 1
+  impact: 1
+  reasoning: >-
+    The HTB filter puts whatever leaves h2 from port 80 in the web class (decision 0011). Bulk traffic
+    sent from port 80 would get web's priority, and web served on any other port would queue as bulk.
+    h2 serves web on port 80 only, and nothing else on it uses that port.
+  compensating_control: tests/live/test_verify.py::test_qos_change_confirmed_from_class_counters
+  compensates: every run checks that connections to h2:80 land in the web class and the rates match the inventory
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-20
+  kind: accepted-risk
+  title: a blackhole can be left on after the attack
+  likelihood: 2
+  impact: 3
+  reasoning: >-
+    The RTBH trigger is one static route an operator adds on r2 during an attack (decision 0012,
+    docs/runbooks/ddos-rtbh.md). While it is on, the internet can't reach that host, so a trigger
+    forgotten after the attack is an outage nobody is told about. The trigger is never in the intent,
+    so `make drift` fails and names it while it is on (checked by hand on 2026-10-15), but only when
+    drift runs. No config line holds it, so no detector can.
+  compensating_control: tests/live/test_collection.py::test_unsaved_change_is_flagged
+  compensates: a line on a router that isn't in its intent fails the drift check, which names it
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-21
+  kind: accepted-risk
+  title: nothing filters IPv6 on the internet edge
+  detectors: [edge-ipv4-only]
+  likelihood: 1
+  impact: 2
+  reasoning: >-
+    r2's edge.sh writes iptables rules only, and the WAN scan is IPv4 only (decision 0012). This sandbox
+    has no IPv6, but under real containerlab the links may get link-local addresses, and bgpd may then
+    listen on [::]:179. Only the directly attached ISP can reach a link-local address, and BGP from it is
+    allowed anyway. The fix is matching ip6tables rules in edge.sh, and a scan over IPv6.
+  compensating_control: tests/live/test_edge.py::test_wan_scan_finds_only_published_ports
+  compensates: over IPv4, every campus address is scanned from the internet side on every run
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-22
+  kind: accepted-risk
+  title: a LAN-A host can still send as another LAN-A address
+  detectors: [subnet-anti-spoof]
+  likelihood: 2
+  impact: 2
+  reasoning: >-
+    fw1's raw table drops what arrives on the user side from outside 10.10.10.0/24 (decision 0012), so
+    no user can send as a server or as the internet. It can't tell one user from another: that needs
+    per-port binding on a switch (OROS CON-1), and the lab has no switch. A user forging a neighbour's
+    address gets the same rules the neighbour has, nothing more.
+  compensating_control: tests/live/test_edge.py::test_lan_a_cannot_forge_its_source
+  compensates: a LAN-A host sending as a server address is dropped at fw1 on every run
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-23
+  kind: accepted-risk
+  title: r2 accepts every ICMP type from the internet
+  detectors: [edge-icmp-any-type]
+  likelihood: 2
+  impact: 1
+  reasoning: >-
+    wan-icmp lets any ICMP from the ISP side in to r2 itself, so the carrier can ping the link and path
+    MTU discovery works. Timestamp requests and other types are answered too. ICMP redirects are ignored
+    because r2 forwards (the kernel's accept_redirects is off for a forwarding interface). Nothing on r2
+    is reached over ICMP. The fix is --icmp-type for echo-request and the error types.
+  compensating_control: tests/live/test_edge.py::test_wan_scan_finds_only_published_ports
+  compensates: every TCP management port on r2 is still closed from the internet side
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-24
+  kind: accepted-risk
+  title: r3's reverse-path filter is a sysctl that `make drift` doesn't read back
+  detectors: [sysctl-not-collected]
+  likelihood: 1
+  impact: 2
+  reasoning: >-
+    edge.sh sets strict rp_filter on r3's LAN-B interface with sysctl (decision 0012). The drift check
+    compares iptables lines, not kernel settings, so `sysctl -w net.ipv4.conf.eth3.rp_filter=0` by hand
+    would let LAN-B forge LAN-A sources again with nothing flagging it until the next live run.
+  compensating_control: tests/live/test_edge.py::test_server_lan_cannot_forge_its_source
+  compensates: every run forges a LAN-A source from h2 and counts r3's reverse-path drops
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null

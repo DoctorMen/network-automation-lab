@@ -44,28 +44,31 @@ failure_modes:
     test: tests/live/test_rollout.py::test_change_waits_for_window_then_reaches_every_router
   - mode: a fault that shows only after the gate passed
     mitigation: the canary is checked again after the vetting delay (10 s). Accepted risk past that, so a fault that takes longer, like a neighbor lost only at the 40 s OSPF dead timer, reaches production
-    test: none (accepted risk, the vetting delay is a lab value)
+    test: none (accepted risk RISK-16 in docs/risks.yml; the vetting delay is a lab value)
   - mode: a production router fails the gate
     mitigation: every router of the batch runs the gate, so all of them roll back, and any_errors_fatal stops the play
     test: none (checked by hand in the lab once, not in the suite to save CI time. r2 lost its OSPF link to r1, and r2, r3 and isp all went back to their exact pre-change config)
-  - mode: one production router fails a step other than the gate (frr-reload.py's apply, or the compare with intent) and the others don't
+  - mode: one production router fails a step other than the gate (frr-reload.py's apply, the BGP password task, or the compare with intent) and the others don't
     mitigation: >-
       Accepted risk. That router rolls back and any_errors_fatal ends the play, but the other routers in its batch
       keep the change, which the gate never checked, and nothing rolls them back. The rollout exits non-zero, without
       its "rolled back" message, because the rescue stops after its first task. Revert the change in the inventory
       and run make apply again. A rescue that also rolls back the rest of the batch is not built: Ansible has already
       marked those routers failed by then, so it is more than a few lines to get right, and it would be untested
-    test: none (accepted risk; checked with ansible-core 2.21.5 and four mock hosts. In the batch of three the failing one was rescued and the other two kept the change)
+    test: none (accepted risk RISK-17 in docs/risks.yml; checked with ansible-core 2.21.5 and four mock hosts. In the batch of three the failing one was rescued and the other two kept the change)
   - mode: something on a batch's routers was already not in effect before the rollout (a stopped daemon, a kernel waiting for a reboot)
     mitigation: >-
       Accepted risk. netlab.verify runs after the batch has changed and fails on it, although the change didn't cause
       it, and nothing rolls back. On the canary that stops every rollout after the canary; on a production router every
       rollout changes every router and then fails. Unlike the health gate, verify has no list of known problems, so run
       make verify before make apply and fix what it reports first
-    test: none (accepted risk; checked by hand once on the canary, where a kernel waiting for a reboot stopped the rollout at r1's verify)
+    test: none (accepted risk RISK-18 in docs/risks.yml; checked by hand once on the canary, where a kernel waiting for a reboot stopped the rollout at r1's verify)
   - mode: a patch is installed but not running (a daemon replaced on disk, a kernel not rebooted into)
     mitigation: netlab.verify runs after each batch and fails the rollout on `not in effect`. The test proves the check; that the rollout stops on it is not tested
     test: tests/live/test_verify.py::test_daemon_patch_without_restart_is_not_in_effect
+  - mode: a rollback on a router with a BGP password (r2, isp) deletes it, sets its sha256 tag as the password, or leaves it in clear in /tmp/rollback or frr-reload.py's log
+    mitigation: the fallback is saved and reloaded through the redacting vtysh with password lines dropped, the way the apply reads the running config (decision 0016), so the reload neither sees nor writes a password and the password stays what the password task last set
+    test: tests/live/test_rollout.py::test_rollback_keeps_the_bgp_password_and_writes_it_nowhere
   - mode: a rolled-back router restarts and boots into the bad intent, which build/ still holds
     mitigation: by design. The intent is the change; it has to be reverted in the inventory, and make drift reports the router until it is
     test: none (by design, the failure message says so)

@@ -36,18 +36,20 @@
   pre_tasks:
     # `make deploy` runs this straight after `containerlab deploy`, while FRR may still be starting:
     # until bgpd is up, vtysh prints "bgpd is not running" and exits 1 (seen on a fresh r2 container),
-    # and frr-reload.py or the password task would fail or apply half. r1 and r3 start no bgpd
-    # (their daemons file), so they don't wait for one. First, so the health baseline below is
-    # taken with bgpd answering.
-    - name: Wait until bgpd answers
-      ansible.builtin.command: vtysh -c 'show bgp summary'
-      register: bgpd
-      until: bgpd.rc == 0
+    # and frr-reload.py or the password task would fail or apply half. A daemon that isn't up yet is
+    # also missing from `show running-config`, so the plan would re-add its lines. So every daemon the
+    # router's daemons file starts must answer first (`show daemons` lists the ones vtysh reaches).
+    # First, so the health baseline below is taken with the routers answering.
+    - name: Wait until every routing daemon answers (bgpd included)
+      ansible.builtin.command: vtysh -c 'show daemons'
+      vars:
+        started: "{{ lookup('file', playbook_dir ~ '/../build/' ~ inventory_hostname ~ '/daemons') | regex_findall('^(zebra|\\w+d)=yes', multiline=True) }}"
+      register: daemons
+      until: daemons.rc == 0 and started | difference(daemons.stdout.split()) == []
       retries: 15
       delay: 2
       changed_when: false
       check_mode: false
-      when: lookup('file', playbook_dir ~ '/../build/' ~ inventory_hostname ~ '/daemons') is search('^bgpd=yes', multiline=True)
 
     - name: Refuse to start outside the change window
       vars:
@@ -96,6 +98,7 @@
     - name: Save the running config as this router's fallback
       ansible.builtin.shell: |
         set -e
+        umask 077  # docker exec runs with umask 0, which would leave the fallback writable by anyone
         mkdir -p {{ fallback | dirname }}
         cp /etc/frr/vtysh.conf {{ fallback | dirname }}/
         {{ vtysh_dir }}/vtysh -c "show running-config no-header" > {{ fallback }}

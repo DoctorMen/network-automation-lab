@@ -13,7 +13,7 @@ alternatives:
   - name: a three-legged fw1 with LAN-B behind it
     why_not: Cleaner, one firewall in front of the segment from every side, but it rewires r1 and r3, the static route to LAN-A and the failover tests; r2's edge filter (0012) closes the internet side with no topology change
   - name: close ICMP from LAN-A to LAN-B on fw1
-    why_not: The dataplane, failover and firewall tests ping h2 from h1 and would all have to move to TCP:80; the pings are recorded as an exception instead, and whether that is acceptable is left to an assessor
+    why_not: The dataplane, failover and firewall tests and the rollout's health gate ping h2 from h1 and would all have to move to TCP:80; the pings are recorded as an exception instead, and whether that is acceptable is left to an assessor
   - name: tokenisation or outsourcing the payment page
     why_not: The real answer for a small shop (the card data never touches its network), but there is nothing in a lab to tokenise; recorded as the design to prefer in production
 sources:

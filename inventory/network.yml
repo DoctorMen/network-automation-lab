@@ -106,7 +106,7 @@ scope:
   # Flows into the segment beyond the published ports, each with its reason. The segmentation test
   # probes each one as open, and the same flow from every other out-of-scope device as closed.
   exceptions:
-    - { src: h1, proto: icmp, why: "monitoring and troubleshooting pings from the user LAN, through fw1's allow-icmp; the dataplane, failover and firewall tests ping h2 from h1" }
+    - { src: h1, proto: icmp, why: "monitoring and troubleshooting pings from the user LAN, through fw1's allow-icmp; the dataplane, failover and firewall tests and the rollout's health gate (netlab.health) ping h2 from h1" }
 
 # The carrier's remote-triggered blackhole (RTBH), the DDoS lever in docs/outside-levers.yml
 # (decision 0012). r2 sends any static route tagged `tag` to the ISP with `community`; the ISP points
