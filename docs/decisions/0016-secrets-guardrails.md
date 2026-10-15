@@ -40,6 +40,9 @@ failure_modes:
   - mode: the password on a command line, in an environment, a log or a temp file while make apply or make drift runs
     mitigation: vtysh reads it on stdin; the task is no_log; pipelining keeps the module and its arguments off disk on both ends; frr-reload.py never sees a password line
     test: tests/live/test_secrets.py::test_no_secret_in_env_argv_logs_or_files
+  - mode: a playbook change moves the password onto a command line or into an environment, for a process too short for the live test to sample
+    mitigation: Only stdin may carry a lookup of the secret store; every task in ansible/ is checked offline, on every run
+    test: tests/test_secrets.py::test_secrets_reach_a_router_only_on_stdin
   - mode: frr-reload.py deletes the password on a reload and the session drops
     mitigation: The redacting vtysh drops password lines from what frr-reload.py reads (NETLAB_PASSWORDS=drop), so there is nothing for it to delete; the password is set in its own task afterwards
     test: tests/live/test_secrets.py::test_no_secret_in_env_argv_logs_or_files

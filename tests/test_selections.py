@@ -5,14 +5,10 @@ from pathlib import Path
 
 import yaml
 
-from netlab.records import lint_selections
+from netlab.records import COMMENT, IMAGE, TOOLS, lint_selections, tools_in_use
 
 ROOT = Path(__file__).resolve().parent.parent
 SELECTIONS = ROOT / "docs" / "selections"
-# Tools that aren't images, and the file that shows the lab really uses each one.
-TOOLS = {"containerlab": ".github/workflows/ci.yml", "ansible": "requirements-ansible.txt",
-         "iptables": "templates/firewall.sh.j2"}
-IMAGE = re.compile(r"\b([a-z0-9]+(?:[._-][a-z0-9]+)*/[a-z0-9]+(?:[._-][a-z0-9]+)*):v?\d")
 
 
 def copy_with(tmp_path, old, new):
@@ -52,11 +48,28 @@ def test_missing_no_purchase_line_is_reported(tmp_path):
 
 
 def test_every_tool_has_a_selection_record():
-    """Every image the lab, the hooks or CI run, and every tool CI installs, is covered by a record's `uses`."""
+    """Every image the lab, the hooks or CI run, and every other tool the repo uses (TOOLS in netlab/records.py), is covered by a record's `uses`."""
     covered = [u for p in SELECTIONS.glob("*.md") for u in yaml.safe_load(p.read_text().split("---\n")[1])["uses"]]
-    files = [ROOT / f for f in ("inventory/network.yml", "Makefile", ".pre-commit-config.yaml")]
-    images = {m for f in files + sorted((ROOT / ".github" / "workflows").glob("*.yml")) for m in IMAGE.findall(f.read_text())}
-    for tool, where in TOOLS.items():
-        assert tool in (ROOT / where).read_text(), f"{where} no longer mentions {tool}; update TOOLS"
-    missing = sorted(t for t in images | set(TOOLS) if not any(u == t for u in covered))
+    for tool, (where, text) in TOOLS.items():
+        assert text in (ROOT / where).read_text(), f"{where} no longer has {text!r} for {tool}; update TOOLS"
+    missing = sorted(t for t in tools_in_use() if t not in covered)
     assert not missing, f"no selection record in docs/selections/ for: {missing}"
+
+
+def test_image_names_are_found_with_or_without_a_namespace():
+    """alpine:3.20 and python:3.12 count as images; a digest, a host and port, a time or a comment doesn't."""
+    text = ("image: frrouting/frr:v8.4.1@sha256:0f8c17\n  - run: docker run --rm alpine:3.20 sh\n  python:3.12\n"
+            "digest: sha256:0f8c174d\ncurl http://localhost:8080/x\nlocalhost:8080\nstart: \"04:00\"\n"
+            "10.0.0.1:80\n# h2:22 stays inside\n")
+    assert sorted(IMAGE.findall(COMMENT.sub("", text))) == ["alpine", "frrouting/frr", "python"]
+
+
+def test_a_record_may_cite_tests_that_arrive_with_its_tool(tmp_path):
+    """Until the lab runs a tool, its record may cite a test that comes with the tool; once the tool runs, that test must exist."""
+    text = (SELECTIONS / "frr.md").read_text()
+    text = re.sub(r"independent_sources:\n.*?\n---", "independent_sources:\n  - tests/live/test_future.py::test_it\n---", text, flags=re.S)
+    (tmp_path / "frr.md").write_text(text)
+    assert lint_selections(tmp_path, in_use=set()) == []
+    assert lint_selections(tmp_path, in_use={"frrouting/frr"}) == [
+        "frr.md: source tests/live/test_future.py::test_it is neither a URL nor a test or file in this repo",
+        "frr.md: no independent source"]

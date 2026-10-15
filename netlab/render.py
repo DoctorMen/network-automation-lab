@@ -85,7 +85,7 @@ def expected_state(inv: Inventory) -> dict:
         "passive_interfaces": {r: [local.interface for local, remote in inv.neighbors(r) if remote.device in inv.hosts]
                                for r in inv.routers if inv.ospf_neighbors(r)},
         "bgp_sessions": bgp_sessions,
-        "bgp_md5": {r: bgp_md5(inv, r) for r in inv.routers if bgp_md5(inv, r)},
+        "bgp_md5": {r: sessions for r in inv.routers if (sessions := bgp_md5(inv, r))},
         "loopbacks": {r: str(ipaddress.IPv4Interface(v["loopback"]).ip) for r, v in inv.routers.items()},
         "hosts": {h: v["address"].split("/")[0] for h, v in inv.hosts.items()},
         "operator": inv.operator,
@@ -96,8 +96,9 @@ def expected_state(inv: Inventory) -> dict:
 
 def ansible_inventory(inv: Inventory) -> str:
     """Ansible reaches each node through the Docker connection plugin, no SSH needed."""
+    md5 = {r: sessions for r in inv.routers if (sessions := bgp_md5(inv, r))}
     hosts = {
-        "routers": {r: {"ansible_host": f"clab-{inv.lab_name}-{r}", **({"bgp_md5": bgp_md5(inv, r)} if bgp_md5(inv, r) else {})}
+        "routers": {r: {"ansible_host": f"clab-{inv.lab_name}-{r}", **({"bgp_md5": md5[r]} if r in md5 else {})}
                     for r in inv.routers},
         "firewalls": {f: {"ansible_host": f"clab-{inv.lab_name}-{f}"} for f in inv.firewalls},
     }

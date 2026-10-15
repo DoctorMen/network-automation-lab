@@ -5,7 +5,9 @@ Each detector below is a risky kind of config line. The scan renders the configs
   - a risky line that no register entry covers, by file and line number,
   - an entry whose detector matches nothing any more, so the risk is gone and the entry should close,
   - an entry missing its reasoning, compensating test, owner, review date or presentation record,
-  - a decision record that accepts a risk (docs/decisions/) without naming its entry here.
+  - a decision record that accepts a risk (docs/decisions/) without naming its entry here,
+  - a RISK-n id that a decision record accepts, or a selection record (docs/selections/) cites, and the
+    register doesn't hold.
 `python -m netlab.risks` (make risks) prints the one-page summary and exits 1 on any problem."""
 from __future__ import annotations
 
@@ -25,6 +27,7 @@ from .render import render_all
 ROOT = Path(__file__).resolve().parent.parent
 REGISTER = ROOT / "docs" / "risks.yml"
 DECISIONS = ROOT / "docs" / "decisions"
+SELECTIONS = ROOT / "docs" / "selections"
 FIELDS = ("id", "kind", "title", "likelihood", "impact", "reasoning", "compensating_control", "owner", "review_by")
 KINDS = {"accepted-risk", "refused-spend"}
 
@@ -57,6 +60,12 @@ DETECTORS = {
                             "a BGP password kept in a file, and set as TCP MD5"),
     "bfd-default-timers": Detector("build", "*/frr.conf", r"^\s*ip ospf bfd$", r"^\s*(detect-multiplier|receive-interval|transmit-interval)\s",
                                    "BFD at FRR's default 300 ms x 3, with no alert on a flap"),
+    "conntrack-loose": Detector("build", "*/firewall.sh", r"--ctstate ESTABLISHED", r"nf_conntrack_tcp_loose=0",
+                                "conntrack adopts a TCP flow from its middle (kernel default nf_conntrack_tcp_loose=1)"),
+    "accept-any-protocol": Detector("build", "*/firewall.sh", r"^iptables -A FORWARD(?!.* -p )(?!.*--ctstate).* -j ACCEPT", None,
+                                    "an accept rule for every protocol, so it can't require a TCP opening packet (--syn)"),
+    "host-not-collected": Detector("build", "topology.clab.yml", r"^\s+- ip (addr|route) ", None,
+                                   "a host's address or route, set at deploy and never read back by `make drift`"),
 }
 
 
@@ -134,9 +143,10 @@ def accepted_in_decisions(folder: Path = DECISIONS) -> list[tuple[str, str, str]
     return found
 
 
-def check(entries: list, build: Path, repo: Path = ROOT, today: date | None = None, decisions: Path = DECISIONS) -> list[str]:
+def check(entries: list, build: Path, repo: Path = ROOT, today: date | None = None, decisions: Path = DECISIONS,
+          selections: Path = SELECTIONS) -> list[str]:
     """Every problem: incomplete entries, risky lines nobody accepted, entries whose lines are gone, and
-    risks a decision record accepts that the register doesn't hold."""
+    risks a decision or selection record names that the register doesn't hold."""
     hits = scan(build, repo)
     covered = {d for e in entries for d in e.get("detectors") or []}
     problems = lint(entries, today)
@@ -152,6 +162,10 @@ def check(entries: list, build: Path, repo: Path = ROOT, today: date | None = No
             problems.append(f"{record}: accepts the risk {mode!r} but names no entry in docs/risks.yml "
                             "(write it as: none (accepted risk RISK-n in docs/risks.yml))")
         problems += [f"{record}: accepts the risk {mode!r} as {r}, which docs/risks.yml doesn't hold" for r in named if r not in ids]
+    # A selection record points at the risk its choice brings (Containerlab's privileged nodes, RISK-2).
+    for path in sorted(selections.glob("*.md")):
+        problems += [f"{path.name}: cites {r}, which docs/risks.yml doesn't hold"
+                     for r in sorted(set(re.findall(r"\bRISK-\d+\b", path.read_text()))) if r not in ids]
     return problems
 
 

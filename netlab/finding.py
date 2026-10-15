@@ -101,8 +101,8 @@ def icmp_counts(pcap: bytes, address: str) -> tuple[int, int]:
 
 
 def support_bundle(inv: Inventory, lab: str, router: str, dest: Path) -> None:
-    cmd = exec_on(inv, lab, router, "python3", "-c", SUPPORT)  # refuses a router we don't own
-    cmd[2:2] = ["-i"]  # docker exec passes stdin through only with -i; without it the list arrives empty
+    # interactive: docker exec passes stdin through only with -i; without it the list arrives empty.
+    cmd = exec_on(inv, lab, router, "python3", "-c", SUPPORT, interactive=True)  # refuses a router we don't own
     out = subprocess.run(cmd, input=SUPPORT_COMMANDS.read_bytes(), capture_output=True, timeout=120, check=True).stdout
     dest.mkdir(parents=True)
     with tarfile.open(fileobj=io.BytesIO(out), mode="r:") as tar:
@@ -117,12 +117,18 @@ def versions(inv: Inventory, lab: str, images: list[str], routers: list[str]) ->
     for router in routers:
         first = run(exec_on(inv, lab, router, "vtysh", "-c", "show version")).stdout.strip().splitlines()
         lines.append(f"frr {router} {first[0] if first else 'unknown'}")
+    # What started the lab, which isn't always the containerlab on this host: Containerlab labels every
+    # node it creates, and a stand-in that only copies the names doesn't (netlab/measure.py checks the same).
+    node = f"clab-{lab}-{routers[0]}" if routers else None
+    labels = json.loads(run(["docker", "inspect", "-f", "{{json .Config.Labels}}", node]).stdout or "null") if node else None
+    deployed = "containerlab" if "clab-node-kind" in (labels or {}) else f"not containerlab ({node} has no clab-node-kind label)"
     clab = run(["sh", "-c", "containerlab version 2>/dev/null | sed -n 's/^ *version: *//p'"]).stdout.strip()
     commit = run(["git", "-C", str(ROOT), "rev-parse", "HEAD"]).stdout.strip() or "unknown"
     dirty = len(run(["git", "-C", str(ROOT), "status", "--porcelain"]).stdout.splitlines())
     lines += [f"host {platform.system()} {platform.release()}",
               f"docker {run(['docker', 'version', '--format', '{{.Server.Version}}']).stdout.strip() or 'unknown'}",
-              f"containerlab {clab or 'not installed on this host'}",
+              f"deployed_by {deployed}",
+              f"containerlab_on_host {clab or 'not installed'}",
               f"python {platform.python_version()} (netlab, which wrote this bundle)",
               f"netlab {commit}" + (f" with {dirty} uncommitted changes" if dirty else "")]
     return "\n".join(lines) + "\n"

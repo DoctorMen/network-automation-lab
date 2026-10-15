@@ -4,7 +4,6 @@ Where it is: $NETLAB_SECRETS, or .secrets/ in the repo (gitignored). CI points N
 fresh directory under $RUNNER_TEMP, so every run gets new passwords. Nothing here prints a value."""
 from __future__ import annotations
 
-import hashlib
 import os
 import secrets
 from pathlib import Path
@@ -38,13 +37,3 @@ def ensure(inv: Inventory, where: Path | None = None) -> list[Path]:
             f.write(secrets.token_hex(16) + "\n")  # 128 random bits, as 32 hex characters
         created.append(path)
     return created
-
-
-def read(name: str, where: Path | None = None) -> str:
-    return ((where or store()) / name).read_text().strip()
-
-
-def tag(value: str) -> str:
-    """What backups and drift output show instead of a password. Safe to publish only because the
-    password is random: the sha256 of a guessable password could be brute-forced."""
-    return "sha256:" + hashlib.sha256(value.encode()).hexdigest()

@@ -86,12 +86,33 @@ def lint_decision(path: Path) -> list[str]:
 
 SELECTION_FIELDS = ("kind", "id", "title", "date", "status", "decider", "constraint", "choice", "alternatives",
                     "no_purchase", "staffing", "vendor_domains", "independent_sources", "uses")
+# What the lab runs, so what needs a selection record: every image named in these files, and the tools below.
+RUN_FILES = ("inventory/network.yml", "Makefile", ".pre-commit-config.yaml", ".github/workflows/*.yml")
+# An image and its tag, with or without a namespace: frrouting/frr:v8.4.1, alpine:3.20, python:3.12.
+# Not part of a URL, path or digest, not sha256:<hex> or localhost:8080, and names start with a letter,
+# so a time (04:00) or an address and port (10.0.0.1:80) isn't one. Comments are skipped (h2:22).
+IMAGE = re.compile(r"(?<![\w./@:-])(?!(?:sha256|localhost):)"
+                   r"((?:[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*/)*[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*):v?\d[\w.-]*(?![\w./:-])")
+COMMENT = re.compile(r"(?:^|(?<=\s))#.*", re.M)
+# Tools that aren't images: the file, and the text in it, that show the lab really uses each one.
+TOOLS = {"containerlab": (".github/workflows/ci.yml", "containerlab"), "ansible": ("requirements-ansible.txt", "ansible"),
+         "iptables": ("templates/firewall.sh.j2", "iptables"), "docker": ("Makefile", "docker run"),
+         "github-actions": (".github/workflows/ci.yml", "runs-on:")}
 
 
-def lint_selections(folder: str | Path) -> list[str]:
+def tools_in_use() -> set[str]:
+    """Every image the lab, the hooks or CI run, and every tool in TOOLS the repo really uses."""
+    images = {m for pattern in RUN_FILES for path in sorted(ROOT.glob(pattern))
+              for m in IMAGE.findall(COMMENT.sub("", path.read_text()))}
+    return images | {tool for tool, (file, text) in TOOLS.items() if text in (ROOT / file).read_text()}
+
+
+def lint_selections(folder: str | Path, in_use: set[str] | None = None) -> list[str]:
     """Tool selection records (docs/selections/, OROS JUS-3): each choice judged against its
-    constraint, with a no-purchase line and at least one source the tool's own maker didn't write."""
+    constraint, with a no-purchase line and at least one source the tool's own maker didn't write.
+    in_use: the tools the lab runs (default: tools_in_use())."""
     folder = Path(folder)
+    in_use = tools_in_use() if in_use is None else in_use
     records = sorted(folder.glob("*.md"))
     problems = [] if records else [f"{folder}: no selection records"]
     for path in records:
@@ -118,6 +139,9 @@ def lint_selections(folder: str | Path) -> list[str]:
         # Independent of the seller: an outside page not on the maker's own domains, or a test or data
         # file of our own (a benchmark we ran). At least one of ours, so no choice rests on reading alone.
         vendor = [str(d).lower() for d in meta.get("vendor_domains") or []]
+        # A record may land before its tool does (another change brings both). Until the lab runs the
+        # tool, a test or file it cites may be one that comes with it; once it runs, each must exist.
+        ahead = not set(meta.get("uses") or []) & in_use
         independent = ours = 0
         for source in meta.get("independent_sources") or []:
             ref = str(source).split()[0]
@@ -126,7 +150,7 @@ def lint_selections(folder: str | Path) -> list[str]:
                     problems.append(f"{label}: {ref} is the seller's own site, not an independent source")
                 else:
                     independent += 1
-            elif names_a_test(ref) or ("::" not in ref and (ROOT / ref).is_file()):
+            elif names_a_test(ref) or ("::" not in ref and (ROOT / ref).is_file()) or ahead:
                 independent += 1
                 ours += 1
             else:

@@ -20,12 +20,13 @@ INTERVAL = 0.02   # 20 ms apart, so a hop takes 4 s and every hop is probed at o
 THRESHOLD = 2.0
 
 
-def exec_on(inv: Inventory, lab: str, device: str, *cmd: str) -> list[str]:
-    """The command line to run cmd on a device. Refused unless the operator owns that device."""
+def exec_on(inv: Inventory, lab: str, device: str, *cmd: str, interactive: bool = False) -> list[str]:
+    """The command line to run cmd on a device. Refused unless the operator owns that device.
+    interactive passes this process's stdin through to cmd (docker exec -i)."""
     if inv.owner(device) != inv.operator:
         raise PermissionError(f"{device} belongs to {inv.owner(device) or 'nobody we know'}; "
                               f"{inv.operator} can only observe it, not log in")
-    return ["docker", "exec", f"clab-{lab}-{device}", *cmd]
+    return ["docker", "exec", *(["-i"] if interactive else []), f"clab-{lab}-{device}", *cmd]
 
 
 def discover(inv: Inventory, lab: str, src: str, dst: str, raw: list | None = None) -> list[str]:

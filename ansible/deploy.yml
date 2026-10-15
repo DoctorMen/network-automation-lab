@@ -16,6 +16,20 @@
   vars:
     intended: /etc/frr/frr.conf
   tasks:
+    # `make deploy` runs this straight after `containerlab deploy`, while FRR may still be starting:
+    # until bgpd is up, vtysh prints "bgpd is not running" and exits 1 (seen on a fresh r2 container),
+    # and frr-reload.py or the password task would fail or apply half. r1 and r3 start no bgpd
+    # (their daemons file), so they don't wait for one.
+    - name: Wait until bgpd answers
+      ansible.builtin.command: vtysh -c 'show bgp summary'
+      register: bgpd
+      until: bgpd.rc == 0
+      retries: 15
+      delay: 2
+      changed_when: false
+      check_mode: false
+      when: lookup('file', playbook_dir ~ '/../build/' ~ inventory_hostname ~ '/daemons') is search('^bgpd=yes', multiline=True)
+
     - ansible.builtin.include_tasks: tasks/redacting_vtysh.yml
 
     # The plan is drift.yml's own comparison: running config as the redacting vtysh shows it, against

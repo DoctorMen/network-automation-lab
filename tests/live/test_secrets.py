@@ -15,6 +15,11 @@ from .conftest import BUILD, ROOT, wait_for
 ANSIBLE_PLAYBOOK = Path(sys.executable).with_name("ansible-playbook")
 
 
+def secret(name):
+    """A secret's value, from the store `make apply` reads it from."""
+    return (secrets.store() / name).read_text().strip()
+
+
 def sessions(expected):
     """Every authenticated session end: {router, asn, peer, neighbor, secret}, from the inventory."""
     found = [{"router": r, **s} for r, ends in expected.get("bgp_md5", {}).items() for s in ends]
@@ -53,7 +58,7 @@ def test_bgp_session_uses_its_secret_and_a_wrong_one_drops_it(node, expected):
         time.sleep(5)  # and it stays down: a session that only reset would be back by now
         stayed_down = not established(node, near)
     finally:
-        set_password(node, far, secrets.read(far["secret"]))
+        set_password(node, far, secret(far["secret"]))
         wait_for(lambda: established(node, near), timeout=90, interval=2)
     assert dropped and stayed_down, f"{near['router']} -> {near['peer']} stayed up with mismatched passwords: MD5 is not enforced"
     assert established(node, near), f"{near['router']} -> {near['peer']} did not come back with the right password"
@@ -121,7 +126,7 @@ def playbook(name):
 def test_no_secret_in_env_argv_logs_or_files(node, expected):
     """While `make apply` puts back a hand change on r2 and `make drift` runs, no command line, environment, FRR log, container log, playbook output, build/ or backups/ file holds a BGP password in clear; the session stays up."""
     ends = sessions(expected)
-    values = [secrets.read(name) for name in {e["secret"] for e in ends}]
+    values = [secret(name) for name in {e["secret"] for e in ends}]
     routers = sorted({e["router"] for e in ends})
     ours = next(e["router"] for e in ends if expected["owners"][e["router"]] == expected["operator"])
     r2 = node(ours)

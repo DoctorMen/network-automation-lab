@@ -5,6 +5,9 @@
 # presented_to stays "pending" until someone in a management role has seen the entry; then set the date
 # and a link to the record (a PR review, an issue, meeting notes). netlab can't make that true, only list
 # what is still pending.
+# Every review_by is 2027-01-15 on purpose: the register is reviewed as a whole, so on 2027-01-16
+# `make test`, `make risks` and the nightly CI all go red together, until each entry has been looked at
+# again and given its next date.
 
 - id: RISK-1
   kind: accepted-risk
@@ -226,6 +229,71 @@
     only while the r1-r3 link is down. A second ISP is a cost this lab doesn't have a reason to pay.
   compensating_control: tests/live/test_routing.py::test_bgp_sessions_established
   compensates: every run checks the ISP session is up, and `make drift` names a router that differs from intent
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-13
+  kind: accepted-risk
+  title: fw1's conntrack picks up a TCP flow from its middle
+  detectors: [conntrack-loose]
+  likelihood: 2
+  impact: 2
+  reasoning: >-
+    fw1 runs with the kernel default nf_conntrack_tcp_loose=1, so conntrack starts tracking a TCP flow
+    from any packet, not only a SYN. Once an accept rule forwards one mid-stream packet, the replies pass
+    allow-established as ESTABLISHED (measured: a forged ACK h1 -> 203.0.113.1:179 counted
+    allow-internet 1, then the ISP's RST back counted allow-established 1; docs/controls.yml,
+    fw1:allow-established). allow-web's --syn stops it for port 80, and a forged packet into LAN-A
+    matches no accept rule, so it never starts a flow. It matters together with RISK-14. Setting
+    nf_conntrack_tcp_loose=0 in firewall.sh would close it, at the cost of dropping connections that
+    were open before conntrack forgot them (a flush or a firewall restart).
+  compensating_control: tests/live/test_controls.py::test_unsolicited_inbound_ack_is_dropped
+  compensates: a forged ACK into LAN-A, for a connection no user opened, still hits the default drop
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-14
+  kind: accepted-risk
+  title: fw1's allow-internet accepts every protocol, so it can't require --syn
+  detectors: [accept-any-protocol]
+  likelihood: 2
+  impact: 2
+  reasoning: >-
+    allow-internet matches any packet from LAN-A to 203.0.113.0/24, whatever the protocol, and --syn
+    needs -p tcp. So a forged mid-stream ACK from h1 to the internet range is forwarded, and conntrack
+    then adopts the flow (RISK-13). It needs a host inside LAN-A that is already misbehaving, and it
+    reaches only the range users may reach anyway. Splitting the rule into a TCP rule with syn: true
+    plus a UDP rule would close it, at the cost of dropping the other protocols users can send now. The
+    inventory check already refuses a TCP accept rule without syn: true.
+  compensating_control: tests/live/test_controls.py::test_unsolicited_inbound_ack_is_dropped
+  compensates: the rule only matches packets leaving LAN-A, and a forged packet coming in still hits the default drop
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-15
+  kind: accepted-risk
+  title: h1 and h2 are not collected, so a hand change on a host goes unseen
+  detectors: [host-not-collected]
+  likelihood: 2
+  impact: 1
+  reasoning: >-
+    The hosts have no config of their own: their address and default route are the topology's exec
+    lines, applied again on every deploy, and `make drift` reads back only the routers and fw1
+    (docs/collection-methods.md). A hand change on a host, such as an extra route, isn't flagged. The
+    hosts stand in for users and a server, enforce no policy and are rebuilt by every deploy. The fix is
+    a play that reads `ip addr` and `ip route` on each host and compares them with those lines. When it
+    exists, close this entry by hand: the detector reads the topology, not drift.yml.
+  compensating_control: tests/live/test_dataplane.py::test_lan_a_reaches_server_lan
+  compensates: every run checks what the hosts can reach, so a hand change that breaks a path fails a test
   owner: DoctorMen
   review_by: 2027-01-15
   presented_to: pending

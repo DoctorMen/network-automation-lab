@@ -54,7 +54,7 @@ failure_modes:
 
 - FINDING.md (one page: the verdict, the segment table, the edge capture, the ping we ask the carrier to run from their side, RFC 792, RFC 6673 and RFC 1812 for what backs the method) and METHOD.md;
 - raw/ (every command and its output as printed), pcap/ (ICMP on our hand-off port while the edge pings the far side, with the capture script), support/ (FRR's support bundle from each router we own on the path, with the vendored command list minus `show running-config`);
-- versions.txt (image digests, FRR, kernel, Docker, Containerlab, netlab commit), time.txt (UTC, each device's clock against the host's, the host's sync state);
+- versions.txt (image digests, FRR, kernel, Docker, what deployed the lab (read from Containerlab's labels on the nodes) and the Containerlab installed on this host, netlab commit), time.txt (UTC, each device's clock against the host's, the host's sync state);
 - lab/ (the rendered topology and configs) and, in a lab run, lab/condition.sh to recreate the fault;
 - finding.env and reproduce.sh, and SHA256SUMS over all of it.
 

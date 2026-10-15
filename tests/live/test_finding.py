@@ -9,12 +9,12 @@ import shutil
 import subprocess
 import sys
 
-from netlab import secrets
 from netlab.finding import verify
 from netlab.locate import PROBES, THRESHOLD, loss_pct, ping_cmd
 
 from .conftest import ROOT
 from .test_locate import converged, icmp_loss, icmp_loss_rule
+from .test_secrets import secret
 
 BUNDLE = ROOT / "results" / "finding"  # CI uploads this folder for the reproduce job
 
@@ -58,7 +58,7 @@ def test_carrier_finding_reproduces_from_the_bundle_alone(node, expected, tmp_pa
 
     assert f["segment"] == "r2-isp" and f["owner"] == expected["owners"]["isp"], f["segments"]
     assert verify(BUNDLE) == []
-    values = [secrets.read(s["secret"]) for ends in expected.get("bgp_md5", {}).values() for s in ends]
+    values = [secret(s["secret"]) for ends in expected.get("bgp_md5", {}).values() for s in ends]
     leaked = [str(p.relative_to(sent)) for p in sent.rglob("*") if p.is_file() and any(v.encode() in p.read_bytes() for v in values)]
     assert not leaked, f"a BGP password in clear in the bundle: {leaked}"
     # Our edge port sent every echo request; the replies that are missing went missing past it.

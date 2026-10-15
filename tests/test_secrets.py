@@ -1,13 +1,15 @@
 """Secret guardrails (OROS CON-7, ACC-4), offline: gitleaks blocks a seeded secret at commit and a
 marked file at push, the history scan CI runs still finds a secret committed with --no-verify and
 then deleted, this repo's rules catch an FRR BGP password the default rules miss, and the lab's own
-secrets are created, stored and redacted without ever being printed.
+secrets are created, stored and redacted without ever being printed, and reach a router only on stdin.
 
 The gitleaks tests run the pinned image the hooks and CI use, so they need Docker and pre-commit.
 Without them they skip on a laptop and fail in CI (CI=true), so they can't quietly stop running."""
 import copy
+import hashlib
 import importlib.util
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -45,6 +47,12 @@ def pre_commit(docker):
     exe = Path(sys.executable).with_name("pre-commit")
     needs(exe.exists(), "pre-commit (pip install -r requirements.txt)")
     return exe
+
+
+def tag(value):
+    """What backups and drift output show instead of a password, as the redacting vtysh and the
+    playbooks' password_tags compute it."""
+    return "sha256:" + hashlib.sha256(value.encode()).hexdigest()
 
 
 def git(repo, *args):
@@ -146,7 +154,7 @@ def test_frr_password_rule_catches_what_default_rules_miss(tmp_path, docker):
     assert scan(clear, config=False).returncode == 0, "gitleaks' default rules now catch FRR passwords; the custom rule may be redundant"
     caught = scan(clear, config=True)
     assert caught.returncode != 0 and "frr-bgp-neighbor-password" in caught.stdout and password not in caught.stdout
-    tagged = clear.replace(password, secrets.tag(password))
+    tagged = clear.replace(password, tag(password))
     assert scan(tagged, config=True).returncode == 0, "the redacted backup is flagged, so every drift run would be red"
 
 
@@ -158,11 +166,11 @@ def vtysh_redacted():
 
 
 def test_redacting_vtysh_tags_or_drops_passwords():
-    """The router-side vtysh swaps a password for the same tag netlab computes, or drops the line, and leaves every other line alone."""
+    """The router-side vtysh swaps a password for its sha256 tag, or drops the line, and leaves every other line alone."""
     password = token_hex(16)
     config = f"router bgp 65001\n neighbor 198.51.100.1 remote-as 65100\n neighbor 198.51.100.1 password {password}\nexit\n"
     redact = vtysh_redacted().redact
-    assert redact(config) == config.replace(password, secrets.tag(password))
+    assert redact(config) == config.replace(password, tag(password))
     assert redact(config, "drop") == config.replace(f" neighbor 198.51.100.1 password {password}\n", "")
     assert redact("interface lo\n description password reset desk\n") == "interface lo\n description password reset desk\n"
 
@@ -174,8 +182,8 @@ def test_secret_store_is_private_and_never_overwritten(tmp_path):
     created = secrets.ensure(inv, store)
     assert [p.name for p in created] == secrets.names(inv) == ["bgp-r2-isp"]
     assert stat.S_IMODE(store.stat().st_mode) == 0o700 and stat.S_IMODE(created[0].stat().st_mode) == 0o600
-    value = secrets.read("bgp-r2-isp", store)
-    assert len(value) == 32 and secrets.ensure(inv, store) == [] and secrets.read("bgp-r2-isp", store) == value
+    value = (store / "bgp-r2-isp").read_text().strip()
+    assert len(value) == 32 and secrets.ensure(inv, store) == [] and (store / "bgp-r2-isp").read_text().strip() == value
     out = subprocess.run([sys.executable, "-m", "netlab", "secrets"], cwd=ROOT, capture_output=True, text=True,
                          env={**os.environ, "NETLAB_SECRETS": str(store)}, check=True)
     assert "bgp-r2-isp" in out.stdout and value not in out.stdout + out.stderr
@@ -201,3 +209,65 @@ def test_bgp_auth_names_a_real_session_and_a_secret_file(tmp_path):
         load(path)
     assert "bgp_auth #1: r1 has no BGP session with isp" in exc.value.problems
     assert "bgp_auth #2: secret must be a file name such as bgp-r2-isp, not a password" in exc.value.problems
+
+
+ANSIBLE = ROOT / "ansible"
+# A process's command line and environment are in /proc/<pid>/cmdline and environ, which other
+# processes on the machine can read. These are the parts of a task that end up there.
+EXPOSED = ("cmd", "argv", "_raw_params")
+
+
+def tasks(items):
+    """Every task in a list of plays or tasks, inside blocks too."""
+    for item in items or []:
+        nested = [k for k in ("tasks", "pre_tasks", "post_tasks", "handlers", "block", "rescue", "always") if k in item]
+        if nested:
+            for k in nested:
+                yield from tasks(item[k])
+        else:
+            yield item
+
+
+def exposed(task):
+    """(where, value) for each part of a task that becomes a command line or an environment, and stdin."""
+    found = [("environment", task.get("environment"))]
+    found += [(f"args.{k}", v) for k, v in (task.get("args") or {}).items() if k != "stdin"]
+    stdin = (task.get("args") or {}).get("stdin")
+    for module, params in task.items():
+        if "." not in module and module not in ("command", "shell", "raw", "script"):
+            continue  # a task keyword (name, when, loop...), not the module
+        if isinstance(params, str):
+            found.append(("_raw_params", params))  # free form: the whole string is the command line
+        elif isinstance(params, dict):
+            found += [(k, params[k]) for k in EXPOSED if k in params]
+            stdin = params.get("stdin", stdin)
+    return found, stdin
+
+
+def test_secrets_reach_a_router_only_on_stdin():
+    """No playbook task puts a secret-store lookup, or a variable built from one, in cmd, argv, free-form arguments, args or environment, where /proc shows it; stdin is the one way in."""
+    files = sorted(ANSIBLE.glob("*.yml")) + sorted((ANSIBLE / "tasks").glob("*.yml"))
+    plays = {path: yaml.safe_load(path.read_text()) for path in files}
+    defined = {}
+    for path in sorted((ANSIBLE / "group_vars").glob("*.yml")):
+        defined.update(yaml.safe_load(path.read_text()) or {})
+    for items in plays.values():
+        for task in [*items, *tasks(items)]:  # plays' vars and tasks' vars
+            defined.update(task.get("vars") or {})
+    # secrets_dir is the store; anything whose value reads from it, directly or through another such
+    # variable (password_tags), carries a secret too.
+    names = {"secrets_dir"}
+    while more := {k for k, v in defined.items() if k not in names and re.search(rf"\b({'|'.join(names)})\b", str(v))}:
+        names |= more
+    secret = re.compile(rf"\b({'|'.join(sorted(names))})\b")
+
+    leaks, on_stdin = [], []
+    for path, items in plays.items():
+        for task in tasks(items):
+            found, stdin = exposed(task)
+            leaks += [f"{path.relative_to(ROOT)}: {task.get('name', 'unnamed task')} ({where})"
+                      for where, value in found if value and secret.search(str(value))]
+            if stdin and secret.search(str(stdin)):
+                on_stdin.append(task.get("name"))
+    assert not leaks, f"a secret reaches a command line or an environment: {leaks}"
+    assert on_stdin, "no task reads the secret store any more, so this check sees nothing"

@@ -10,7 +10,7 @@ import yaml
 
 from netlab.inventory import load
 from netlab.render import render_all
-from netlab.risks import DECISIONS, REGISTER, ROOT, check, summary, scan
+from netlab.risks import DECISIONS, REGISTER, ROOT, SELECTIONS, check, summary, scan
 
 ENTRIES = yaml.safe_load(REGISTER.read_text())
 
@@ -62,6 +62,15 @@ def test_every_risk_a_decision_record_accepts_is_in_the_register(build, tmp_path
             "docs/risks.yml))") in problems
     assert any(p.startswith("0009-failover.md: accepts the risk 'single edge router (r2) or single ISP link fails' as "
                             "RISK-12, which docs/risks.yml doesn't hold") for p in problems)
+
+
+def test_a_selection_record_cites_only_risks_in_the_register(build, tmp_path):
+    """A selection record that points at a RISK id the register doesn't hold is reported: frr.md citing RISK-50 for its Alpine risk."""
+    selections = tmp_path / "selections"
+    selections.mkdir()
+    for record in SELECTIONS.glob("*.md"):
+        (selections / record.name).write_text(record.read_text().replace("RISK-5 ", "RISK-50 "))
+    assert check(ENTRIES, build, selections=selections) == ["frr.md: cites RISK-50, which docs/risks.yml doesn't hold"]
 
 
 def test_every_risk_record_is_complete():
