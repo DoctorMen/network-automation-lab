@@ -100,7 +100,7 @@ CI runs every test each night as well as on every push to `main` and every pull 
 
 ## Scored against what operators actually need
 
-[OROS 0.3](docs/oros/README.md) is a standard of 61 pass/fail requirements for network and security operations, built from 3,785 relevant Stack Exchange questions and 103 mailing-list, forum and feature-tracker posts. [The scorecard](docs/oros/scorecard.md) holds this lab to every one of them, and names the test behind each pass: **6 pass, 10 partial, 45 fail.** Most of the fails need things a seven-container lab doesn't have yet (a log collector, alerting, per-person accounts), and the scorecard says what each one is missing.
+[OROS 0.3](docs/oros/README.md) is a standard of 61 pass/fail requirements for network and security operations, built from 3,785 relevant Stack Exchange questions and 103 mailing-list, forum and feature-tracker posts. [The scorecard](docs/oros/scorecard.md) holds this lab to every one of them, and names the test behind each pass: **15 pass, 14 partial, 32 fail.** Most of the fails need things a seven-container lab doesn't have yet (a log collector, alerting, per-person accounts), and the scorecard says what each one is missing.
 
 ## How it works
 
@@ -132,9 +132,9 @@ pip install -r requirements.txt -r requirements-ansible.txt
 pre-commit install   # gitleaks hooks: a secret is refused at commit, a confidential file at push
 bash -c "$(curl -sL https://get.containerlab.dev)"   # installs Containerlab
 
-make test      # offline: inventory, rendering, locate rules, control register and record lints, scorecard (50 tests)
+make test      # offline: inventory, rendering, locate rules, control register and record lints, scorecard (124 tests)
 make deploy    # render configs, make this lab's BGP password, start 7 containers, set the password
-make live      # 26 live tests against the running network, JUnit in results/live.xml
+make live      # 47 live tests against the running network, JUnit in results/live.xml
 make drift     # back up routers and firewall, fail on drift or an incomplete backup
 make verify    # is each change in effect, not just installed: kernels, FRR daemons, h2's QoS
 make backup-init   # once, by hand: create the backup destination, BACKUP_REPO (default /mnt/backup/netlab-restic)
