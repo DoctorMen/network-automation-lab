@@ -1,0 +1,16 @@
+# Put the redacting vtysh (files/vtysh_redacted.py) on the router before anything reads its running
+# config. Backups, diffs and frr-reload.py all go through it, so a BGP password never leaves the
+# router in clear (decision 0016). Scratch files only, so it also runs under --check.
+- name: Make the folder for the redacting vtysh
+  ansible.builtin.file:
+    path: "{{ vtysh_dir }}"
+    state: directory
+    mode: "0755"
+  check_mode: false
+
+- name: Stage the redacting vtysh
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/files/vtysh_redacted.py"
+    dest: "{{ vtysh_dir }}/vtysh"
+    mode: "0755"
+  check_mode: false

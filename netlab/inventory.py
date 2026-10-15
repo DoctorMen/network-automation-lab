@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -212,6 +213,20 @@ def validate(inv: Inventory) -> list[str]:
             # out NEW: with nf_conntrack_tcp_loose=1, conntrack calls a forged ACK NEW.
             if rule.get("proto") == "tcp" and rule["action"] == "accept" and not rule.get("syn") and "NEW" in rule.get("state", ["NEW"]):
                 problems.append(f"{label}: TCP accept needs syn: true, or it forwards forged mid-stream packets")
+
+    # A TCP MD5 entry names the two ends of one BGP session, and a secret by file name (not its value).
+    for i, auth in enumerate(inv.raw.get("bgp_auth", [])):
+        label = f"bgp_auth #{i + 1}"
+        ends = auth.get("routers") or []
+        if len(ends) != 2:
+            problems.append(f"{label}: routers must name the two ends of one BGP session")
+        else:
+            for local, remote in (ends, ends[::-1]):
+                peers = [n["peer"] for n in inv.routers.get(local, {}).get("bgp", {}).get("neighbors", [])]
+                if remote not in peers:
+                    problems.append(f"{label}: {local} has no BGP session with {remote}")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", str(auth.get("secret") or "")):
+            problems.append(f"{label}: secret must be a file name such as bgp-r2-isp, not a password")
 
     # Someone has to act when a device breaks, and tools may log in only where the operator owns it.
     for name in inv.devices:

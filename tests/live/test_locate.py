@@ -25,10 +25,14 @@ def locate(dst):
     return json.loads((BUILD / "finding.json").read_text())
 
 
+def icmp_loss_rule(interface):
+    return ["-i", interface, "-p", "icmp", "-m", "statistic", "--mode", "random", "--probability", "0.2", "-j", "DROP"]
+
+
 @contextmanager
 def icmp_loss(node, device, interface):
     """Drop 20% of ICMP arriving on one interface, to the device and through it, like a lossy link."""
-    rule = ["-i", interface, "-p", "icmp", "-m", "statistic", "--mode", "random", "--probability", "0.2", "-j", "DROP"]
+    rule = icmp_loss_rule(interface)
     try:
         for chain in ("INPUT", "FORWARD"):
             node(device).run("iptables", "-I", chain, *rule)

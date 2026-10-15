@@ -1,0 +1,38 @@
+# gitleaks v8.21.2 config: the default rules, plus two this repo needs (OROS CON-7, ACC-4).
+# Used by the pre-commit and pre-push hooks (.pre-commit-config.yaml), `make gitleaks`
+# and the CI `secrets` job (.github/workflows/secrets.yml). Why each rule exists:
+# docs/decisions/0016-secrets-guardrails.md
+title = "network-automation-lab"
+
+[extend]
+useDefault = true
+
+# FRR prints a BGP session's TCP MD5 password in clear in `show running-config`, so a backup,
+# a log or a pasted diff can carry it. The default rules miss it: there is no `=` or `:` after
+# the keyword for the generic rule to anchor on (checked with v8.21.2).
+[[rules]]
+id = "frr-bgp-neighbor-password"
+description = "FRR BGP neighbor password in clear"
+regex = '''neighbor\s+\S+\s+password\s+(\S+)'''
+secretGroup = 1
+keywords = ["password"]
+# Not passwords: placeholders and patterns in code and docs (<secret>, {{ var }}, $VAR, (regex), \S+),
+# and the sha256 tag the redacting vtysh prints instead of a password.
+[rules.allowlist]
+regexes = ['''^([<{$(\\]|sha256:)''']
+
+# A file that must never leave the company carries this marker. The rule matches it anywhere,
+# so it is spelled out only in this file, which the allowlist below exempts.
+[[rules]]
+id = "netauto-confidential-marker"
+description = "File marked NETAUTO-CONFIDENTIAL"
+regex = '''NETAUTO-CONFIDENTIAL'''
+keywords = ["netauto-confidential"]
+
+[allowlist]
+description = "This file, and the redacted form of a BGP password in backups and drift output"
+paths = ['''(^|/)\.gitleaks\.toml$''']
+# Backups replace each password with its sha256 tag. Without this, the default generic-api-key
+# rule flags the tag (it reads `password sha256:` as an assignment).
+regexTarget = "line"
+regexes = ['''neighbor \S+ password sha256:[0-9a-f]{64}$''']

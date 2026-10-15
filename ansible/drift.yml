@@ -9,12 +9,15 @@
   vars:
     backup_dir: "{{ playbook_dir }}/../backups"
   tasks:
+    - ansible.builtin.include_tasks: tasks/redacting_vtysh.yml
+
     # FRR 8.4.1 prints four lines before the config: "Building configuration...", a blank line,
     # "Current configuration:" and "!". They aren't config, and vtysh rejects a file that starts
     # with them, so a backup that kept them could not be loaded back. `no-header` drops them
     # (it's how frr-reload.py reads the running config too).
+    # Through the redacting vtysh: a BGP password reaches the backup as its sha256 tag.
     - name: Pull running config
-      ansible.builtin.command: vtysh -c "show running-config no-header"
+      ansible.builtin.command: "{{ vtysh_dir }}/vtysh -c \"show running-config no-header\""
       register: running
       changed_when: false
 
@@ -41,6 +44,7 @@
         config: "{{ playbook_dir }}/../build/{{ inventory_hostname }}/frr.conf"
         label: intended
         mismatch: has drifted from intended config
+        with_password_tags: true
 
 # Load each backup just taken back on its router in test mode.
 - ansible.builtin.import_playbook: verify_capture.yml

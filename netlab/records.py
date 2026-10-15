@@ -1,5 +1,6 @@
-"""Lint the lab's written records: decision records (docs/decisions/) and the verdict log
-(docs/verdicts.yml). Like the inventory check, it collects every problem, not just the first."""
+"""Lint the lab's written records: decision records (docs/decisions/), tool selection records
+(docs/selections/) and the verdict log (docs/verdicts.yml). Like the inventory check, it collects
+every problem, not just the first."""
 from __future__ import annotations
 
 import re
@@ -80,6 +81,63 @@ def lint_decision(path: Path) -> list[str]:
     for heading in ("Context", "Decision", "Consequences"):
         if not re.search(rf"^[#*\s]*{heading}\b", body, re.M):
             problems.append(f"{label}: body has no {heading} section")
+    return problems
+
+
+SELECTION_FIELDS = ("kind", "id", "title", "date", "status", "decider", "constraint", "choice", "alternatives",
+                    "no_purchase", "staffing", "vendor_domains", "independent_sources", "uses")
+
+
+def lint_selections(folder: str | Path) -> list[str]:
+    """Tool selection records (docs/selections/, OROS JUS-3): each choice judged against its
+    constraint, with a no-purchase line and at least one source the tool's own maker didn't write."""
+    folder = Path(folder)
+    records = sorted(folder.glob("*.md"))
+    problems = [] if records else [f"{folder}: no selection records"]
+    for path in records:
+        label = path.name
+        parts = path.read_text().split("---\n", 2)
+        meta = yaml.safe_load(parts[1]) if len(parts) == 3 and not parts[0] else None
+        if not isinstance(meta, dict):
+            problems.append(f"{label}: no YAML front matter between --- lines")
+            continue
+        problems += [f"{label}: missing {f}" for f in SELECTION_FIELDS if not meta.get(f)]
+        if meta.get("kind") and meta["kind"] != "selection":
+            problems.append(f"{label}: kind {meta['kind']!r} is not selection")
+        if meta.get("id") and meta["id"] != path.stem:
+            problems.append(f"{label}: id {meta['id']!r} does not match the file name")
+        if meta.get("date") and not isinstance(meta["date"], date):
+            problems.append(f"{label}: date {meta['date']!r} is not YYYY-MM-DD")
+        alternatives = meta.get("alternatives") or []
+        if len(alternatives) < 2:
+            problems.append(f"{label}: needs at least two alternatives")
+        for alt in alternatives:
+            if not (isinstance(alt, dict) and alt.get("name") and alt.get("why_not")):
+                problems.append(f"{label}: alternative {alt!r} needs a name and a why_not")
+
+        # Independent of the seller: an outside page not on the maker's own domains, or a test or data
+        # file of our own (a benchmark we ran). At least one of ours, so no choice rests on reading alone.
+        vendor = [str(d).lower() for d in meta.get("vendor_domains") or []]
+        independent = ours = 0
+        for source in meta.get("independent_sources") or []:
+            ref = str(source).split()[0]
+            if re.match(r"https?://", ref):
+                if any(d in ref.lower() for d in vendor):
+                    problems.append(f"{label}: {ref} is the seller's own site, not an independent source")
+                else:
+                    independent += 1
+            elif names_a_test(ref) or ("::" not in ref and (ROOT / ref).is_file()):
+                independent += 1
+                ours += 1
+            else:
+                problems.append(f"{label}: source {ref} is neither a URL nor a test or file in this repo")
+        if meta.get("independent_sources") and not independent:
+            problems.append(f"{label}: no independent source")
+        elif meta.get("independent_sources") and not ours:
+            problems.append(f"{label}: no measurement of our own (a test or data file in this repo)")
+        for heading in ("Context", "Decision", "Consequences"):
+            if not re.search(rf"^[#*\s]*{heading}\b", parts[2], re.M):
+                problems.append(f"{label}: body has no {heading} section")
     return problems
 
 

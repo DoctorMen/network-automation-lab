@@ -6,23 +6,52 @@
 # compares it with the running config and applies only the lines that differ. Because
 # the file it reloads is FRR's own config file, it doesn't try to `write` afterwards
 # (which a read-only mount would refuse).
+#
+# BGP passwords are the one thing the intended config can't hold (decision 0016): frr-reload.py
+# reads the running config through the redacting vtysh (tasks/redacting_vtysh.yml), and the
+# passwords are set last, from the secret store, on vtysh's stdin.
 - name: Deploy intended FRR configuration
   hosts: routers
   gather_facts: false
   vars:
     intended: /etc/frr/frr.conf
   tasks:
+    - ansible.builtin.include_tasks: tasks/redacting_vtysh.yml
+
+    # The plan is drift.yml's own comparison: running config as the redacting vtysh shows it, against
+    # intent plus each password's sha256 tag. A missing or changed password shows as a tag, never in clear.
     - name: Show what would change (frr-reload dry run)
-      ansible.builtin.command: /usr/lib/frr/frr-reload.py --test {{ intended }}
-      register: plan
-      changed_when: false
-      check_mode: false  # read-only, so it also runs under --check and shows the plan
+      ansible.builtin.include_tasks: tasks/compare_frr.yml
+      vars:
+        config: "{{ playbook_dir }}/../build/{{ inventory_hostname }}/frr.conf"
+        label: intended
+        with_password_tags: true
+        fail_on_difference: false
 
     - name: Print the change plan
       ansible.builtin.debug:
-        msg: "{{ plan.stdout_lines | reject('match', '^=*$') | list }}"
+        msg: "{{ reload_test.stdout_lines | reject('match', '^=*$') | list }}"
 
+    # NETLAB_PASSWORDS=drop hides the password lines from frr-reload.py. Otherwise it sees a password
+    # the intended file doesn't have and deletes it, running `no neighbor ... password <it>` on vtysh's
+    # command line, logging that line to /var/log/frr/frr-reload.log and taking the session down.
     - name: Apply only the difference, without restarting daemons
-      ansible.builtin.command: /usr/lib/frr/frr-reload.py --reload {{ intended }}
-      when: not ansible_check_mode and ('Lines To Delete' in plan.stdout or 'Lines To Add' in plan.stdout)
+      ansible.builtin.command: /usr/lib/frr/frr-reload.py --reload --bindir {{ vtysh_dir }} {{ intended }}
+      environment:
+        NETLAB_PASSWORDS: drop
+      when: not ansible_check_mode and listed | length > 0
       changed_when: true
+
+    # vtysh -f /dev/stdin reads the two lines from its standard input, so the password is never in a
+    # file or on a command line, and no_log keeps it out of Ansible's output. Giving FRR the password it
+    # already has leaves the session up (measured), so this runs every time.
+    - name: Set BGP passwords from the secret store
+      ansible.builtin.command:
+        cmd: vtysh -f /dev/stdin
+        stdin: "router bgp {{ item.asn }}\n neighbor {{ item.neighbor }} password {{ lookup('file', secrets_dir ~ '/' ~ item.secret) }}\n"
+      loop: "{{ bgp_md5 | default([]) }}"
+      loop_control:
+        label: "{{ item.peer }} ({{ item.secret }})"
+      no_log: true
+      when: not ansible_check_mode
+      changed_when: false

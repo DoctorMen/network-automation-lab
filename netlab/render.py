@@ -59,6 +59,19 @@ def bfd_peers(inv: Inventory, router: str) -> dict[str, str]:
     return {str(remote.address.ip): local.interface for local, remote in inv.neighbors(router) if remote.device in ospf}
 
 
+def bgp_md5(inv: Inventory, router: str) -> list[dict]:
+    """The TCP MD5 sessions this router must authenticate: its ASN, the peer's address and the
+    secret's name. Never the password: that stays in the secret store (netlab/secrets.py)."""
+    sessions = []
+    for auth in inv.raw.get("bgp_auth", []):
+        if router in auth["routers"]:
+            peer = next(p for p in auth["routers"] if p != router)
+            bgp = inv.routers[router]["bgp"]
+            address = next(n["address"] for n in bgp["neighbors"] if n["peer"] == peer)
+            sessions.append({"asn": inv.asn(bgp["local_as"]), "peer": peer, "neighbor": address, "secret": auth["secret"]})
+    return sessions
+
+
 def expected_state(inv: Inventory) -> dict:
     """What a healthy lab looks like. The live tests compare against this."""
     bgp_sessions = []
@@ -72,6 +85,7 @@ def expected_state(inv: Inventory) -> dict:
         "passive_interfaces": {r: [local.interface for local, remote in inv.neighbors(r) if remote.device in inv.hosts]
                                for r in inv.routers if inv.ospf_neighbors(r)},
         "bgp_sessions": bgp_sessions,
+        "bgp_md5": {r: bgp_md5(inv, r) for r in inv.routers if bgp_md5(inv, r)},
         "loopbacks": {r: str(ipaddress.IPv4Interface(v["loopback"]).ip) for r, v in inv.routers.items()},
         "hosts": {h: v["address"].split("/")[0] for h, v in inv.hosts.items()},
         "operator": inv.operator,
@@ -83,7 +97,8 @@ def expected_state(inv: Inventory) -> dict:
 def ansible_inventory(inv: Inventory) -> str:
     """Ansible reaches each node through the Docker connection plugin, no SSH needed."""
     hosts = {
-        "routers": {r: {"ansible_host": f"clab-{inv.lab_name}-{r}"} for r in inv.routers},
+        "routers": {r: {"ansible_host": f"clab-{inv.lab_name}-{r}", **({"bgp_md5": bgp_md5(inv, r)} if bgp_md5(inv, r) else {})}
+                    for r in inv.routers},
         "firewalls": {f: {"ansible_host": f"clab-{inv.lab_name}-{f}"} for f in inv.firewalls},
     }
     doc = {

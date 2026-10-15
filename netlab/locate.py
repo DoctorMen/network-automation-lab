@@ -28,11 +28,14 @@ def exec_on(inv: Inventory, lab: str, device: str, *cmd: str) -> list[str]:
     return ["docker", "exec", f"clab-{lab}-{device}", *cmd]
 
 
-def discover(inv: Inventory, lab: str, src: str, dst: str) -> list[str]:
-    """Hop addresses from src to dst. ICMP traceroute, because the firewall drops UDP probes."""
+def discover(inv: Inventory, lab: str, src: str, dst: str, raw: list | None = None) -> list[str]:
+    """Hop addresses from src to dst. ICMP traceroute, because the firewall drops UDP probes.
+    raw, if given, collects every command run and its output as printed (a finding bundle keeps them)."""
     for _ in range(5):
-        out = subprocess.run(exec_on(inv, lab, src, "traceroute", "-I", "-n", "-q", "1", "-w", "1", dst),
-                             capture_output=True, text=True, timeout=60).stdout
+        cmd = ["traceroute", "-I", "-n", "-q", "1", "-w", "1", dst]
+        out = subprocess.run(exec_on(inv, lab, src, *cmd), capture_output=True, text=True, timeout=60).stdout
+        if raw is not None:
+            raw.append({"on": src, "cmd": " ".join(cmd), "output": out})
         answers = [line.split()[1] for line in out.splitlines()[1:] if len(line.split()) > 1]
         # A "*" is a probe nobody answered. Before the destination it may be one of our routers, and
         # skipping it would merge two segments and hand ours to the next owner. The loss we are
@@ -56,12 +59,19 @@ def loss_pct(ping_output: str) -> float:
     return round(100 * (sent - got) / sent, 1)
 
 
-def probe(inv: Inventory, lab: str, targets: list[tuple[str, str]]) -> list[float]:
-    """Loss % for each (from device, to address), all pinged at the same time."""
-    procs = [subprocess.Popen(exec_on(inv, lab, device, "ping", "-q", "-c", str(PROBES), "-i", str(INTERVAL),
-                                    "-W", "1", address), stdout=subprocess.PIPE, text=True)
+def ping_cmd(address: str) -> list[str]:
+    return ["ping", "-q", "-c", str(PROBES), "-i", str(INTERVAL), "-W", "1", address]
+
+
+def probe(inv: Inventory, lab: str, targets: list[tuple[str, str]], raw: list | None = None) -> list[float]:
+    """Loss % for each (from device, to address), all pinged at the same time. raw: as for discover."""
+    procs = [subprocess.Popen(exec_on(inv, lab, device, *ping_cmd(address)), stdout=subprocess.PIPE, text=True)
              for device, address in targets]
-    return [loss_pct(p.communicate(timeout=60)[0]) for p in procs]
+    outputs = [p.communicate(timeout=60)[0] for p in procs]
+    if raw is not None:
+        raw.extend({"on": device, "cmd": " ".join(ping_cmd(address)), "output": out}
+                   for (device, address), out in zip(targets, outputs))
+    return [loss_pct(out) for out in outputs]
 
 
 def loss_starts(losses: list[float]) -> int | None:
@@ -81,7 +91,8 @@ def locate(inv: Inventory, build: str | Path, src: str, dst: str) -> dict:
     build = Path(build)
     lab = yaml.safe_load((build / "topology.clab.yml").read_text())["name"]
     started = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    hops = discover(inv, lab, src, dst)
+    raw: list[dict] = []
+    hops = discover(inv, lab, src, dst, raw)
     path = [src] + [inv.device_at(h) or h for h in hops]
     ours = [inv.owner(d) == inv.operator for d in path]
 
@@ -91,7 +102,7 @@ def locate(inv: Inventory, build: str | Path, src: str, dst: str) -> dict:
     edge = path[leaves - 1] if leaves else None
     beyond = hops[leaves - 1:] if edge and edge != src else []
 
-    losses = probe(inv, lab, [(src, h) for h in hops] + [(edge, h) for h in beyond])
+    losses = probe(inv, lab, [(src, h) for h in hops] + [(edge, h) for h in beyond], raw)
     from_src, from_edge = losses[:len(hops)], losses[len(hops):]
     start = loss_starts(from_src)
 
@@ -112,6 +123,7 @@ def locate(inv: Inventory, build: str | Path, src: str, dst: str) -> dict:
     culprit = segments[start] if start is not None else None
     finding = {
         "src": src, "dst": dst, "operator": inv.operator, "started_utc": started,
+        "path": path,  # devices from src on, one per hop; an address where the inventory knows no device
         "method": {
             "discover": f"traceroute -I -n -q 1 -w 1 {dst} (from {src}; again, up to 5 times, while a hop before {dst} is *)",
             "probe": f"ping -q -c {PROBES} -i {INTERVAL} -W 1 <hop>, every hop at once",
@@ -121,6 +133,7 @@ def locate(inv: Inventory, build: str | Path, src: str, dst: str) -> dict:
         "edge": {"device": edge, "loss_pct": dict(zip(beyond, from_edge))} if beyond else None,
         "segment": culprit["segment"] if culprit else None,
         "owner": culprit["owner"] if culprit else None,
+        "raw": raw,  # every command's output, as printed
     }
     (build / "finding.json").write_text(json.dumps(finding, indent=2) + "\n")
     return finding

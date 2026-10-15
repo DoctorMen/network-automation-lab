@@ -74,6 +74,12 @@ hosts:
   h1: { owner: campus NOC, interface: eth1, address: 10.10.10.10/24, gateway: 10.10.10.1, segment: LAN-A }
   h2: { owner: campus NOC, interface: eth1, address: 10.20.20.10/24, gateway: 10.20.20.1, segment: LAN-B, services: [80, 22] }
 
+# TCP MD5 on BGP sessions (RFC 2385). `secret` names a file in the secret store, never the password:
+# `make secrets` creates a random one, nothing renders it into build/, and `make apply` sets it on
+# both routers through vtysh's stdin (decision 0016).
+bgp_auth:
+  - { routers: [r2, isp], secret: bgp-r2-isp }
+
 # Point-to-point and LAN links. Each endpoint is device:interface@address.
 links:
   - [r1:eth1@10.0.12.0/31, r2:eth1@10.0.12.1/31]
