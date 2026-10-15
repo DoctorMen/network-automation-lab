@@ -88,7 +88,7 @@ inventory/network.yml ──► netlab validate ──► netlab render ──�
 
 ## Run it yourself
 
-You need Linux (or WSL2 on Windows) with Docker. The lab is small: measured at 88.5 MiB for all 7 nodes in the `sandbox` environment, a cloud VM where a stand-in replaces Containerlab ([sizing and raw data](docs/sizing/README.md)). No figure from a real Containerlab host is committed yet; every CI run that gets through the drift check measures one and uploads it as the `sizing-data` artifact.
+You need Linux (or WSL2 on Windows) with Docker. The lab is small: measured at 90.5 MiB for all 7 nodes in the `github-runner` environment, a GitHub-hosted runner with real Containerlab ([sizing and raw data](docs/sizing/README.md)).
 
 ```bash
 git clone https://github.com/DoctorMen/network-automation-lab && cd network-automation-lab

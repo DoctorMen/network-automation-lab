@@ -310,8 +310,8 @@ controls:
       record still names the old version, so a bug report or a vendor search starts from the wrong one.
     fails_when: >-
       It checks the image, FRR, Alpine and busybox, not every package in the image or the host
-      kernel, which the containers share. The digest and Config.Image checks were verified in the
-      stand-in deploy here, not yet on a GitHub runner.
+      kernel, which the containers share. The digest is checked against what Docker reports for the
+      pulled image, so it trusts the local Docker daemon.
 
   - id: verdict-log
     claim: "Every odd behaviour in the log has one verdict (my config, normal behaviour, platform bug or lab artifact), the version it was seen on, and a fix or workaround. None may stay unclassified past 5 working days"
@@ -347,8 +347,8 @@ controls:
     period: P31D
     threat: A resource claim copied from a rule of thumb, so someone sizes a machine on a number nobody measured.
     fails_when: >-
-      The committed figure comes from the sandbox's stand-in deploy, not from Containerlab on a real
-      host; each CI run measures one but none is committed yet. It covers RAM only, at idle.
+      It covers RAM only, at idle, on two machines (a GitHub runner and the sandbox). A newer CI
+      measurement is only uploaded as an artifact; someone has to commit it for the figure to move.
 
   - id: control-register
     claim: "Every claim in this table, and every fw1 rule, is in a control register with what it defends against, how it fails, the test that proves it and how often that test must pass"
