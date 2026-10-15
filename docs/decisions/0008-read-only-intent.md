@@ -25,7 +25,7 @@ Each router's `/etc/frr/frr.conf` is its rendered file from `build/`. Reproduced
 
 ## Decision
 
-Bind `frr.conf` read-only. `ansible/deploy.yml` reloads from the mounted file and no longer runs `write memory`. This came in with PR #1.
+Bind `frr.conf` read-only. `ansible/deploy.yml` reloads from the mounted file and no longer runs `write memory`. This came in with PR #1. `daemons` and `vtysh.conf` are bound read-only too, so an edit on the router can't reach `build/` either.
 
 ## Consequences
 

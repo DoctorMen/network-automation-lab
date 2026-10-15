@@ -85,8 +85,29 @@ def wait_for(predicate, timeout=90, interval=3):
     deadline = time.time() + timeout
     last = None
     while time.time() < deadline:
-        last = predicate()
+        try:
+            last = predicate()
+        except (KeyError, IndexError):
+            # A route or table that is still being built shows up as a missing key: not yet.
+            last = None
         if last:
             return last
         time.sleep(interval)
     return last
+
+
+@pytest.fixture(scope="session", autouse=True)
+def converged(node, expected):
+    """Start on a settled lab: right after a deploy FRR is still loading its config, and the
+    first test file (alphabetically) shouldn't have to know that."""
+    def settled():
+        for router, peers in expected["ospf_neighbors"].items():
+            nbrs = node(router).vtysh_json("show ip ospf neighbor").get("neighbors", {})
+            if sum(any(n.get("nbrState", "").startswith("Full") for n in v) for v in nbrs.values()) < len(peers):
+                return False
+        for s in expected["bgp_sessions"]:
+            peers = node(s["router"]).vtysh_json("show bgp summary")["ipv4Unicast"]["peers"]
+            if peers.get(s["address"], {}).get("state") != "Established":
+                return False
+        return True
+    wait_for(settled, timeout=120)  # if it never settles, the tests themselves say what is wrong

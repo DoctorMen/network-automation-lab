@@ -17,7 +17,8 @@ permissions:
 jobs:
   offline:
     name: Validate inventory and unit tests
-    runs-on: ubuntu-latest
+    # Pinned, so the nightly run doesn't move to a new kernel or Docker without a commit.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -31,7 +32,8 @@ jobs:
   lab:
     name: Deploy the lab and test it live
     needs: offline
-    runs-on: ubuntu-latest
+    # Pinned, so the nightly run doesn't move to a new kernel or Docker without a commit.
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       CLAB_VERSION: "0.68.0"
@@ -47,15 +49,20 @@ jobs:
       - name: Pull router image
         run: docker pull frrouting/frr:v8.4.1
       - name: Deploy
+        id: deploy
         run: make deploy
       - name: Live tests (routing, reachability, firewall, failover, collection, locate, platform)
         run: make live  # also writes results/live.xml (JUnit, timestamped)
       - name: Config drift check (Ansible)
+        # Runs even when a live test failed, so every run still backs up the configs.
+        if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: make drift
       - name: Measure RAM (raw data for docs/sizing)
         continue-on-error: true  # a sizing reading is evidence, not a network test
         run: |
-          make measure LAB_ENV=github-runner NOTE="GitHub ubuntu-latest, containerlab $CLAB_VERSION, idle right after make live and make drift"
+          # Drop the committed runner file first, so the artifact and the log only ever hold this run's reading.
+          rm -f docs/sizing/data/*-github-runner.json
+          make measure LAB_ENV=github-runner NOTE="GitHub ubuntu-24.04, containerlab $CLAB_VERSION, idle right after make live and make drift"
           cat docs/sizing/data/*-github-runner.json
       - name: Show routing tables on failure
         if: failure()

@@ -15,11 +15,12 @@ topology:
       sysctls:
         net.ipv4.ip_forward: 1
       binds:
-        # Read-only: the rendered file is the intent. A writable bind would let a hand change
-        # saved with `write memory` overwrite build/ and slip past the drift check.
+        # Read-only: the rendered files are the intent. A writable bind would let a hand change
+        # saved with `write memory` (or an edit to daemons) overwrite build/ and slip past the
+        # drift check. vtysh.conf is one file shared by every router.
         - {{ name }}/frr.conf:/etc/frr/frr.conf:ro
-        - {{ name }}/daemons:/etc/frr/daemons
-        - vtysh.conf:/etc/frr/vtysh.conf
+        - {{ name }}/daemons:/etc/frr/daemons:ro
+        - vtysh.conf:/etc/frr/vtysh.conf:ro
 {% endfor %}
 {% for name in inv.firewalls %}
     {{ name }}:

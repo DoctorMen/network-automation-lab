@@ -58,6 +58,14 @@ collected. It covers OROS REC-2.
   Counters aren't compared. `backups/fw1.rules` itself isn't loaded back and compared with the live
   rules, the way the router backups are.
 
+## Router kernel state: not collected (a stated gap)
+
+The router checks compare FRR's config, not the Linux kernel underneath it. An iptables rule on a
+router (say, a DROP left behind by an interrupted failover test), an interface set down by hand, or a
+kernel route added outside FRR is not flagged. The live tests notice the effect on traffic, not the
+change itself. `/etc/frr/daemons`, which says which routing daemons start, is mounted read-only like
+`frr.conf`, so it can't drift on the router, but nothing checks that every daemon it lists is running.
+
 ## Hosts: not collected (a stated gap)
 
 h1 and h2 have no config of their own. Their whole state is the topology's `exec` lines (address,
