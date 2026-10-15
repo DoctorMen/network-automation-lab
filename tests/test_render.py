@@ -70,6 +70,7 @@ def test_render_all_writes_a_consistent_lab(tmp_path):
     expected = json.loads((tmp_path / "expected_state.json").read_text())
     assert expected["ospf_neighbors"]["r2"] == ["r1", "r3"]
     assert expected["bfd_peers"]["r1"] == {"10.0.12.1": "eth1", "10.0.13.1": "eth2"}
+    assert expected["passive_interfaces"] == {"r1": [], "r2": [], "r3": ["eth3"]}
     assert expected["platform"] == inv.platform
     assert expected["bgp_sessions"][0]["peer"] == "isp"
 

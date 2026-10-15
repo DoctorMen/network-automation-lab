@@ -62,6 +62,29 @@ controls:
       `default-information originate always` keeps advertising the default while the ISP session
       is down, so the core keeps sending internet traffic to r2, which has nowhere to send it.
 
+  - id: passive-server-lan
+    claim: "The server LAN is advertised into OSPF, but the router interface facing it is passive, so no OSPF hello reaches a host"
+    test: tests/live/test_routing.py::test_host_lans_are_passive
+    period: P31D
+    threat: >-
+      A host on the server LAN (a compromised server, a test VM) forming an OSPF adjacency with r3
+      and injecting routes into the campus.
+    fails_when: >-
+      OSPF has no authentication on any link, so anything that gets onto a core /31 can still form
+      an adjacency. It checks only the interfaces the inventory puts on a host LAN.
+
+  - id: vty-localhost
+    claim: "No routing daemon's management port (vty) answers on a lab link. Every TCP listener on every router is bound to 127.0.0.1, except BGP itself"
+    test: tests/live/test_management_plane.py::test_router_daemons_listen_on_localhost_only
+    period: P31D
+    threat: >-
+      Someone on a lab link, or on the ISP side, reaching a daemon's vty and changing routing.
+      A daemon started without `-A 127.0.0.1` listens on every address (bfdd did, at first).
+    fails_when: >-
+      BGP listens on every address, and nothing filters the WAN edge, so r2's port 179 answers from
+      the ISP side. UDP listeners (BFD) are not checked. The vtys have no password: anyone with
+      `docker exec` on the host is root on every node, and that is the real management path.
+
   - id: users-reach-web-and-internet
     claim: "Users can reach the web server and the internet"
     test:

@@ -68,6 +68,9 @@ def expected_state(inv: Inventory) -> dict:
     return {
         "ospf_neighbors": {r: inv.ospf_neighbors(r) for r in inv.routers if inv.ospf_neighbors(r)},
         "bfd_peers": {r: bfd_peers(inv, r) for r in inv.routers if inv.ospf_neighbors(r)},
+        # Interfaces toward a host LAN, rendered `ip ospf passive` (frr.conf.j2).
+        "passive_interfaces": {r: [local.interface for local, remote in inv.neighbors(r) if remote.device in inv.hosts]
+                               for r in inv.routers if inv.ospf_neighbors(r)},
         "bgp_sessions": bgp_sessions,
         "loopbacks": {r: str(ipaddress.IPv4Interface(v["loopback"]).ip) for r, v in inv.routers.items()},
         "hosts": {h: v["address"].split("/")[0] for h, v in inv.hosts.items()},

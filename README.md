@@ -37,6 +37,8 @@ flowchart LR
 | The eBGP session to the ISP is Established | [`test_bgp_sessions_established`](tests/live/test_routing.py) |
 | The ISP only learns the `10.0.0.0/8` aggregate, with no more-specific campus routes leaking out | [`test_isp_sees_only_the_aggregate`](tests/live/test_routing.py) |
 | The edge router hands a default route to the core through OSPF | [`test_default_route_reaches_core_via_ospf`](tests/live/test_routing.py) |
+| The server LAN is advertised into OSPF, but the router interface facing it is passive, so no OSPF hello reaches a host | [`test_host_lans_are_passive`](tests/live/test_routing.py), for every router interface the inventory puts on a host LAN |
+| No routing daemon's management port (vty) answers on a lab link. Every TCP listener on every router is bound to 127.0.0.1, except BGP itself | [`test_router_daemons_listen_on_localhost_only`](tests/live/test_management_plane.py) |
 | Users can reach the web server and the internet | [`test_dataplane.py`](tests/live/test_dataplane.py) |
 | The firewall blocks SSH from users to servers. The test also proves SSH is actually listening, so the block came from policy, not a dead service | [`test_firewall_blocks_ssh_to_servers`](tests/live/test_dataplane.py) |
 | The firewall is stateful: a forged TCP ACK from the server LAN, for a connection no user opened, is dropped instead of being let in as return traffic | [`test_unsolicited_inbound_ack_is_dropped`](tests/live/test_controls.py) forges the packet with a raw socket and reads fw1's exact counters before and after: default drop +1, every allow rule +0 |
@@ -92,7 +94,7 @@ bash -c "$(curl -sL https://get.containerlab.dev)"   # installs Containerlab
 
 make test      # offline: inventory, rendering, locate rules, control register and record lints (47 tests)
 make deploy    # render configs and start 7 containers
-make live      # 24 live tests against the running network, JUnit in results/live.xml
+make live      # 26 live tests against the running network, JUnit in results/live.xml
 make drift     # back up routers and firewall, fail on drift or an incomplete backup
 make measure LAB_ENV=laptop   # RAM per node, saved to docs/sizing/data/
 make destroy

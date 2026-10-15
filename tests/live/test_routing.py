@@ -35,6 +35,15 @@ def test_every_loopback_is_in_every_ospf_routers_table(node, expected):
                 assert wait_for(lambda: f"{lo}/32" in node(router).vtysh_json("show ip route")), f"{router} has no route to {lo}"
 
 
+def test_host_lans_are_passive(node, expected):
+    """Every router interface toward a host LAN is OSPF passive: advertised, but no hello goes out to hosts."""
+    for router, interfaces in expected["passive_interfaces"].items():
+        for ifname in interfaces:
+            info = node(router).vtysh_json(f"show ip ospf interface {ifname}")["interfaces"][ifname]
+            assert info.get("timerPassiveIface") is True, f"{router} {ifname} sends OSPF hellos toward hosts"
+    assert any(expected["passive_interfaces"].values()), "the inventory implies no passive interface"
+
+
 def test_isp_sees_only_the_aggregate(node):
     routes = wait_for(lambda: node("isp").vtysh_json("show ip route bgp"))
     assert "10.0.0.0/8" in routes, "campus aggregate not advertised to the ISP"
