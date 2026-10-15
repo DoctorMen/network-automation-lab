@@ -32,10 +32,10 @@ failure_modes:
     mitigation: r2's INPUT and FORWARD on eth3 accept only replies, ping to r2 itself, BGP from the peer's address to ours, and the hosts' published ports; everything else there is dropped and counted
     test: tests/live/test_edge.py::test_wan_scan_finds_only_published_ports
   - mode: a forged source address gets past an edge we control
-    mitigation: fw1 drops non-LAN-A sources on eth1 in the raw table, r3 runs strict rp_filter on its LAN-B interface, r2 drops RFC 1918 sources from the ISP in the raw table
+    mitigation: fw1 drops non-LAN-A sources on eth1 in the raw table (the test below), r3 runs strict rp_filter on its LAN-B interface (tests/live/test_edge.py::test_server_lan_cannot_forge_its_source), r2 drops RFC 1918 sources from the ISP in the raw table (tests/live/test_edge.py::test_internet_cannot_forge_a_private_source)
     test: tests/live/test_edge.py::test_lan_a_cannot_forge_its_source
-  - mode: the internet edge filter is changed or flushed by hand
-    mitigation: "`make drift` replays r2's edge.sh in an empty network namespace and diffs filter and raw tables with the live ones"
+  - mode: the internet edge filter or an anti-spoof rule is changed or flushed by hand
+    mitigation: "`make drift` replays r2's edge.sh and fw1's firewall.sh in an empty network namespace and diffs filter and raw tables with the live ones"
     test: tests/live/test_edge.py::test_edge_filter_hand_change_is_flagged
   - mode: the blackhole lever doesn't work when it's needed
     mitigation: The whole path (trigger on r2, community, ISP next-hop rewrite, kernel blackhole, lift) runs in every CI run
@@ -43,6 +43,9 @@ failure_modes:
   - mode: a blackhole left on after the attack
     mitigation: The trigger is never in the intent, so `make drift` fails and names it while it is on (checked by hand on 2026-10-15)
     test: none (accepted risk, no test leaves a trigger on; the drift check's own tests prove it flags unsaved lines)
+  - mode: something on r2 answers the ISP over IPv6
+    mitigation: Accepted risk. Nothing filters IPv6 and the scan is IPv4 only. Under real containerlab the links may get IPv6 link-local addresses, so bgpd may also listen on [::]:179; only the directly attached ISP can reach a link-local address, and BGP from it is allowed anyway
+    test: none (accepted risk, this sandbox kernel has no IPv6 to test with)
   - mode: a host on LAN-A forges another LAN-A address
     mitigation: Accepted risk. Subnet-level checks can't see it; that needs per-port binding on a switch (OROS CON-1), and the lab has no switch
     test: none (accepted risk, no switch to bind ports on)
@@ -103,3 +106,10 @@ needs an attacked host the internet can reach.
 - Outbound traffic from LAN-B is not restricted anywhere (PCI DSS 1.3.2, a gap 0013 records).
 - r2's reverse-path filter is left off on purpose; the RFC 1918 list does that job and keeps working
   with a second ISP.
+- IPv6 is not filtered (no ip6tables rule) and not scanned. This sandbox's kernel has no IPv6 at all
+  (no /proc/sys/net/ipv6), so nothing here could show it open or prove a fix closed it. Under real
+  containerlab the veths may get IPv6 link-local addresses, and bgpd may then also listen on [::]:179,
+  reachable from the ISP's link-local address on eth3. Only the directly attached ISP can reach a
+  link-local address, BGP from it is allowed over IPv4 anyway, and no IPv6 route exists to forward
+  anything into the campus (all reasoned, not measured). Disabling IPv6 on eth3 (one sysctl in
+  edge.sh) would close it, but here it could be neither run nor tested, so it is recorded instead.

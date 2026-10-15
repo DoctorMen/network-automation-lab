@@ -3,21 +3,32 @@ scope register says, probed from every one of them. The tuples come from the reg
 from .conftest import wait_for
 
 
+def answers(node, src, t):
+    """Does t's target answer src: its TCP service, or a ping?"""
+    if t["proto"] == "icmp":
+        return node(src).ping(t["address"], count=1)
+    return node(src).tcp_open(t["address"], t["port"])
+
+
 def reachable(node, t):
-    """Does t's source reach its service? An open one gets a few tries, as routing may still be settling."""
+    """Does t's source reach it? An open one gets a few tries, as routing may still be settling."""
     if t["expect"] == "open":
-        return bool(wait_for(lambda: node(t["src"]).tcp_open(t["address"], t["port"]), timeout=15))
-    return node(t["src"]).tcp_open(t["address"], t["port"])
+        return bool(wait_for(lambda: answers(node, t["src"], t), timeout=15))
+    return answers(node, t["src"], t)
+
+
+def what(t):
+    return f"{t['dst']}:{t['port']}" if t["proto"] == "tcp" else f"ping {t['dst']}"
 
 
 def test_out_of_scope_cannot_reach_in_scope(node, expected):
-    """Every out-of-scope device reaches each CDE service only if it is published; every closed one answers from r3, so the block is policy."""
+    """Every out-of-scope device reaches the segment only on published ports and the register's exceptions; every closed probe answers from inside, so the block is policy."""
     tuples = expected["segmentation"]
     assert {t["src"] for t in tuples} and any(t["expect"] == "closed" for t in tuples), "the register implies nothing to probe"
-    wrong = [f"{t['src']} -> {t['dst']}:{t['port']} {'closed' if t['expect'] == 'open' else 'open'}, expected {t['expect']}"
+    wrong = [f"{t['src']} -> {what(t)} {'closed' if t['expect'] == 'open' else 'open'}, expected {t['expect']}"
              for t in tuples if reachable(node, t) != (t["expect"] == "open")]
     assert not wrong, f"segmentation broken: {wrong}"
-    # Negative proof: each service that was closed to them answers from the segment's own gateway,
+    # Negative proof: each probe that was closed to them answers from another device on the segment,
     # so the closure is a filter (fw1 for h1, r2 for isp), not a dead listener.
-    dead = [f"{t['dst']}:{t['port']}" for t in tuples if t["expect"] == "closed" and not node("r3").tcp_open(t["address"], t["port"])]
-    assert not dead, f"not listening at all, so the test proves nothing about them: {dead}"
+    dead = [what(t) for t in tuples if t["expect"] == "closed" and not answers(node, t["inside"], t)]
+    assert not dead, f"not answering at all, so the test proves nothing about them: {dead}"

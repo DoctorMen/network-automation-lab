@@ -24,20 +24,26 @@ CONTRADICTIONS = [
     (lambda raw: (raw["scope"]["systems"].pop("fw1"), raw["scope"]["out_of_scope"].append("fw1")),
      "scope: fw1 filters traffic into the segment, so it must be in systems"),
     (lambda raw: raw["scope"].update(acceptance=""), "scope: no acceptance"),
+    # A flow into the segment beyond the published ports needs its reason written down.
+    (lambda raw: raw["scope"]["exceptions"][0].pop("why"), "scope: exception h1 icmp: no why"),
 ]
 
 
 def test_register_the_topology_contradicts_is_refused(tmp_path):
-    """An unregistered server, a missing clause, a CDE router or a filter called out of scope, or no acceptance: each is refused."""
+    """An unregistered server, a missing clause, a CDE router or a filter called out of scope, an exception with no reason, or no acceptance: each is refused."""
     for mutate, problem in CONTRADICTIONS:
         assert problem in problems(tmp_path, mutate)
 
 
 def test_segmentation_probes_every_out_of_scope_device():
-    """Each out-of-scope device gets a tuple for every CDE service: open only where published."""
+    """Each out-of-scope device probes every service and pings every device on the segment: open only where published or excepted."""
     tuples = expected_state(inv)["segmentation"]
-    assert {(t["src"], t["port"], t["expect"]) for t in tuples} == {
-        ("h1", 80, "open"), ("h1", 22, "closed"), ("isp", 80, "open"), ("isp", 22, "closed")}
+    assert {(t["src"], t["dst"], t["proto"], t.get("port"), t["expect"]) for t in tuples} == {
+        ("h1", "h2", "tcp", 80, "open"), ("h1", "h2", "tcp", 22, "closed"),
+        ("h1", "h2", "icmp", None, "open"), ("h1", "r3", "icmp", None, "open"),
+        ("isp", "h2", "tcp", 80, "open"), ("isp", "h2", "tcp", 22, "closed"),
+        ("isp", "h2", "icmp", None, "closed"), ("isp", "r3", "icmp", None, "closed")}
+    assert {t["dst"]: t["inside"] for t in tuples} == {"h2": "r3", "r3": "h2"}
 
 
 def test_published_port_needs_a_listener(tmp_path):

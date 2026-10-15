@@ -8,7 +8,7 @@ from pathlib import Path
 import yaml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-from .inventory import Inventory, bgp_peer_address
+from .inventory import Inventory, bgp_peer_address, segment_members
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -124,15 +124,24 @@ def owned_addresses(inv: Inventory) -> dict[str, list[str]]:
 
 
 def segmentation(inv: Inventory) -> list[dict]:
-    """The reachability the scope register promises (ATT-1): from every out-of-scope device, every
-    service of every CDE host is closed unless that host publishes it."""
+    """The reachability the scope register promises (ATT-1): from every out-of-scope device, each
+    device on the segment answers a service only if it is published, and a ping only if the register
+    lists that as an exception. `inside` is another device on the segment, which a closed one must answer."""
     scope = inv.raw.get("scope")
     if not scope:
         return []
-    cde = [h for h in inv.hosts if (scope["systems"].get(h) or {}).get("category") == "cde"]
-    return [{"src": src, "dst": h, "address": inv.hosts[h]["address"].split("/")[0], "port": port,
-             "expect": "open" if port in inv.hosts[h].get("published", []) else "closed"}
-            for src in scope.get("out_of_scope", []) for h in cde for port in inv.hosts[h].get("services", [])]
+    members = segment_members(inv, scope["segment"])
+    excepted = {(e["src"], e["proto"]) for e in scope.get("exceptions") or []}
+    tuples = []
+    for src in scope.get("out_of_scope", []):
+        for dst, address in members.items():
+            host, inside = inv.hosts.get(dst, {}), next(d for d in members if d != dst)
+            tuples += [{"src": src, "dst": dst, "address": address, "proto": "tcp", "port": port, "inside": inside,
+                        "expect": "open" if port in host.get("published", []) else "closed"}
+                       for port in host.get("services", [])]
+            tuples.append({"src": src, "dst": dst, "address": address, "proto": "icmp", "inside": inside,
+                           "expect": "open" if (src, "icmp") in excepted else "closed"})
+    return tuples
 
 
 def bfd_peers(inv: Inventory, router: str) -> dict[str, str]:

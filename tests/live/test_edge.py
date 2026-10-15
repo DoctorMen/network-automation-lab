@@ -2,7 +2,9 @@
 
 Counters are read before and after each probe, because other tests (and other runs) move them too.
 """
+import ipaddress
 import json
+import shlex
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -107,10 +109,11 @@ def test_lan_a_cannot_forge_its_source(node, expected):
 def test_internet_cannot_forge_a_private_source(node, expected):
     """r2 drops what arrives from the ISP with a private source, even to the published port; the real source still connects."""
     r2, h2, isp = node("r2"), node("h2"), node("isp")
-    server = expected["hosts"]["h2"]
-    port = expected["wan_filter"]["r2"]["published"][0]["port"]
+    server, wan = expected["hosts"]["h2"], expected["wan_filter"]["r2"]
+    port = wan["published"][0]["port"]
     assert wait_for(lambda: isp.tcp_open(server, port)), "the published port doesn't answer the ISP at all"
-    for forged, bogon in (("10.20.20.99", "10.0.0.0/8"), ("192.168.1.10", "192.168.0.0/16")):
+    for bogon in wan["bogons"]:
+        forged = str(ipaddress.ip_network(bogon).network_address + 99)
         dropped = counted_since_now(r2, "raw", "PREROUTING", f"bogon {bogon}")
         with arrivals(h2, forged) as at_h2:
             forge(isp, forged, server, "tcp", port)  # the published-port rule would forward this
@@ -138,27 +141,47 @@ def test_server_lan_cannot_forge_its_source(node, expected):
     assert wait_for(lambda: node("h2").ping(internet, count=1), timeout=15), "h2's real-source traffic should still pass"
 
 
-def rules_check(router):
-    """Only the iptables play of `make drift` for one router; its FRR checks are test_collection.py's job."""
-    return playbook("drift.yml", "--limit", router, "--start-at-task", "Pull the live ruleset")
+def rules_check(devices):
+    """Only the iptables play of `make drift` for these devices; the routers' FRR checks are test_collection.py's job."""
+    return playbook("drift.yml", "--limit", devices, "--start-at-task", "Pull the live ruleset")
 
 
-def test_edge_filter_hand_change_is_flagged(node):
-    """A hole opened by hand in r2's internet filter, and a deleted anti-spoof rule, both fail the drift check, which names them."""
-    clean = rules_check("r2")
+def iptables_rules(node):
+    return node.run("sh", "-c", "iptables -S; iptables -t raw -S").stdout
+
+
+def delete_by_hand(node, table, chain, comment):
+    """Delete the rule with this comment, as someone at the console would. Returns how to put it back where it was."""
+    rules = [shlex.split(line) for line in node.run("iptables", "-t", table, "-S", chain).stdout.splitlines()
+             if line.startswith("-A ")]
+    found = [(i, r[2:]) for i, r in enumerate(rules, start=1) if comment in r]
+    assert found, f"{node.name} has no rule '{comment}' in {table} {chain}"
+    pos, spec = found[0]
+    node.run("iptables", "-t", table, "-D", chain, *spec)
+    return lambda: node.run("iptables", "-t", table, "-I", chain, str(pos), *spec, check=False)
+
+
+def test_edge_filter_hand_change_is_flagged(node, expected):
+    """A hole opened by hand in r2's internet filter, and an anti-spoof rule deleted on r2 and on fw1, all fail the drift check, which names each."""
+    edges = "r2,fw1"
+    clean = rules_check(edges)
     assert clean.returncode == 0, "drift check fails on the clean lab, so a failure proves nothing:\n" + clean.stdout
-    r2, mark = node("r2"), f"hand-hole-{uuid.uuid4().hex[:8]}"
-    rules_before = r2.run("sh", "-c", "iptables -S; iptables -t raw -S").stdout
-    hole = ["FORWARD", "-i", "eth3", "-p", "tcp", "--dport", "22", "-j", "ACCEPT", "-m", "comment", "--comment", mark]
-    bogon = ["PREROUTING", "-i", "eth3", "-s", "10.0.0.0/8", "-j", "DROP", "-m", "comment", "--comment", "bogon 10.0.0.0/8"]
+    r2, fw1, mark = node("r2"), node("fw1"), f"hand-hole-{uuid.uuid4().hex[:8]}"
+    wan = expected["wan_filter"]["r2"]
+    bogon = f"bogon {wan['bogons'][0]}"
+    rules_before = {n.name: iptables_rules(n) for n in (r2, fw1)}
+    hole = ["FORWARD", "-i", wan["interface"], "-p", "tcp", "--dport", "22", "-j", "ACCEPT", "-m", "comment", "--comment", mark]
+    put_back = []
     try:
         r2.run("iptables", "-I", *hole)
-        r2.run("iptables", "-t", "raw", "-D", *bogon)
-        drifted = rules_check("r2")
+        put_back.append(delete_by_hand(r2, "raw", "PREROUTING", bogon))
+        put_back.append(delete_by_hand(fw1, "raw", "PREROUTING", "anti-spoof-inside"))
+        drifted = rules_check(edges)
         assert drifted.returncode != 0, "drift check passed with a hole in r2's internet filter"
-        assert mark in drifted.stdout, "drift check failed but didn't name the added rule:\n" + drifted.stdout
-        assert "bogon 10.0.0.0/8" in drifted.stdout, "drift check didn't name the deleted anti-spoof rule:\n" + drifted.stdout
+        unnamed = [change for change in (mark, bogon, "anti-spoof-inside") if change not in drifted.stdout]
+        assert not unnamed, f"drift check failed but didn't name {unnamed}:\n" + drifted.stdout
     finally:
         r2.run("iptables", "-D", *hole, check=False)
-        r2.run("iptables", "-t", "raw", "-I", bogon[0], "1", *bogon[1:], check=False)
-    assert r2.run("sh", "-c", "iptables -S; iptables -t raw -S").stdout == rules_before, "r2's filter was not put back as it was"
+        for restore in put_back:
+            restore()
+    assert {n.name: iptables_rules(n) for n in (r2, fw1)} == rules_before, "the rules were not put back as they were"

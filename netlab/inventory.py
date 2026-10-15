@@ -259,6 +259,12 @@ def rtbh_problems(inv: Inventory) -> list[str]:
     return problems
 
 
+def segment_members(inv: Inventory, segment: str | None) -> dict[str, str]:
+    """Every device with an address on the segment, and that address: its hosts and the router ports facing them."""
+    hosts = {h: v["address"].split("/")[0] for h, v in inv.hosts.items() if v.get("segment") == segment}
+    return {**hosts, **{remote.device: str(remote.address.ip) for h in hosts for _, remote in inv.neighbors(h)}}
+
+
 SCOPE_CATEGORIES = {"cde", "connected-to", "security-impacting"}
 SCOPE_DESIGNS = {"tokenisation", "p2pe", "segmentation", "truncation", "holding less"}
 
@@ -284,12 +290,20 @@ def scope_problems(inv: Inventory) -> list[str]:
         problems += [f"scope: {name} has no {key}" for key in ("category", "clause", "why") if not (entry or {}).get(key)]
         if (entry or {}).get("category") and entry["category"] not in SCOPE_CATEGORIES:
             problems.append(f"scope: {name} category {entry['category']!r} is not one of {sorted(SCOPE_CATEGORIES)}")
+    for exc in scope.get("exceptions") or []:
+        label = f"scope: exception {exc.get('src')} {exc.get('proto')}"
+        if exc.get("src") not in out:
+            problems.append(f"{label}: {exc.get('src')} is not out of scope")
+        # TCP into the segment is decided by each host's `published` list, so only ICMP needs an exception.
+        if exc.get("proto") != "icmp":
+            problems.append(f"{label}: only icmp can be an exception (TCP is what `published` decides)")
+        if not exc.get("why"):
+            problems.append(f"{label}: no why")
     # Some of it is decided by the topology: everything on the segment is a CDE system, and
     # everything that filters traffic is in scope, whatever the register says.
-    hosts = [h for h, v in inv.hosts.items() if v.get("segment") == scope.get("segment")]
-    if not hosts:
+    on_segment = segment_members(inv, scope.get("segment"))
+    if not on_segment:
         problems.append(f"scope: no host is on segment {scope.get('segment')}")
-    on_segment = hosts + [remote.device for h in hosts for _, remote in inv.neighbors(h)]
     for name in on_segment:
         if (systems.get(name) or {}).get("category") != "cde":
             problems.append(f"scope: {name} is on {scope.get('segment')}, so it must be in systems as cde")
