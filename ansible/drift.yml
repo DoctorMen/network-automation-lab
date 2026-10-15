@@ -1,14 +1,20 @@
-# Config drift check: back up every router's running config and fail if it no longer
-# matches the intended config rendered from the source of truth.
-# Usage: cd ansible && ansible-playbook drift.yml
+# Collection pass: copy the routers' and the firewall's running state off-box into backups/,
+# then fail if a device no longer matches its intended config, or if a router backup is missing
+# part of what's running. One method per device type, and what isn't collected:
+# docs/collection-methods.md
+# Usage: cd ansible && ansible-playbook drift.yml [--limit r2]
 - name: Back up running configs and detect drift
   hosts: routers
   gather_facts: false
   vars:
     backup_dir: "{{ playbook_dir }}/../backups"
   tasks:
+    # FRR 8.4.1 prints four lines before the config: "Building configuration...", a blank line,
+    # "Current configuration:" and "!". They aren't config, and vtysh rejects a file that starts
+    # with them, so a backup that kept them could not be loaded back. `no-header` drops them
+    # (it's how frr-reload.py reads the running config too).
     - name: Pull running config
-      ansible.builtin.command: vtysh -c "show running-config"
+      ansible.builtin.command: vtysh -c "show running-config no-header"
       register: running
       changed_when: false
 
@@ -27,29 +33,70 @@
         mode: "0644"
       delegate_to: localhost
 
-    - name: Stage intended config on the router
-      ansible.builtin.copy:
-        src: "{{ playbook_dir }}/../build/{{ inventory_hostname }}/frr.conf"
-        dest: /tmp/intended.conf
-        mode: "0644"
-
+    # The router's startup config, /etc/frr/frr.conf, is this same file mounted read-only,
+    # so this is also the startup-versus-running check.
     - name: Compare running against intended
-      ansible.builtin.command: /usr/lib/frr/frr-reload.py --test /tmp/intended.conf
-      register: reload_test
+      ansible.builtin.include_tasks: tasks/compare_frr.yml
+      vars:
+        config: "{{ playbook_dir }}/../build/{{ inventory_hostname }}/frr.conf"
+        label: intended
+        mismatch: has drifted from intended config
+
+# Load each backup just taken back on its router in test mode.
+- ansible.builtin.import_playbook: verify_capture.yml
+
+# The firewall keeps its policy only in the kernel, so iptables-save is its backup, and the
+# rendered firewall.sh is its startup config. Running firewall.sh again would flush and rebuild
+# the live chain, so its iptables lines are replayed inside `unshare -n` instead: a new network
+# namespace with its own empty iptables tables. The live rules are never touched.
+- name: Back up firewall rules and detect drift
+  hosts: firewalls
+  gather_facts: false
+  vars:
+    backup_dir: "{{ playbook_dir }}/../backups"
+    firewall_sh: "{{ playbook_dir }}/../build/{{ inventory_hostname }}/firewall.sh"
+  tasks:
+    - name: Pull the live ruleset
+      ansible.builtin.command: iptables-save
+      register: ruleset
       changed_when: false
 
-    # IP forwarding mirrors a kernel sysctl that the topology owns, so it varies by host
-    # (for example, GitHub runners enable IPv6 forwarding). Everything else must match.
-    - name: Collect real config differences
-      ansible.builtin.set_fact:
-        drift_lines: >-
-          {{ reload_test.stdout_lines
-             | map('trim') | reject('match', '^(Lines To (Add|Delete)|=*)$')
-             | reject('match', '^(no )?ipv6? forwarding$')
-             | list }}
+    - name: Make sure the backup folder exists
+      ansible.builtin.file:
+        path: "{{ backup_dir }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      run_once: true
+
+    - name: Save backup on the control node
+      ansible.builtin.copy:
+        content: "{{ ruleset.stdout }}\n"
+        dest: "{{ backup_dir }}/{{ inventory_hostname }}.rules"
+        mode: "0644"
+      delegate_to: localhost
+
+    # Only the iptables lines. The rest of firewall.sh sets addresses and routes, and the new
+    # namespace has no interfaces to put them on.
+    - name: Stage the intended rules on the firewall
+      ansible.builtin.copy:
+        content: "{{ lookup('file', firewall_sh).splitlines() | select('match', 'iptables ') | join('\n') }}\n"
+        dest: /tmp/intended-rules.sh
+        mode: "0644"
+
+    - name: Replay them in a fresh network namespace
+      ansible.builtin.shell: unshare -n sh -ec '. /tmp/intended-rules.sh; iptables -S' > /tmp/intended.rules
+      changed_when: false
+
+    # A line diff, not a set comparison: rule order is policy.
+    - name: Diff the live rules against the replayed intent
+      ansible.builtin.shell: iptables -S | diff -u /tmp/intended.rules -
+      register: rule_diff
+      changed_when: false
+      failed_when: rule_diff.rc > 1  # 1 means the rules differ, which the next task reports
 
     - name: Fail on drift
       ansible.builtin.assert:
-        that: drift_lines | length == 0
-        fail_msg: "{{ inventory_hostname }} has drifted from intended config:\n{{ reload_test.stdout }}"
-        success_msg: "{{ inventory_hostname }} matches intended config"
+        that: rule_diff.rc == 0
+        fail_msg: "{{ inventory_hostname }} rules differ from intent (- intended, + live):\n{{ rule_diff.stdout }}"
+        success_msg: "{{ inventory_hostname }} live rules match intended rules"

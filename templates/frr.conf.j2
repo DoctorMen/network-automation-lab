@@ -15,6 +15,7 @@ interface {{ local.interface }}
  ip address {{ local.address }}
 {% if router.ospf is defined and remote.device in ospf_peers %} ip ospf area {{ router.ospf.area }}
  ip ospf network point-to-point
+ ip ospf bfd
 {% elif router.ospf is defined and remote.device in passive_lans %} ip ospf area {{ router.ospf.area }}
  ip ospf passive
 {% endif %}exit

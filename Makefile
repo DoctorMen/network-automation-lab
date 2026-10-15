@@ -2,8 +2,10 @@
 PY      ?= python3
 CLAB    ?= sudo containerlab
 TOPO    := build/topology.clab.yml
+LAB_ENV ?= local
+NOTE    ?=
 
-.PHONY: help validate render test deploy live drift apply destroy all
+.PHONY: help validate render test deploy live drift apply locate measure destroy all
 
 help:            ## List targets
 	@grep -E '^[a-z]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
@@ -20,14 +22,20 @@ test:            ## Offline tests (no lab needed)
 deploy: render   ## Render and start the lab with Containerlab
 	$(CLAB) deploy -t $(TOPO) --reconfigure
 
-live:            ## Test the running lab: OSPF, BGP, reachability, firewall, failover
-	$(PY) -m pytest -v tests/live
+live:            ## Test the running lab: routing, firewall, failover, drift checks, locate (JUnit in results/)
+	$(PY) -m pytest -v tests/live --junitxml=results/live.xml
 
-drift:           ## Back up running configs and fail if any router drifted from intent
+drift:           ## Back up routers and firewall, fail on drift or on a backup missing running config
 	cd ansible && ansible-playbook drift.yml
 
 apply:           ## Push intended config to routers (diff only, no restarts)
 	cd ansible && ansible-playbook deploy.yml
+
+locate:          ## Find where loss starts on a path and who owns it: make locate SRC=h1 DST=203.0.113.1
+	$(PY) -m netlab locate --src "$(SRC)" --dst "$(DST)"
+
+measure:         ## Record the running lab's RAM in docs/sizing/data/ (LAB_ENV=laptop NOTE="...")
+	$(PY) -m netlab.measure --env $(LAB_ENV) --note "$(NOTE)"
 
 destroy:         ## Tear the lab down
 	$(CLAB) destroy -t $(TOPO) --cleanup

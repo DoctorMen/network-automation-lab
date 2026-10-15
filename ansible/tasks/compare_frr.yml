@@ -1,0 +1,39 @@
+# Does a config file on the control node match this router's running config?
+# Used twice: by drift.yml against the intended config, and by verify_capture.yml against
+# the backup. frr-reload.py --test parses the file as a reload would and lists every line
+# that differs, without changing anything.
+# Vars: config (path on the control node), label (staging name), mismatch (failure text).
+- name: Stage the {{ label }} config on the router
+  ansible.builtin.copy:
+    src: "{{ config }}"
+    dest: /tmp/{{ label }}.conf
+    mode: "0644"
+
+- name: Compare running config with the {{ label }} config
+  ansible.builtin.command: /usr/lib/frr/frr-reload.py --test /tmp/{{ label }}.conf
+  register: reload_test
+  changed_when: false
+
+# IPv6 forwarding mirrors a kernel sysctl that varies by host (GitHub runners enable it), and
+# the lab doesn't use IPv6. IPv4 forwarding is not filtered: a router with it off is broken,
+# so drift should fail (docs/verdicts.yml V-009). Everything else must match.
+# frr-reload.py never lists lines it refuses to remove (password, line vty,
+# service integrated-vtysh-config...), it only logs them, so count those log lines too.
+# The one exception is the version stamp FRR adds itself.
+- name: Collect real differences
+  ansible.builtin.set_fact:
+    listed: >-
+      {{ reload_test.stdout_lines
+         | map('trim') | reject('match', '^(Lines To (Add|Delete)|=*)$')
+         | reject('match', '^(no )?ipv6 forwarding$')
+         | list }}
+    unremovable: >-
+      {{ reload_test.stderr_lines
+         | select('search', 'cannot be removed') | reject('search', '"frr version ')
+         | list }}
+
+- name: Fail on any difference
+  ansible.builtin.assert:
+    that: listed + unremovable == []
+    fail_msg: "{{ inventory_hostname }} {{ mismatch }}:\n{{ reload_test.stdout }}\n{{ unremovable | join('\n') }}"
+    success_msg: "{{ inventory_hostname }} running config matches the {{ label }} config"

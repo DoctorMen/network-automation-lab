@@ -36,8 +36,10 @@ class Node:
         self.name = name
         self.container = f"clab-{lab}-{name}"
 
-    def run(self, *cmd, check=True, timeout=30) -> subprocess.CompletedProcess:
-        return subprocess.run(["docker", "exec", self.container, *cmd],
+    def run(self, *cmd, check=True, timeout=30, input=None) -> subprocess.CompletedProcess:
+        # -i passes stdin through, e.g. a script for `python3 -`. Without input, stdin stays closed.
+        interactive = ["-i"] if input is not None else []
+        return subprocess.run(["docker", "exec", *interactive, self.container, *cmd], input=input,
                               capture_output=True, text=True, check=check, timeout=timeout)
 
     def vtysh(self, command: str) -> str:
@@ -51,6 +53,20 @@ class Node:
 
     def tcp_open(self, host: str, port: int) -> bool:
         return self.run("nc", "-z", "-w", "3", host, str(port), check=False).returncode == 0
+
+
+def rule_counters(fw: Node) -> dict[str, tuple[str, int]]:
+    """{rule name: (target, packets)} for the FORWARD chain, named by each rule's comment.
+
+    -x prints exact packet counts; without it iptables abbreviates big ones to '101K'.
+    A rule with no comment (say, one added by hand) is named by its position, so it still shows up.
+    """
+    counters = {}
+    for pos, line in enumerate(fw.run("iptables", "-vnxL", "FORWARD").stdout.splitlines()[2:], start=1):
+        cols = line.split()
+        name = line.split("/* ")[1].split(" */")[0] if "/* " in line else f"rule {pos}"
+        counters[name] = (cols[2], int(cols[0]))
+    return counters
 
 
 @pytest.fixture(scope="session")
@@ -69,8 +85,29 @@ def wait_for(predicate, timeout=90, interval=3):
     deadline = time.time() + timeout
     last = None
     while time.time() < deadline:
-        last = predicate()
+        try:
+            last = predicate()
+        except (KeyError, IndexError):
+            # A route or table that is still being built shows up as a missing key: not yet.
+            last = None
         if last:
             return last
         time.sleep(interval)
     return last
+
+
+@pytest.fixture(scope="session", autouse=True)
+def converged(node, expected):
+    """Start on a settled lab: right after a deploy FRR is still loading its config, and the
+    first test file (alphabetically) shouldn't have to know that."""
+    def settled():
+        for router, peers in expected["ospf_neighbors"].items():
+            nbrs = node(router).vtysh_json("show ip ospf neighbor").get("neighbors", {})
+            if sum(any(n.get("nbrState", "").startswith("Full") for n in v) for v in nbrs.values()) < len(peers):
+                return False
+        for s in expected["bgp_sessions"]:
+            peers = node(s["router"]).vtysh_json("show bgp summary")["ipv4Unicast"]["peers"]
+            if peers.get(s["address"], {}).get("state") != "Established":
+                return False
+        return True
+    wait_for(settled, timeout=120)  # if it never settles, the tests themselves say what is wrong

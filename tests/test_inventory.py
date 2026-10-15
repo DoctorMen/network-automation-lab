@@ -39,6 +39,13 @@ def test_duplicate_ip(tmp_path):
     assert "10.0.12.1 is already used" in out
 
 
+def test_duplicate_loopback(tmp_path):
+    """Two routers with the same loopback would share an OSPF router-ID."""
+    def m(raw):
+        raw["routers"]["r3"]["loopback"] = raw["routers"]["r1"]["loopback"]
+    assert "r3: loopback 10.255.0.1 collides with r1:lo" in problems(tmp_path, m)
+
+
 def test_ends_in_different_subnets(tmp_path):
     def m(raw):
         raw["links"][0][1] = "r2:eth1@10.0.99.1/31"
@@ -82,9 +89,43 @@ def test_network_address_rejected_on_lan(tmp_path):
     assert "network or broadcast" in problems(tmp_path, m)
 
 
+def test_tcp_accept_rule_needs_syn(tmp_path):
+    def m(raw):
+        web = next(r for r in raw["firewalls"]["fw1"]["rules"] if r["name"] == "allow-web")
+        del web["syn"]
+        raw["firewalls"]["fw1"]["rules"].append({"name": "bad-syn", "proto": "icmp", "syn": True, "action": "accept"})
+        raw["firewalls"]["fw1"]["rules"].append({"name": "new-only", "proto": "tcp", "state": ["NEW"], "dport": 443, "action": "accept"})
+    out = problems(tmp_path, m)
+    assert "fw1 rule allow-web: TCP accept needs syn: true" in out
+    assert "fw1 rule bad-syn: syn: true needs proto: tcp" in out
+    assert "fw1 rule new-only: TCP accept needs syn: true" in out, "--ctstate NEW still admits a forged ACK"
+
+
+def test_platform_versions_must_be_text(tmp_path):
+    def m(raw):
+        raw["platform"]["alpine"] = 3.16
+        del raw["platform"]["digest"]
+    out = problems(tmp_path, m)
+    assert "platform: alpine 3.16 must be quoted" in out and "platform: digest is missing" in out
+
+
 def test_reports_every_problem_at_once(tmp_path):
     def m(raw):
         raw["links"][0][1] = "r2:eth1@10.0.99.1/31"
         raw["hosts"]["h1"]["gateway"] = "10.99.0.1"
     out = problems(tmp_path, m)
     assert "different subnets" in out and "gateway" in out
+
+
+def test_every_device_needs_an_owner(tmp_path):
+    def m(raw):
+        del raw["routers"]["isp"]["owner"]
+        del raw["hosts"]["h1"]["owner"]
+    out = problems(tmp_path, m)
+    assert "isp: no owner" in out and "h1: no owner" in out
+
+
+def test_operator_must_own_a_device(tmp_path):
+    def m(raw):
+        raw["operator"] = "nobody"
+    assert "operator 'nobody' owns no device" in problems(tmp_path, m)

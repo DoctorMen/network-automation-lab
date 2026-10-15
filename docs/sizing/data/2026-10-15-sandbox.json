@@ -1,0 +1,70 @@
+{
+  "date": "2026-10-15",
+  "env": "sandbox",
+  "note": "cloud VM, 4 CPUs shared, stand-in deploy for Containerlab (no /proc/modules); BFD on; idle right after a fresh deploy, two make live runs and one make drift",
+  "method": "docker stats --no-stream MemUsage, 5 samples 2 s apart; per node is the mean",
+  "nodes": 7,
+  "total_mib": 88.5,
+  "per_node_mib": {
+    "r2": 22.99,
+    "isp": 17.89,
+    "h2": 17.18,
+    "r1": 14.48,
+    "r3": 14.26,
+    "fw1": 1.28,
+    "h1": 0.45
+  },
+  "kernel": "6.18.44-fc-v114",
+  "docker": "29.8.2",
+  "cgroup": "1",
+  "containerlab": "0.68.0",
+  "deployed_by": "not containerlab (no clab-node-kind label)",
+  "image": "frrouting/frr:v8.4.1",
+  "samples_mib": [
+    {
+      "r1": 14.46,
+      "r2": 23.09,
+      "r3": 14.27,
+      "isp": 17.55,
+      "fw1": 1.28,
+      "h1": 0.45,
+      "h2": 17.18
+    },
+    {
+      "r1": 14.41,
+      "r2": 23.02,
+      "r3": 14.22,
+      "isp": 18.02,
+      "fw1": 1.28,
+      "h1": 0.45,
+      "h2": 17.18
+    },
+    {
+      "r1": 14.38,
+      "r2": 22.98,
+      "r3": 14.21,
+      "isp": 17.99,
+      "fw1": 1.28,
+      "h1": 0.45,
+      "h2": 17.18
+    },
+    {
+      "r1": 14.59,
+      "r2": 22.97,
+      "r3": 14.19,
+      "isp": 17.96,
+      "fw1": 1.28,
+      "h1": 0.45,
+      "h2": 17.18
+    },
+    {
+      "r1": 14.57,
+      "r2": 22.9,
+      "r3": 14.41,
+      "isp": 17.94,
+      "fw1": 1.28,
+      "h1": 0.45,
+      "h2": 17.18
+    }
+  ]
+}

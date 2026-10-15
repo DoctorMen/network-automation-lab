@@ -3,8 +3,12 @@ zebra=yes
 bgpd={{ 'yes' if bgp else 'no' }}
 ospfd={{ 'yes' if ospf else 'no' }}
 staticd=yes
+{# BFD exists here only to speed up OSPF failure detection. #}
+bfdd={{ 'yes' if ospf else 'no' }}
 vtysh_enable=yes
 zebra_options="  -A 127.0.0.1 -s 90000000"
 bgpd_options="   -A 127.0.0.1"
 ospfd_options="  -A 127.0.0.1"
 staticd_options="-A 127.0.0.1"
+# Without -A, bfdd's vty listens on 0.0.0.0:2617, reachable from every lab link.
+bfdd_options="   -A 127.0.0.1"

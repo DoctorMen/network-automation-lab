@@ -11,7 +11,6 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from .inventory import Inventory
 
 ROOT = Path(__file__).resolve().parent.parent
-IMAGE = "frrouting/frr:v8.4.1"
 
 
 def _env() -> Environment:
@@ -54,6 +53,12 @@ def render_firewall(inv: Inventory, name: str, env: Environment | None = None) -
     return env.get_template("firewall.sh.j2").render(name=name, fw=inv.firewalls[name])
 
 
+def bfd_peers(inv: Inventory, router: str) -> dict[str, str]:
+    """BFD runs on every OSPF link (frr.conf.j2), so its peers come from the same links: address -> interface."""
+    ospf = inv.ospf_neighbors(router)
+    return {str(remote.address.ip): local.interface for local, remote in inv.neighbors(router) if remote.device in ospf}
+
+
 def expected_state(inv: Inventory) -> dict:
     """What a healthy lab looks like. The live tests compare against this."""
     bgp_sessions = []
@@ -62,9 +67,16 @@ def expected_state(inv: Inventory) -> dict:
             bgp_sessions.append({"router": name, "peer": n["peer"], "address": n["address"]})
     return {
         "ospf_neighbors": {r: inv.ospf_neighbors(r) for r in inv.routers if inv.ospf_neighbors(r)},
+        "bfd_peers": {r: bfd_peers(inv, r) for r in inv.routers if inv.ospf_neighbors(r)},
+        # Interfaces toward a host LAN, rendered `ip ospf passive` (frr.conf.j2).
+        "passive_interfaces": {r: [local.interface for local, remote in inv.neighbors(r) if remote.device in inv.hosts]
+                               for r in inv.routers if inv.ospf_neighbors(r)},
         "bgp_sessions": bgp_sessions,
         "loopbacks": {r: str(ipaddress.IPv4Interface(v["loopback"]).ip) for r, v in inv.routers.items()},
         "hosts": {h: v["address"].split("/")[0] for h, v in inv.hosts.items()},
+        "operator": inv.operator,
+        "owners": {d: inv.owner(d) for d in inv.devices},
+        "platform": inv.platform,
     }
 
 
@@ -101,7 +113,7 @@ def render_all(inv: Inventory, out_dir: str | Path) -> list[Path]:
     for name in inv.firewalls:
         write(f"{name}/firewall.sh", render_firewall(inv, name, env))
     write("vtysh.conf", "service integrated-vtysh-config\n")
-    write("topology.clab.yml", env.get_template("topology.clab.yml.j2").render(inv=inv, image=IMAGE))
+    write("topology.clab.yml", env.get_template("topology.clab.yml.j2").render(inv=inv, image=inv.platform["image"]))
     write("expected_state.json", json.dumps(expected_state(inv), indent=2) + "\n")
     write("ansible_inventory.yml", ansible_inventory(inv))
     return written

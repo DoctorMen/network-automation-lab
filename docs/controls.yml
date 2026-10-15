@@ -1,0 +1,403 @@
+# Control register: every control this repo claims, what it defends against, how it fails,
+# and the test that proves it. tests/test_controls.py fails if a README table row or a fw1
+# rule has no entry here, if a field is empty, or if a named test doesn't exist.
+#
+#   id          short name; fw1:<rule name> for a firewall rule, as named in the inventory
+#   claim       what we say works. README table rows are copied word for word
+#   test        pytest node id(s) that fail when the claim is false
+#   period      ISO 8601 duration: the latest green run of every test must be younger than this
+#   threat      what the control defends against (for an allow rule: what it is narrowed against)
+#   fails_when  how it stops working, or what it never covered
+#
+# Schedule: .github/workflows/ci.yml runs every test nightly (cron 23 4 * * *), on every push to
+# main and on every pull request. It keeps results/live.xml (JUnit, with a timestamp) for the live
+# tests as a run artifact for 90 days; offline results are in the run's log.
+# GitHub disables scheduled runs in a public repo after 60 days with no repository activity,
+# so a quiet repo can miss its period without any test going red.
+#
+# Firewall numbers below were measured on fw1 with the forged-ACK tool in tests/live/tools/;
+# timings come from decision 0009. All were measured in the sandbox lab.
+
+controls:
+  - id: ospf-adjacencies
+    claim: "Every core router has Full OSPF adjacencies with exactly the neighbors the inventory says it should"
+    test: tests/live/test_routing.py::test_ospf_adjacencies_are_full
+    period: P31D
+    threat: >-
+      A missing or extra adjacency (wrong subnet, an interface made passive by mistake, a router
+      nobody planned) that goes unnoticed until traffic takes the wrong path.
+    fails_when: >-
+      It compares against the inventory, so a link left out of the inventory is never expected.
+      It reads state when the test runs; an adjacency that flaps between runs is not seen.
+
+  - id: bgp-session
+    claim: "The eBGP session to the ISP is Established"
+    test: tests/live/test_routing.py::test_bgp_sessions_established
+    period: P31D
+    threat: The campus losing the internet while every interface still looks up.
+    fails_when: >-
+      Established says nothing about routes: a session that carries no prefixes still passes.
+      With FRR's default 180 s hold time, an ISP that silently stops answering keeps the session
+      Established for up to 3 minutes.
+
+  - id: isp-sees-aggregate-only
+    claim: "The ISP only learns the `10.0.0.0/8` aggregate, with no more-specific campus routes leaking out"
+    test: tests/live/test_routing.py::test_isp_sees_only_the_aggregate
+    period: P31D
+    threat: >-
+      Internal prefixes leaking to the provider, which exposes the internal layout and pushes
+      every internal link flap into the ISP's routing table.
+    fails_when: >-
+      It only covers what r2 sends. Nothing filters what r2 accepts (`no bgp ebgp-requires-policy`,
+      no inbound route-map), so the ISP could announce a more-specific of a campus prefix and r2
+      would prefer it for traffic r2 forwards.
+
+  - id: default-route-via-ospf
+    claim: "The edge router hands a default route to the core through OSPF"
+    test: tests/live/test_routing.py::test_default_route_reaches_core_via_ospf
+    period: P31D
+    threat: >-
+      Core routers with no default, or with a stray kernel default (Docker's eth0) that wins
+      and sends internet traffic out of the lab.
+    fails_when: >-
+      `default-information originate always` keeps advertising the default while the ISP session
+      is down, so the core keeps sending internet traffic to r2, which has nowhere to send it.
+
+  - id: passive-server-lan
+    claim: "The server LAN is advertised into OSPF, but the router interface facing it is passive, so no OSPF hello reaches a host. Every other core router has an OSPF route to it"
+    test: tests/live/test_routing.py::test_host_lans_are_passive
+    period: P31D
+    threat: >-
+      A host on the server LAN (a compromised server, a test VM) forming an OSPF adjacency with r3
+      and injecting routes into the campus.
+    fails_when: >-
+      OSPF has no authentication on any link, so anything that gets onto a core /31 can still form
+      an adjacency. It checks only the interfaces the inventory puts on a host LAN.
+
+  - id: vty-localhost
+    claim: "No routing daemon's management port (vty) answers on a lab link. Every TCP listener on every router is bound to 127.0.0.1, except BGP itself"
+    test: tests/live/test_management_plane.py::test_router_daemons_listen_on_localhost_only
+    period: P31D
+    threat: >-
+      Someone on a lab link, or on the ISP side, reaching a daemon's vty and changing routing.
+      A daemon started without `-A 127.0.0.1` listens on every address (bfdd did, at first).
+    fails_when: >-
+      BGP listens on every address, and nothing filters the WAN edge, so r2's port 179 answers from
+      the ISP side. UDP listeners (BFD) are not checked. The vtys have no password: anyone with
+      `docker exec` on the host is root on every node, and that is the real management path.
+
+  - id: users-reach-web-and-internet
+    claim: "Users can reach the web server and the internet"
+    test:
+      - tests/live/test_dataplane.py::test_lan_a_reaches_server_lan
+      - tests/live/test_dataplane.py::test_lan_a_reaches_internet
+      - tests/live/test_dataplane.py::test_firewall_allows_web
+    period: P31D
+    threat: A routing or policy change that quietly cuts users off.
+    fails_when: >-
+      It tests one user (h1), one server and the ISP's loopback. Most checks are a ping or a TCP
+      handshake; only test_allow_web_requires_a_handshake fetches a page, and it only looks for a
+      directory listing.
+
+  - id: fw1:deny-ssh-to-servers
+    claim: "The firewall blocks SSH (port 22) from users to servers. The test also proves h2's port 22 answers from the server's own gateway, so the block came from policy, not a dead service. The listener is a stand-in TCP server, not sshd"
+    test:
+      - tests/live/test_dataplane.py::test_firewall_blocks_ssh_to_servers
+      - tests/live/test_dataplane.py::test_firewall_counts_the_drop
+    period: P31D
+    threat: A user, or malware on a user's machine, logging in to or brute-forcing servers over SSH.
+    fails_when: >-
+      Only traffic that crosses fw1 is filtered. From the ISP side h2:22 is open
+      (`nc -z 10.20.20.10 22` from isp succeeds). A broader accept placed above it wins, and SSH
+      moved to another port is not matched by this rule (the default drop still catches it).
+
+  - id: fw1:allow-established
+    claim: "The firewall is stateful: a forged TCP ACK from the server LAN, for a connection no user opened, is dropped instead of being let in as return traffic"
+    test:
+      - tests/live/test_controls.py::test_unsolicited_inbound_ack_is_dropped
+      # The server's SYN-ACK can only come back through this rule, so a working handshake proves it.
+      - tests/live/test_dataplane.py::test_firewall_allows_web
+    period: P31D
+    threat: >-
+      Unsolicited packets into LAN-A dressed up as replies: the reason a stateless "allow return
+      traffic" rule is unsafe.
+    fails_when: >-
+      fw1 runs with the kernel default nf_conntrack_tcp_loose=1, so conntrack adopts a flow from its
+      middle. Once any accept rule forwards one mid-stream packet, the replies pass here as
+      ESTABLISHED (measured: a forged ACK h1 -> 203.0.113.1:179 counted allow-internet 1, then the
+      ISP's RST back counted allow-established 1). RELATED also admits ICMP errors for any tracked
+      flow. A full conntrack table (nf_conntrack_max 262144 on fw1) drops new flows: it fails closed.
+
+  - id: fw1:allow-web
+    claim: "The web rule only lets a connection start: a forged mid-stream ACK to port 80 is dropped, while a real HTTP GET still works"
+    test:
+      - tests/live/test_controls.py::test_allow_web_requires_a_handshake
+      - tests/test_render.py::test_web_rule_matches_only_connection_openers
+    period: P31D
+    threat: >-
+      Users reaching any server port other than 80, and forged mid-stream packets to :80
+      (ACK scans, injected segments) that belong to no connection fw1 has seen.
+    fails_when: >-
+      Without `syn: true` (--syn) any TCP packet to :80 is forwarded, whatever tcp_loose is
+      (measured: the forged ACK counted allow-web 1 with tcp_loose=1 and with tcp_loose=0).
+      `--ctstate NEW` is no substitute: with tcp_loose=1 the forged ACK is NEW and still passes
+      (measured). Port 80 is open to all of 10.20.20.0/24, not just h2.
+
+  - id: fw1:default-drop
+    claim: "Anything the rule list doesn't allow is dropped. The test starts a listener on an unlisted port and proves the server's own gateway can reach it, so the block came from policy, not a dead listener"
+    test: tests/live/test_controls.py::test_default_drop_blocks_unlisted_port
+    period: P31D
+    threat: A service nobody decided to expose, such as a forgotten listener on a server.
+    fails_when: >-
+      It is the chain policy: `iptables -P FORWARD ACCEPT` turns fw1 into allow-all, and any broad
+      accept above it wins. Drops are counted, not logged: LOG writes nothing from a container's
+      network namespace while the host has net.netfilter.nf_log_all_netns=0 (the default; no
+      fw-drop line reached dmesg here), so nobody is told. The counter is the only record.
+
+  - id: ospf-failover
+    claim: "Pulling the r1–r3 link makes OSPF reroute through r2 with no manual action, then fail back"
+    test: tests/live/test_failover.py::test_traffic_survives_r1_r3_link_failure
+    period: P31D
+    threat: One link failure cutting users off from the servers.
+    fails_when: >-
+      The test takes the interface down, which OSPF sees at once; a link that stays up but forwards
+      nothing is bfd-silent-failure's job. Fail-back waits for OSPF hellos and a new adjacency
+      (4.5-16.8 s measured), and the test only checks that it happens. There is one edge router and
+      one ISP, so nothing here covers losing r2 or the ISP link.
+
+  - id: bfd-sessions
+    claim: "Every OSPF link has a BFD session up, with exactly the peers the inventory implies"
+    test: tests/live/test_failover.py::test_bfd_sessions_up
+    period: P31D
+    threat: >-
+      BFD configured but not running (bfdd off, `ip ospf bfd` missing), so a silent link failure
+      falls back to OSPF's 40 s dead timer and nothing reports an error.
+    fails_when: >-
+      It reads state when the test runs. Nothing alerts on a BFD session flapping between runs, and
+      a peer missing from the inventory is never expected.
+
+  - id: bfd-silent-failure
+    claim: "A link that stays up but forwards nothing is routed around in about a second, not after OSPF's 40 s dead timer. h1 still reaches the web server through the stateful firewall, then the path fails back. Measured in the sandbox lab: 0.80–1.20 s with BFD, 35.6–39.7 s without. CI on real Containerlab holds it to 3 s"
+    test: tests/live/test_failover.py::test_silent_failure_reroutes_fast
+    period: P31D
+    threat: >-
+      A link that stays up but passes nothing (a one-way fibre fault, a hung media converter, a
+      wrong ACL), which OSPF alone only notices when its 40 s dead timer runs out.
+    fails_when: >-
+      BFD runs only on the OSPF links. The ISP link has none, so a silent failure there waits for
+      BGP's 180 s hold time. FRR's default timers (300 ms x 3) mean a router too busy to answer for
+      0.9 s drops a healthy adjacency; that is an accepted risk (decision 0009). The test fails one
+      link, r1-r3.
+
+  - id: drift-check
+    claim: "No router or firewall differs from its intended config when the check runs. An Ansible playbook backs up every router and the firewall off-box, diffs the running state against intent and fails on any drift. How each device type is collected, and what isn't: [`docs/collection-methods.md`](docs/collection-methods.md)"
+    test:
+      - tests/live/test_collection.py::test_unsaved_change_is_flagged
+      - tests/live/test_collection.py::test_firewall_hand_change_is_flagged
+    period: P31D
+    threat: An undocumented hand change (a quick fix, a mistake, an intruder) living on a router or the firewall.
+    fails_when: >-
+      A change made and undone between runs is never seen. `ipv6 forwarding` lines are ignored on purpose (V-009).
+      Kernel state outside FRR and fw1's filter table (an interface set down, a sysctl, a host route,
+      a nat or mangle rule) is not compared, and h1 and h2 are not collected at all
+      (docs/collection-methods.md).
+
+  - id: unsaved-change
+    claim: "A hand change on a router that was never saved fails one run of that drift check, which names the changed line. The test first proves the check passes on the clean lab"
+    test: tests/live/test_collection.py::test_unsaved_change_is_flagged
+    period: P31D
+    threat: A fix typed on a router and never written down, which disappears at the next reload or hides the real config.
+    fails_when: >-
+      It is one run of `make drift`. Between runs, or with nothing running it on a schedule, the
+      change lives on unnoticed.
+
+  - id: capture-complete
+    claim: "A router backup that is missing part of the running config fails, and the check names the missing line. Each backup is loaded back on its router in test mode; the untouched backup passes"
+    test: tests/live/test_collection.py::test_incomplete_capture_is_flagged
+    period: P31D
+    threat: A backup that looks fine until the day it is restored and part of the config is gone.
+    fails_when: >-
+      frr-reload.py normalises what it compares: `frr version` is ignored, and lines it refuses to
+      remove are only counted because the check reads its log. fw1's backup (backups/fw1.rules) is
+      not loaded back and compared the same way.
+
+  - id: firewall-hand-change
+    claim: "A rule added by hand on the firewall fails the drift check, which names it. The intended rules are replayed in a separate, empty network namespace, so the check never touches the live rules"
+    test: tests/live/test_collection.py::test_firewall_hand_change_is_flagged
+    period: P31D
+    threat: An ACCEPT rule added by hand on fw1, the quickest way to open a hole nobody reviewed.
+    fails_when: >-
+      `iptables -S` lists the filter table only, so a nat, mangle or raw change is backed up but
+      not failed. Counters are not compared.
+
+  - id: intent-read-only
+    claim: "A hand change saved with `write memory` can't overwrite the intended config and hide from that drift check"
+    test: tests/live/test_drift.py::test_write_memory_cannot_overwrite_intent
+    period: P31D
+    threat: >-
+      `write memory` saving a hand change into build/, so the drift check compares the router with
+      its own drift and passes.
+    fails_when: >-
+      The protection is the `:ro` bind in the topology; without it this test is the only thing that
+      notices. It doesn't stop anyone editing build/ or the inventory on the host, which is a change
+      to intent and goes through git review.
+
+  - id: inventory-validation
+    claim: "The inventory can't ship with duplicate IPs, mismatched subnets, overlapping networks, wrong BGP peer addresses, off-subnet gateways or a device with no owner"
+    test:
+      - tests/test_inventory.py::test_duplicate_ip
+      - tests/test_inventory.py::test_duplicate_loopback
+      - tests/test_inventory.py::test_ends_in_different_subnets
+      - tests/test_inventory.py::test_overlapping_subnets
+      - tests/test_inventory.py::test_bgp_peer_address_must_match_link
+      - tests/test_inventory.py::test_host_gateway_must_be_on_subnet
+      - tests/test_inventory.py::test_every_device_needs_an_owner
+      - tests/test_inventory.py::test_reports_every_problem_at_once
+    period: P31D
+    threat: An addressing mistake reaching the lab, where it takes longer to find than to prevent.
+    fails_when: >-
+      It only knows the mistakes it was written for. A BGP remote_as that doesn't match the peer's
+      local_as, or mismatched OSPF areas, passes validation and only shows up live as a session or
+      adjacency that never forms.
+
+  - id: locate-carrier-loss
+    claim: "Loss on the carrier link is placed on the carrier from our side alone. `make locate` clears every campus segment in path order, names `r2-isp` and its owner from the inventory, and our edge router sees the loss directly. We never log into the carrier"
+    test: tests/live/test_locate.py::test_carrier_loss_is_placed_on_the_carrier
+    period: P31D
+    threat: >-
+      Arguing with a carrier, or opening a ticket, on a guess: loss blamed on them that was ours,
+      or loss of theirs we can't show from our side.
+    fails_when: >-
+      It measures with pings, so it sees loss that hits ICMP; loss that hits only some traffic (one
+      port, big packets) needs another probe. 200 probes miss a 5% fault 3% of the time. Pings
+      measure the round trip, so loss on an asymmetric return path is put on the forward segment.
+
+  - id: locate-campus-loss
+    claim: "Loss on a campus link is named as ours, and from our edge the carrier is clean"
+    test: tests/live/test_locate.py::test_campus_loss_is_not_blamed_on_the_carrier
+    period: P31D
+    threat: Opening a carrier ticket for a fault on our own link.
+    fails_when: Same limits as locate-carrier-loss. The test breaks one campus link, r1-r2.
+
+  - id: locate-clean-path
+    claim: "A clean path raises no alarm"
+    test: tests/live/test_locate.py::test_clean_path_raises_no_alarm
+    period: P31D
+    threat: A locator that cries wolf, so nobody believes it the day it is right.
+    fails_when: Loss of 2% or less (4 of 200) is called clean on purpose; a small real fault can sit under it.
+
+  - id: locate-rules
+    claim: "`locate` refuses to run on any device the operator doesn't own, loss at a middle hop that doesn't carry on to the destination (ICMP rate limiting) is not called loss, and a hop that didn't answer traceroute is traced again instead of being skipped, which would hand our segment to the carrier"
+    test:
+      - tests/test_locate.py::test_never_logs_into_a_device_we_dont_own
+      - tests/test_locate.py::test_loss_must_persist_to_the_destination
+      - tests/test_locate.py::test_traces_again_when_a_hop_did_not_answer
+    period: P31D
+    threat: >-
+      Logging into a device we don't own, calling a router's rate-limited replies to its own pings
+      loss, or handing our segment to the carrier because one of our hops didn't answer traceroute.
+    fails_when: >-
+      Ownership is what the inventory says; a wrong `owner:` is trusted. Retracing stops after 5
+      tries, so a hop that never answers is skipped and its segment merged with the next.
+
+  - id: platform-version
+    claim: "Every node runs exactly the image (tag and digest), FRR, Alpine and busybox builds the inventory records, and CI pulls that image"
+    test:
+      - tests/live/test_platform.py::test_running_version_matches_inventory
+      - tests/test_render.py::test_ci_pulls_the_image_the_inventory_names
+    period: P31D
+    threat: >-
+      A silent upgrade (a re-pushed tag, a different package build) changing behaviour while every
+      record still names the old version, so a bug report or a vendor search starts from the wrong one.
+    fails_when: >-
+      It checks the image, FRR, Alpine and busybox, not every package in the image or the host
+      kernel, which the containers share. The digest is checked against what Docker reports for the
+      pulled image, so it trusts the local Docker daemon.
+
+  - id: verdict-log
+    claim: "Every odd behaviour in the log has one verdict (my config, normal behaviour, platform bug or lab artifact), the version it was seen on, and a fix or workaround. None may stay unclassified past 5 working days"
+    test:
+      - tests/test_verdicts.py::test_verdict_log_lints_clean
+      - tests/test_verdicts.py::test_unclassified_entry_gets_five_working_days
+    period: P31D
+    threat: >-
+      Odd behaviour explained away, or never written down, so the next person spends the same day
+      on it, or a platform bug is worked around forever without anyone knowing.
+    fails_when: >-
+      It lints what is written. An odd behaviour nobody logs is never checked, and the verdict
+      itself is only as right as its evidence.
+
+  - id: decision-records
+    claim: "Every design decision has a record naming the constraint, the alternatives (doing nothing included), an outside source, the stake and who decides"
+    test:
+      - tests/test_decisions.py::test_decision_records_lint_clean
+      - tests/test_decisions.py::test_readme_design_decisions_link_their_records
+    period: P31D
+    threat: >-
+      Design choices nobody can explain or revisit, because the constraint and the rejected
+      options were never written down.
+    fails_when: >-
+      It checks each record has its fields, a 'do nothing' option, an outside source and real
+      failure-mode tests, not that the reasoning is sound. A decision made with no record is not seen.
+
+  - id: sizing
+    claim: "The RAM figure below is the newest measurement, and that raw data is committed"
+    test:
+      - tests/test_sizing.py::test_ram_figures_match_the_newest_data
+      - tests/test_sizing.py::test_sizing_doc_links_all_its_data
+    period: P31D
+    threat: A resource claim copied from a rule of thumb, so someone sizes a machine on a number nobody measured.
+    fails_when: >-
+      It covers RAM only, at idle, on two machines (a GitHub runner and the sandbox). A newer CI
+      measurement is only uploaded as an artifact; someone has to commit it for the figure to move.
+
+  - id: control-register
+    claim: "Every claim in this table, and every fw1 rule, is in a control register with what it defends against, how it fails, the test that proves it and how often that test must pass"
+    test:
+      - tests/test_controls.py::test_register_lints_clean
+      - tests/test_controls.py::test_every_readme_claim_has_an_entry
+      - tests/test_controls.py::test_every_firewall_rule_has_an_entry
+    period: P31D
+    threat: Controls kept as theatre, claimed but untested and not understood.
+    fails_when: >-
+      It checks that each claim names a test that exists, not that the test proves the claim; that
+      rests on review and on each test's negative proof. Claims made elsewhere (a design note, a
+      commit message) are not checked.
+
+  - id: fw1:allow-icmp
+    claim: "ICMP crosses the firewall, so ping and path MTU discovery work"
+    # h1's echo request to h2 matches only this rule (allow-internet covers the ISP side, not LAN-B).
+    test: tests/live/test_dataplane.py::test_lan_a_reaches_server_lan
+    period: P31D
+    threat: >-
+      An opening, not a defence: dropping all ICMP would break path MTU discovery and ping, so it
+      is let through.
+    fails_when: >-
+      It matches every ICMP type in both directions, from anywhere: the ISP side can ping h1
+      (measured), so it can sweep LAN-A for live hosts, and ICMP can carry a tunnel.
+
+  - id: fw1:allow-internet
+    claim: "Users can open connections to the internet range"
+    test: tests/live/test_dataplane.py::test_lan_a_reaches_internet
+    period: P31D
+    threat: >-
+      Connections into LAN-A from the internet side: the rule only matches packets from LAN-A,
+      so it can never open one inbound.
+    fails_when: >-
+      It matches every protocol, so it can't carry --syn: a forged mid-stream ACK from h1 to the
+      internet is forwarded and then adopted by conntrack (see fw1:allow-established). Splitting it
+      into a TCP rule with syn: true plus a UDP rule would close that, at the cost of dropping other
+      protocols.
+
+  - id: fw1:policy
+    claim: "fw1's FORWARD chain is the inventory's rule list, rendered in order: ESTABLISHED,RELATED first, explicit deny, counted default drop"
+    test:
+      - tests/test_render.py::test_firewall_default_drop_and_rule_order
+      - tests/live/test_controls.py::test_unsolicited_inbound_ack_is_dropped
+      - tests/live/test_controls.py::test_default_drop_blocks_unlisted_port
+    period: P31D
+    threat: A firewall whose real rules nobody can reconstruct or review.
+    fails_when: >-
+      firewall.sh runs once at deploy. `make drift` compares fw1's live filter table with it, but
+      only when it runs, so a hand change lives until the next run. Traffic that never crosses fw1
+      (the ISP side to LAN-B) is not filtered at all.

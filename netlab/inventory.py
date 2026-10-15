@@ -53,6 +53,14 @@ class Inventory:
         return self.raw["lab_name"]
 
     @property
+    def operator(self) -> str | None:
+        return self.raw.get("operator")
+
+    @property
+    def platform(self) -> dict:
+        return self.raw.get("platform", {})
+
+    @property
     def routers(self) -> dict:
         return self.raw.get("routers", {})
 
@@ -67,6 +75,23 @@ class Inventory:
     @property
     def devices(self) -> list[str]:
         return [*self.routers, *self.firewalls, *self.hosts]
+
+    def owner(self, device: str) -> str | None:
+        for group in (self.routers, self.firewalls, self.hosts):
+            if device in group:
+                return group[device].get("owner")
+        return None
+
+    def device_at(self, address: str) -> str | None:
+        """Which device answers on this address (link end or loopback)."""
+        for link in self.links:
+            for ep in (link.a, link.b):
+                if str(ep.address.ip) == address:
+                    return ep.device
+        for name, r in self.routers.items():
+            if str(ipaddress.IPv4Interface(r["loopback"]).ip) == address:
+                return name
+        return None
 
     def asn(self, name_or_number) -> int:
         if isinstance(name_or_number, int):
@@ -113,9 +138,20 @@ def load(path: str | Path) -> Inventory:
     return inv
 
 
+PLATFORM_FIELDS = ("image", "digest", "frr", "alpine", "busybox")
+
+
 def validate(inv: Inventory) -> list[str]:
     problems: list[str] = []
     known = set(inv.devices)
+
+    # tests/live/test_platform.py compares these, as text, with what the nodes report.
+    for key in PLATFORM_FIELDS:
+        value = inv.platform.get(key)
+        if value is None:
+            problems.append(f"platform: {key} is missing")
+        elif not isinstance(value, str):
+            problems.append(f"platform: {key} {value!r} must be quoted, or YAML reads it as a number")
 
     seen_ips: dict[ipaddress.IPv4Address, str] = {}
     seen_ifaces: set[tuple[str, str]] = set()
@@ -167,5 +203,21 @@ def validate(inv: Inventory) -> list[str]:
             ep = by_if.get(fw[side]["interface"])
             if ep is None or str(ep.address) != fw[side]["address"]:
                 problems.append(f"{name}: {side} address {fw[side]['address']} does not match its link")
+        for rule in fw.get("rules", []):
+            label = f"{name} rule {rule['name']}"
+            if rule.get("syn") and rule.get("proto") != "tcp":
+                problems.append(f"{label}: syn: true needs proto: tcp")
+            # Without a SYN match, a TCP accept also forwards mid-stream packets that belong to no
+            # connection fw1 has seen, such as a forged ACK. A state match only helps if it leaves
+            # out NEW: with nf_conntrack_tcp_loose=1, conntrack calls a forged ACK NEW.
+            if rule.get("proto") == "tcp" and rule["action"] == "accept" and not rule.get("syn") and "NEW" in rule.get("state", ["NEW"]):
+                problems.append(f"{label}: TCP accept needs syn: true, or it forwards forged mid-stream packets")
+
+    # Someone has to act when a device breaks, and tools may log in only where the operator owns it.
+    for name in inv.devices:
+        if not inv.owner(name):
+            problems.append(f"{name}: no owner (who must act when it breaks?)")
+    if inv.operator not in {inv.owner(d) for d in inv.devices}:
+        problems.append(f"operator {inv.operator!r} owns no device, so no tool may log in anywhere")
 
     return problems

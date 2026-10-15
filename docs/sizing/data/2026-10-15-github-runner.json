@@ -1,0 +1,70 @@
+{
+  "date": "2026-10-15",
+  "env": "github-runner",
+  "note": "GitHub ubuntu-latest, containerlab 0.68.0, idle right after make live and make drift",
+  "method": "docker stats --no-stream MemUsage, 5 samples 2 s apart; per node is the mean",
+  "nodes": 7,
+  "total_mib": 90.5,
+  "per_node_mib": {
+    "r2": 23.41,
+    "isp": 18.29,
+    "h2": 17.39,
+    "r1": 15.07,
+    "r3": 14.73,
+    "fw1": 1.04,
+    "h1": 0.59
+  },
+  "kernel": "6.17.0-1022-azure",
+  "docker": "28.0.4",
+  "cgroup": "2",
+  "containerlab": "0.68.0",
+  "deployed_by": "containerlab",
+  "image": "frrouting/frr:v8.4.1",
+  "samples_mib": [
+    {
+      "r1": 15.06,
+      "r2": 23.55,
+      "r3": 15.07,
+      "isp": 18.25,
+      "fw1": 1.14,
+      "h1": 0.59,
+      "h2": 17.39
+    },
+    {
+      "r1": 15.05,
+      "r2": 23.48,
+      "r3": 14.84,
+      "isp": 18.35,
+      "fw1": 1.11,
+      "h1": 0.59,
+      "h2": 17.39
+    },
+    {
+      "r1": 15.26,
+      "r2": 23.25,
+      "r3": 14.81,
+      "isp": 18.38,
+      "fw1": 1.11,
+      "h1": 0.59,
+      "h2": 17.39
+    },
+    {
+      "r1": 14.76,
+      "r2": 23.51,
+      "r3": 14.35,
+      "isp": 18.12,
+      "fw1": 0.91,
+      "h1": 0.59,
+      "h2": 17.39
+    },
+    {
+      "r1": 15.22,
+      "r2": 23.27,
+      "r3": 14.59,
+      "isp": 18.34,
+      "fw1": 0.91,
+      "h1": 0.59,
+      "h2": 17.39
+    }
+  ]
+}

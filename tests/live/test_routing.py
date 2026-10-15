@@ -1,4 +1,6 @@
 """Control plane: are the protocols up and carrying the routes they should?"""
+import ipaddress
+
 from .conftest import wait_for
 
 
@@ -31,7 +33,23 @@ def test_every_loopback_is_in_every_ospf_routers_table(node, expected):
     for router in expected["ospf_neighbors"]:
         for lo in expected["loopbacks"].values():
             if lo.startswith("10.255."):
-                assert wait_for(lambda: lo in node(router).vtysh("show ip route")), f"{router} has no route to {lo}"
+                # Look the /32 up as a key: a text search for 10.255.0.1 would also match 10.255.0.10.
+                assert wait_for(lambda: f"{lo}/32" in node(router).vtysh_json("show ip route")), f"{router} has no route to {lo}"
+
+
+def test_host_lans_are_passive(node, expected):
+    """Every router interface toward a host LAN is OSPF passive: advertised, but no hello goes out to hosts."""
+    for router, interfaces in expected["passive_interfaces"].items():
+        for ifname in interfaces:
+            info = node(router).vtysh_json(f"show ip ospf interface {ifname}")["interfaces"][ifname]
+            assert info.get("timerPassiveIface") is True, f"{router} {ifname} sends OSPF hellos toward hosts"
+            # Passive must not mean missing: the LAN is still in every other core router's table.
+            lan = str(ipaddress.ip_interface(f"{info['ipAddress']}/{info['ipAddressPrefixlen']}").network)
+            for other in expected["passive_interfaces"]:
+                if other != router:
+                    assert wait_for(lambda: lan in node(other).vtysh_json("show ip route ospf")), \
+                        f"{other} has no OSPF route to {lan}"
+    assert any(expected["passive_interfaces"].values()), "the inventory implies no passive interface"
 
 
 def test_isp_sees_only_the_aggregate(node):
