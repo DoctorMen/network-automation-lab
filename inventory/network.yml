@@ -49,10 +49,12 @@ firewalls:
     inside:  { interface: eth1, address: 10.10.10.1/24 }
     outside: { interface: eth2, address: 10.0.100.2/30, gateway: 10.0.100.1 }
     # Default policy for forwarded traffic is DROP. Order matters.
+    # syn: true matches only a connection's opening packet (SYN set; ACK, RST, FIN clear). The rest of
+    # the connection then passes as ESTABLISHED, so a forged mid-stream packet hits the default drop.
     rules:
       - { name: allow-established, state: [ESTABLISHED, RELATED], action: accept }
       - { name: allow-icmp,        proto: icmp,                      action: accept }
-      - { name: allow-web,         proto: tcp, dst: 10.20.20.0/24, dport: 80,  action: accept }
+      - { name: allow-web,         proto: tcp, syn: true, dst: 10.20.20.0/24, dport: 80, action: accept }
       - { name: deny-ssh-to-servers, proto: tcp, dst: 10.20.20.0/24, dport: 22, action: drop }
       - { name: allow-internet,    src: 10.10.10.0/24, dst: 203.0.113.0/24,    action: accept }
 

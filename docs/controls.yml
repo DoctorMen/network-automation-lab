@@ -1,0 +1,232 @@
+# Control register: every control this repo claims, what it defends against, how it fails,
+# and the test that proves it. tests/test_controls.py fails if a README table row or a fw1
+# rule has no entry here, if a field is empty, or if a named test doesn't exist.
+#
+#   id          short name; fw1:<rule name> for a firewall rule, as named in the inventory
+#   claim       what we say works. README table rows are copied word for word
+#   test        pytest node id(s) that fail when the claim is false
+#   period      ISO 8601 duration: the latest green run of every test must be younger than this
+#   threat      what the control defends against (for an allow rule: what it is narrowed against)
+#   fails_when  how it stops working, or what it never covered
+#
+# Schedule: .github/workflows/ci.yml runs every test nightly (cron 23 4 * * *), on every push to
+# main and on every pull request. It keeps results/live.xml (JUnit, with a timestamp) for the live
+# tests as a run artifact for 90 days; offline results are in the run's log.
+# GitHub disables scheduled runs in a public repo after 60 days with no repository activity,
+# so a quiet repo can miss its period without any test going red.
+#
+# Lab numbers quoted below were measured on fw1 with the forged-ACK tool in tests/live/tools/.
+
+controls:
+  - id: ospf-adjacencies
+    claim: "Every core router has Full OSPF adjacencies with exactly the neighbors the inventory says it should"
+    test: tests/live/test_routing.py::test_ospf_adjacencies_are_full
+    period: P31D
+    threat: >-
+      A missing or extra adjacency (wrong subnet, an interface made passive by mistake, a router
+      nobody planned) that goes unnoticed until traffic takes the wrong path.
+    fails_when: >-
+      It compares against the inventory, so a link left out of the inventory is never expected.
+      It reads state when the test runs; an adjacency that flaps between runs is not seen.
+
+  - id: bgp-session
+    claim: "The eBGP session to the ISP is Established"
+    test: tests/live/test_routing.py::test_bgp_sessions_established
+    period: P31D
+    threat: The campus losing the internet while every interface still looks up.
+    fails_when: >-
+      Established says nothing about routes: a session that carries no prefixes still passes.
+      With FRR's default 180 s hold time, an ISP that silently stops answering keeps the session
+      Established for up to 3 minutes.
+
+  - id: isp-sees-aggregate-only
+    claim: "The ISP only learns the `10.0.0.0/8` aggregate, with no more-specific campus routes leaking out"
+    test: tests/live/test_routing.py::test_isp_sees_only_the_aggregate
+    period: P31D
+    threat: >-
+      Internal prefixes leaking to the provider, which exposes the internal layout and pushes
+      every internal link flap into the ISP's routing table.
+    fails_when: >-
+      It only covers what r2 sends. Nothing filters what r2 accepts (`no bgp ebgp-requires-policy`,
+      no inbound route-map), so the ISP could announce a more-specific of a campus prefix and r2
+      would prefer it for traffic r2 forwards.
+
+  - id: default-route-via-ospf
+    claim: "The edge router hands a default route to the core through OSPF"
+    test: tests/live/test_routing.py::test_default_route_reaches_core_via_ospf
+    period: P31D
+    threat: >-
+      Core routers with no default, or with a stray kernel default (Docker's eth0) that wins
+      and sends internet traffic out of the lab.
+    fails_when: >-
+      `default-information originate always` keeps advertising the default while the ISP session
+      is down, so the core keeps sending internet traffic to r2, which has nowhere to send it.
+
+  - id: users-reach-web-and-internet
+    claim: "Users can reach the web server and the internet"
+    test:
+      - tests/live/test_dataplane.py::test_lan_a_reaches_server_lan
+      - tests/live/test_dataplane.py::test_lan_a_reaches_internet
+      - tests/live/test_dataplane.py::test_firewall_allows_web
+    period: P31D
+    threat: A routing or policy change that quietly cuts users off.
+    fails_when: >-
+      It tests one user (h1), one server and the ISP's loopback. Most checks are a ping or a TCP
+      handshake; only test_allow_web_requires_a_handshake fetches a page, and it only looks for a
+      directory listing.
+
+  - id: fw1:deny-ssh-to-servers
+    claim: "The firewall blocks SSH from users to servers. The test also proves SSH is actually listening, so the block came from policy, not a dead service"
+    test:
+      - tests/live/test_dataplane.py::test_firewall_blocks_ssh_to_servers
+      - tests/live/test_dataplane.py::test_firewall_counts_the_drop
+    period: P31D
+    threat: A user, or malware on a user's machine, logging in to or brute-forcing servers over SSH.
+    fails_when: >-
+      Only traffic that crosses fw1 is filtered. From the ISP side h2:22 is open
+      (`nc -z 10.20.20.10 22` from isp succeeds). A broader accept placed above it wins, and SSH
+      moved to another port is not matched by this rule (the default drop still catches it).
+
+  - id: fw1:allow-established
+    claim: "The firewall is stateful: a forged TCP ACK from the server LAN, for a connection no user opened, is dropped instead of being let in as return traffic"
+    test:
+      - tests/live/test_controls.py::test_unsolicited_inbound_ack_is_dropped
+      # The server's SYN-ACK can only come back through this rule, so a working handshake proves it.
+      - tests/live/test_dataplane.py::test_firewall_allows_web
+    period: P31D
+    threat: >-
+      Unsolicited packets into LAN-A dressed up as replies: the reason a stateless "allow return
+      traffic" rule is unsafe.
+    fails_when: >-
+      fw1 runs with the kernel default nf_conntrack_tcp_loose=1, so conntrack adopts a flow from its
+      middle. Once any accept rule forwards one mid-stream packet, the replies pass here as
+      ESTABLISHED (measured: a forged ACK h1 -> 203.0.113.1:179 counted allow-internet 1, then the
+      ISP's RST back counted allow-established 1). RELATED also admits ICMP errors for any tracked
+      flow. A full conntrack table (nf_conntrack_max 262144 on fw1) drops new flows: it fails closed.
+
+  - id: fw1:allow-web
+    claim: "The web rule only lets a connection start: a forged mid-stream ACK to port 80 is dropped, while a real HTTP GET still works"
+    test:
+      - tests/live/test_controls.py::test_allow_web_requires_a_handshake
+      - tests/test_render.py::test_web_rule_matches_only_connection_openers
+    period: P31D
+    threat: >-
+      Users reaching any server port other than 80, and forged mid-stream packets to :80
+      (ACK scans, injected segments) that belong to no connection fw1 has seen.
+    fails_when: >-
+      Without `syn: true` (--syn) any TCP packet to :80 is forwarded, whatever tcp_loose is
+      (measured: the forged ACK counted allow-web 1 with tcp_loose=1 and with tcp_loose=0).
+      `--ctstate NEW` is no substitute: with tcp_loose=1 the forged ACK is NEW and still passes
+      (measured). Port 80 is open to all of 10.20.20.0/24, not just h2.
+
+  - id: fw1:default-drop
+    claim: "Anything the rule list doesn't allow is dropped. The test starts a listener on an unlisted port and proves the server's own gateway can reach it, so the block came from policy, not a dead listener"
+    test: tests/live/test_controls.py::test_default_drop_blocks_unlisted_port
+    period: P31D
+    threat: A service nobody decided to expose, such as a forgotten listener on a server.
+    fails_when: >-
+      It is the chain policy: `iptables -P FORWARD ACCEPT` turns fw1 into allow-all, and any broad
+      accept above it wins. Drops are counted, not logged: LOG writes nothing from a container's
+      network namespace while the host has net.netfilter.nf_log_all_netns=0 (the default; no
+      fw-drop line reached dmesg here), so nobody is told. The counter is the only record.
+
+  - id: ospf-failover
+    claim: "Pulling the r1–r3 link makes OSPF reroute through r2 with no manual action, then fail back"
+    test: tests/live/test_failover.py::test_traffic_survives_r1_r3_link_failure
+    period: P31D
+    threat: One link failure cutting users off from the servers.
+    fails_when: >-
+      The test takes the interface down, which OSPF sees at once. A link that stays up but
+      forwards nothing is only noticed when the 40 s dead interval runs out (hello 10 s, dead 40 s
+      on every link), and traffic is lost until then.
+
+  - id: drift-check
+    claim: "Nobody changed a router by hand. An Ansible playbook diffs running config against intended config and fails on any drift"
+    test: tests/live/test_drift.py::test_drift_check_catches_a_hand_change
+    period: P31D
+    threat: An undocumented hand change (a quick fix, a mistake, an intruder) living on a router.
+    fails_when: >-
+      It compares FRR config on the routers group (r1, r2, r3, isp) only: fw1's iptables rules are
+      never compared. Forwarding lines are ignored on purpose. A change made and undone between
+      runs is never seen, and kernel state outside FRR (an interface set down, a sysctl) is not
+      compared.
+
+  - id: intent-read-only
+    claim: "A hand change saved with `write memory` can't overwrite the intended config and hide from that drift check"
+    test: tests/live/test_drift.py::test_write_memory_cannot_overwrite_intent
+    period: P31D
+    threat: >-
+      `write memory` saving a hand change into build/, so the drift check compares the router with
+      its own drift and passes.
+    fails_when: >-
+      The protection is the `:ro` bind in the topology; without it this test is the only thing that
+      notices. It doesn't stop anyone editing build/ or the inventory on the host, which is a change
+      to intent and goes through git review.
+
+  - id: inventory-validation
+    claim: "The inventory can't ship with duplicate IPs, mismatched subnets, overlapping networks, wrong BGP peer addresses or off-subnet gateways"
+    test:
+      - tests/test_inventory.py::test_duplicate_ip
+      - tests/test_inventory.py::test_ends_in_different_subnets
+      - tests/test_inventory.py::test_overlapping_subnets
+      - tests/test_inventory.py::test_bgp_peer_address_must_match_link
+      - tests/test_inventory.py::test_host_gateway_must_be_on_subnet
+      - tests/test_inventory.py::test_reports_every_problem_at_once
+    period: P31D
+    threat: An addressing mistake reaching the lab, where it takes longer to find than to prevent.
+    fails_when: >-
+      It only knows the mistakes it was written for. A BGP remote_as that doesn't match the peer's
+      local_as, or mismatched OSPF areas, passes validation and only shows up live as a session or
+      adjacency that never forms.
+
+  - id: control-register
+    claim: "Every claim in this table, and every fw1 rule, is in a control register with what it defends against, how it fails, the test that proves it and how often that test must pass"
+    test:
+      - tests/test_controls.py::test_register_lints_clean
+      - tests/test_controls.py::test_every_readme_claim_has_an_entry
+      - tests/test_controls.py::test_every_firewall_rule_has_an_entry
+    period: P31D
+    threat: Controls kept as theatre, claimed but untested and not understood.
+    fails_when: >-
+      It checks that each claim names a test that exists, not that the test proves the claim; that
+      rests on review and on each test's negative proof. Claims made elsewhere (a design note, a
+      commit message) are not checked.
+
+  - id: fw1:allow-icmp
+    claim: "ICMP crosses the firewall, so ping and path MTU discovery work"
+    # h1's echo request to h2 matches only this rule (allow-internet covers the ISP side, not LAN-B).
+    test: tests/live/test_dataplane.py::test_lan_a_reaches_server_lan
+    period: P31D
+    threat: >-
+      An opening, not a defence: dropping all ICMP would break path MTU discovery and ping, so it
+      is let through.
+    fails_when: >-
+      It matches every ICMP type in both directions, from anywhere: the ISP side can ping h1
+      (measured), so it can sweep LAN-A for live hosts, and ICMP can carry a tunnel.
+
+  - id: fw1:allow-internet
+    claim: "Users can open connections to the internet range"
+    test: tests/live/test_dataplane.py::test_lan_a_reaches_internet
+    period: P31D
+    threat: >-
+      Connections into LAN-A from the internet side: the rule only matches packets from LAN-A,
+      so it can never open one inbound.
+    fails_when: >-
+      It matches every protocol, so it can't carry --syn: a forged mid-stream ACK from h1 to the
+      internet is forwarded and then adopted by conntrack (see fw1:allow-established). Splitting it
+      into a TCP rule with syn: true plus a UDP rule would close that, at the cost of dropping other
+      protocols.
+
+  - id: fw1:policy
+    claim: "fw1's FORWARD chain is the inventory's rule list, rendered in order: ESTABLISHED,RELATED first, explicit deny, counted default drop"
+    test:
+      - tests/test_render.py::test_firewall_default_drop_and_rule_order
+      - tests/live/test_controls.py::test_unsolicited_inbound_ack_is_dropped
+      - tests/live/test_controls.py::test_default_drop_blocks_unlisted_port
+    period: P31D
+    threat: A firewall whose real rules nobody can reconstruct or review.
+    fails_when: >-
+      firewall.sh runs once at deploy and nothing compares fw1's live rules with it afterwards
+      (make drift skips fw1). A hand `iptables -I FORWARD 1 -j ACCEPT` is caught only because it
+      changes what the forged-ACK test sees, at the next run. Traffic that never crosses fw1 (the
+      ISP side to LAN-B) is not filtered at all.

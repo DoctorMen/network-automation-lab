@@ -10,6 +10,9 @@ iptables -F FORWARD
 iptables -P FORWARD DROP
 {% for rule in fw.rules %}
 # {{ rule.name }}
-iptables -A FORWARD{% if rule.state is defined %} -m conntrack --ctstate {{ rule.state | join(',') }}{% endif %}{% if rule.proto is defined %} -p {{ rule.proto }}{% endif %}{% if rule.src is defined %} -s {{ rule.src }}{% endif %}{% if rule.dst is defined %} -d {{ rule.dst }}{% endif %}{% if rule.dport is defined %} --dport {{ rule.dport }}{% endif %} -j {{ rule.action | upper }} -m comment --comment "{{ rule.name }}"
+iptables -A FORWARD{% if rule.state is defined %} -m conntrack --ctstate {{ rule.state | join(',') }}{% endif %}{% if rule.proto is defined %} -p {{ rule.proto }}{% endif %}{% if rule.syn | default(false) %} --syn{% endif %}{% if rule.src is defined %} -s {{ rule.src }}{% endif %}{% if rule.dst is defined %} -d {{ rule.dst }}{% endif %}{% if rule.dport is defined %} --dport {{ rule.dport }}{% endif %} -j {{ rule.action | upper }} -m comment --comment "{{ rule.name }}"
 {% endfor %}
+# Whatever reaches the end is dropped by the policy. This rule's packet counter is the record:
+# LOG writes nothing from a container's network namespace unless the host sets
+# net.netfilter.nf_log_all_netns=1, and nothing here sets it.
 iptables -A FORWARD -j LOG --log-prefix "fw-drop: " -m comment --comment default-drop

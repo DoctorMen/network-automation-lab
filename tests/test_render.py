@@ -52,6 +52,12 @@ def test_firewall_default_drop_and_rule_order():
     assert names == ["allow-established", "allow-icmp", "allow-web", "deny-ssh-to-servers", "allow-internet", "default-drop"]
 
 
+def test_web_rule_matches_only_connection_openers():
+    script = render_firewall(inv, "fw1")
+    line = next(l for l in script.splitlines() if '"allow-web"' in l)
+    assert "-p tcp --syn " in line
+
+
 def test_render_all_writes_a_consistent_lab(tmp_path):
     render_all(inv, tmp_path)
     topo = yaml.safe_load((tmp_path / "topology.clab.yml").read_text())

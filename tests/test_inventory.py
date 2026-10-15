@@ -82,6 +82,18 @@ def test_network_address_rejected_on_lan(tmp_path):
     assert "network or broadcast" in problems(tmp_path, m)
 
 
+def test_tcp_accept_rule_needs_syn(tmp_path):
+    def m(raw):
+        web = next(r for r in raw["firewalls"]["fw1"]["rules"] if r["name"] == "allow-web")
+        del web["syn"]
+        raw["firewalls"]["fw1"]["rules"].append({"name": "bad-syn", "proto": "icmp", "syn": True, "action": "accept"})
+        raw["firewalls"]["fw1"]["rules"].append({"name": "new-only", "proto": "tcp", "state": ["NEW"], "dport": 443, "action": "accept"})
+    out = problems(tmp_path, m)
+    assert "fw1 rule allow-web: TCP accept needs syn: true" in out
+    assert "fw1 rule bad-syn: syn: true needs proto: tcp" in out
+    assert "fw1 rule new-only: TCP accept needs syn: true" in out, "--ctstate NEW still admits a forged ACK"
+
+
 def test_reports_every_problem_at_once(tmp_path):
     def m(raw):
         raw["links"][0][1] = "r2:eth1@10.0.99.1/31"

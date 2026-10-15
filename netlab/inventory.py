@@ -188,6 +188,15 @@ def validate(inv: Inventory) -> list[str]:
             ep = by_if.get(fw[side]["interface"])
             if ep is None or str(ep.address) != fw[side]["address"]:
                 problems.append(f"{name}: {side} address {fw[side]['address']} does not match its link")
+        for rule in fw.get("rules", []):
+            label = f"{name} rule {rule['name']}"
+            if rule.get("syn") and rule.get("proto") != "tcp":
+                problems.append(f"{label}: syn: true needs proto: tcp")
+            # Without a SYN match, a TCP accept also forwards mid-stream packets that belong to no
+            # connection fw1 has seen, such as a forged ACK. A state match only helps if it leaves
+            # out NEW: with nf_conntrack_tcp_loose=1, conntrack calls a forged ACK NEW.
+            if rule.get("proto") == "tcp" and rule["action"] == "accept" and not rule.get("syn") and "NEW" in rule.get("state", ["NEW"]):
+                problems.append(f"{label}: TCP accept needs syn: true, or it forwards forged mid-stream packets")
 
     # Someone has to act when a device breaks, and tools may log in only where the operator owns it.
     for name in inv.devices:

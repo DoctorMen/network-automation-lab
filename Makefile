@@ -20,8 +20,8 @@ test:            ## Offline tests (no lab needed)
 deploy: render   ## Render and start the lab with Containerlab
 	$(CLAB) deploy -t $(TOPO) --reconfigure
 
-live:            ## Test the running lab: OSPF, BGP, reachability, firewall, failover, drift checks
-	$(PY) -m pytest -v tests/live
+live:            ## Test the running lab: routing, firewall, failover, drift checks, locate (JUnit in results/)
+	$(PY) -m pytest -v tests/live --junitxml=results/live.xml
 
 drift:           ## Back up routers and firewall, fail on drift or on a backup missing running config
 	cd ansible && ansible-playbook drift.yml

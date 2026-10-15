@@ -31,7 +31,8 @@ def test_every_loopback_is_in_every_ospf_routers_table(node, expected):
     for router in expected["ospf_neighbors"]:
         for lo in expected["loopbacks"].values():
             if lo.startswith("10.255."):
-                assert wait_for(lambda: lo in node(router).vtysh("show ip route")), f"{router} has no route to {lo}"
+                # Look the /32 up as a key: a text search for 10.255.0.1 would also match 10.255.0.10.
+                assert wait_for(lambda: f"{lo}/32" in node(router).vtysh_json("show ip route")), f"{router} has no route to {lo}"
 
 
 def test_isp_sees_only_the_aggregate(node):

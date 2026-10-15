@@ -5,9 +5,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
-  # Weekly, so the failover drills still run when nobody pushes.
+  # Nightly, so every control in docs/controls.yml has a dated result well inside its 31-day period.
+  # GitHub runs schedules on the default branch only, and in a public repo disables them after
+  # 60 days with no repository activity.
   schedule:
-    - cron: "17 6 * * 1"
+    - cron: "23 4 * * *"
 
 permissions:
   contents: read
@@ -47,7 +49,7 @@ jobs:
       - name: Deploy
         run: make deploy
       - name: Live tests (OSPF, BGP, reachability, firewall policy, link failover)
-        run: make live
+        run: make live  # also writes results/live.xml (JUnit, timestamped)
       - name: Config drift check (Ansible)
         run: make drift
       - name: Show routing tables on failure
@@ -57,13 +59,16 @@ jobs:
             echo "=== $r"; docker exec clab-netauto-$r vtysh -c "show ip route" -c "show ip ospf neighbor" -c "show bfd peers brief" -c "show bgp summary" || true
           done
           docker exec clab-netauto-fw1 iptables -vnL FORWARD || true
-      - name: Upload config backups
+      - name: Upload test results and config backups
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: config-backups
-          path: backups/
+          name: results-and-backups
+          path: |
+            results/
+            backups/
           if-no-files-found: ignore
+          retention-days: 90
       - name: Destroy
         if: always()
         run: make destroy || true

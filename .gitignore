@@ -1,5 +1,6 @@
 build/
 backups/
+results/
 __pycache__/
 .pytest_cache/
 .venv/
