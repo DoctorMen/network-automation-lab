@@ -1,0 +1,70 @@
+{
+  "date": "2026-10-15",
+  "env": "sandbox",
+  "note": "cloud VM, 4 CPUs shared with another lab; containerlab can't deploy here (no /proc/modules), so a stand-in created the same containers, binds, sysctls and veth links; idle right after a fresh deploy, one make live and one make drift",
+  "method": "docker stats --no-stream MemUsage, 5 samples 2 s apart; per node is the mean",
+  "nodes": 7,
+  "total_mib": 81.3,
+  "per_node_mib": {
+    "r2": 21.0,
+    "h2": 17.77,
+    "isp": 17.31,
+    "r1": 12.25,
+    "r3": 12.17,
+    "fw1": 0.4,
+    "h1": 0.39
+  },
+  "kernel": "6.18.44-fc-v114",
+  "docker": "29.8.2",
+  "cgroup": "1",
+  "containerlab": "0.68.0",
+  "deployed_by": "not containerlab (no clab-node-kind label)",
+  "image": "frrouting/frr:v8.4.1",
+  "samples_mib": [
+    {
+      "r1": 12.15,
+      "r2": 21.11,
+      "r3": 12.25,
+      "isp": 17.17,
+      "fw1": 0.4,
+      "h1": 0.39,
+      "h2": 17.77
+    },
+    {
+      "r1": 12.14,
+      "r2": 21.05,
+      "r3": 12.21,
+      "isp": 17.14,
+      "fw1": 0.4,
+      "h1": 0.39,
+      "h2": 17.77
+    },
+    {
+      "r1": 12.35,
+      "r2": 21.01,
+      "r3": 12.16,
+      "isp": 17.36,
+      "fw1": 0.4,
+      "h1": 0.39,
+      "h2": 17.77
+    },
+    {
+      "r1": 12.31,
+      "r2": 20.95,
+      "r3": 12.12,
+      "isp": 17.32,
+      "fw1": 0.4,
+      "h1": 0.39,
+      "h2": 17.77
+    },
+    {
+      "r1": 12.28,
+      "r2": 20.9,
+      "r3": 12.09,
+      "isp": 17.54,
+      "fw1": 0.4,
+      "h1": 0.39,
+      "h2": 17.77
+    }
+  ]
+}

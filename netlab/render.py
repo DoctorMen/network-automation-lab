@@ -11,7 +11,6 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from .inventory import Inventory
 
 ROOT = Path(__file__).resolve().parent.parent
-IMAGE = "frrouting/frr:v8.4.1"
 
 
 def _env() -> Environment:
@@ -74,6 +73,7 @@ def expected_state(inv: Inventory) -> dict:
         "hosts": {h: v["address"].split("/")[0] for h, v in inv.hosts.items()},
         "operator": inv.operator,
         "owners": {d: inv.owner(d) for d in inv.devices},
+        "platform": inv.platform,
     }
 
 
@@ -110,7 +110,7 @@ def render_all(inv: Inventory, out_dir: str | Path) -> list[Path]:
     for name in inv.firewalls:
         write(f"{name}/firewall.sh", render_firewall(inv, name, env))
     write("vtysh.conf", "service integrated-vtysh-config\n")
-    write("topology.clab.yml", env.get_template("topology.clab.yml.j2").render(inv=inv, image=IMAGE))
+    write("topology.clab.yml", env.get_template("topology.clab.yml.j2").render(inv=inv, image=inv.platform["image"]))
     write("expected_state.json", json.dumps(expected_state(inv), indent=2) + "\n")
     write("ansible_inventory.yml", ansible_inventory(inv))
     return written

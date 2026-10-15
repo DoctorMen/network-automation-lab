@@ -94,6 +94,14 @@ def test_tcp_accept_rule_needs_syn(tmp_path):
     assert "fw1 rule new-only: TCP accept needs syn: true" in out, "--ctstate NEW still admits a forged ACK"
 
 
+def test_platform_versions_must_be_text(tmp_path):
+    def m(raw):
+        raw["platform"]["alpine"] = 3.16
+        del raw["platform"]["digest"]
+    out = problems(tmp_path, m)
+    assert "platform: alpine 3.16 must be quoted" in out and "platform: digest is missing" in out
+
+
 def test_reports_every_problem_at_once(tmp_path):
     def m(raw):
         raw["links"][0][1] = "r2:eth1@10.0.99.1/31"

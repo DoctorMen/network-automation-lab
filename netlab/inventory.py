@@ -57,6 +57,10 @@ class Inventory:
         return self.raw.get("operator")
 
     @property
+    def platform(self) -> dict:
+        return self.raw.get("platform", {})
+
+    @property
     def routers(self) -> dict:
         return self.raw.get("routers", {})
 
@@ -134,9 +138,20 @@ def load(path: str | Path) -> Inventory:
     return inv
 
 
+PLATFORM_FIELDS = ("image", "digest", "frr", "alpine", "busybox")
+
+
 def validate(inv: Inventory) -> list[str]:
     problems: list[str] = []
     known = set(inv.devices)
+
+    # tests/live/test_platform.py compares these, as text, with what the nodes report.
+    for key in PLATFORM_FIELDS:
+        value = inv.platform.get(key)
+        if value is None:
+            problems.append(f"platform: {key} is missing")
+        elif not isinstance(value, str):
+            problems.append(f"platform: {key} {value!r} must be quoted, or YAML reads it as a number")
 
     seen_ips: dict[ipaddress.IPv4Address, str] = {}
     seen_ifaces: set[tuple[str, str]] = set()

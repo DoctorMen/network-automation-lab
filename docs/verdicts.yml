@@ -1,0 +1,101 @@
+# Odd behaviours seen in this lab, each with one verdict, the version it was seen on,
+# and either the commit that fixed it or the workaround. netlab/records.py lints this file
+# (tests/test_verdicts.py): an entry may go without a verdict for 5 working days at most.
+#
+# Every entry here was checked in the lab, in a throwaway container, or in git and CI history.
+#
+# verdict:
+#   my-config         our config or tooling caused it
+#   normal-behaviour  the platform does what it is documented (or coded) to do; we expected otherwise
+#   platform-bug      a defect in FRR, Alpine, Docker or the kernel
+#   lab-artifact      comes from running the network in containers; real gear would not do it
+
+- id: V-001
+  opened: 2026-10-11
+  version: frrouting/frr:v8.4.1 (FRR 8.4.1_git) on containerlab 0.68.0, GitHub ubuntu-latest
+  symptom: r1 and r3 sent internet traffic out of eth0 (Docker) instead of to r2; the kernel default route beat the OSPF default
+  verdict: lab-artifact
+  evidence:
+    - CI run 38159498719 (commit 6ed8aec) failed its live tests; commit ed58c1e explains the cause
+    - "2026-10-15, throwaway FRR container on Docker's bridge: show ip route 0.0.0.0/0 -> Known via \"kernel\", distance 0, metric 0, best"
+  fixed_in: ed58c1e (network-mode none; decision 0007)
+
+- id: V-002
+  opened: 2026-10-11
+  version: frrouting/frr:v8.4.1 (FRR 8.4.1_git) on containerlab 0.68.0, GitHub ubuntu-latest
+  symptom: drift check failed on "ipv6 forwarding" although nobody changed anything
+  verdict: normal-behaviour
+  evidence:
+    - CI run 38159909835 (commit ed58c1e) passed its live tests and failed the drift check; commit 844f27a says the runner enables IPv6 forwarding
+    - "2026-10-15, lab r1 with net.ipv4.ip_forward=0: running-config shows 'no ip forwarding' (zebra mirrors the kernel sysctl). The IPv6 form can't be shown here: this sandbox kernel has no IPv6 (V-008)"
+  workaround: drift.yml ignores the forwarding line, because the topology's sysctls own it (844f27a)
+
+- id: V-003
+  opened: 2026-10-11
+  version: ansible>=10 on GitHub ubuntu-latest (exact version not recorded); reproduced with ansible-core 2.21.5
+  symptom: after V-002's filter, the drift check still failed, on a blank line
+  verdict: my-config
+  evidence:
+    - CI run 38160209208 (commit 844f27a) failed the drift check; 38160474410 (commit 1e810cf) passed
+    - "2026-10-15: frr-reload.py --test output starts with an empty line (cat -A on r1). The 844f27a filter applied to ['', 'Lines To Delete', '===============', 'ipv6 forwarding'] leaves [''], the 1e810cf filter leaves []"
+  fixed_in: 1e810cf (trim lines before filtering)
+
+- id: V-004
+  opened: 2026-10-13
+  version: frrouting/frr:v8.4.1 (FRR 8.4.1_git), any Containerlab or Docker bind without :ro
+  symptom: a hand change saved with write memory overwrote build/<router>/frr.conf, so the drift check then passed
+  verdict: my-config
+  evidence:
+    - "PR #1 (commit adc9857) describes it and adds test_write_memory_cannot_overwrite_intent"
+    - "2026-10-15, throwaway FRR containers with a copy of r3's config: writable bind -> 'Integrated configuration saved' and the host file holds the change; :ro -> 'Read-only file system', host file unchanged"
+  fixed_in: adc9857 (PR #1, not merged yet; decision 0008)
+
+- id: V-005
+  opened: 2026-10-15
+  version: frrouting/frr:v8.4.1 (FRR 8.4.1_git)
+  symptom: frr.conf says "log stdout informational", but no daemon log line after startup reaches docker logs or anywhere else
+  verdict: my-config
+  evidence:
+    - "lab r2: zebra, ospfd, bgpd and staticd run with -d, and /proc/<pid>/fd/1 and fd/2 are /dev/null; only watchfrr writes to the container's output"
+    - "lab r2 show logging: 'Stdout logging: level informational', 'Syslog logging: disabled', 'File logging: disabled'"
+    - "throwaway: with log commands on, 'show interface brief' never appeared in docker logs; after 'log file /tmp/frr.log informational' it did, in the file"
+  workaround: "'log file <path>' works (throwaway above); not applied, because nothing in the lab reads FRR logs yet"
+
+- id: V-006
+  opened: 2026-10-15
+  version: iptables 1.8.7 (legacy) in frrouting/frr:v8.4.1; sandbox kernel 6.18.44
+  symptom: fw1's default-drop LOG rule counts packets, but no "fw-drop" line appears in any log
+  verdict: lab-artifact
+  evidence:
+    - "lab fw1: LOG rule at 4 packets after h1 tried 10.20.20.10:443 and :8443; dmesg on the host and in fw1 has 0 fw-drop lines; no syslogd runs in fw1"
+    - "host /proc/sys/net/netfilter/nf_log_all_netns is 0; kernel docs: by default only init_net can log with the LOG target, so containers can't flood the host log (https://docs.kernel.org/networking/netfilter-sysctl.html)"
+  workaround: "not tested here: NFLOG with a reader in fw1's namespace, or nf_log_all_netns=1 on the host (host-wide, so not tried in this shared sandbox). Count drops with iptables counters meanwhile, as test_firewall_counts_the_drop does"
+
+- id: V-007
+  opened: 2026-10-15
+  version: frrouting/frr:v8.4.1 (FRR 8.4.1_git), /usr/lib/frr/frrcommon.sh
+  symptom: "every router's start log has \"/usr/lib/frr/frrcommon.sh: line 211: kill: `': not a pid or valid job spec\" once per non-zebra daemon, then \"Cannot stop zebra: pid file not found\""
+  verdict: platform-bug
+  evidence:
+    - docker logs of every lab router, at every start
+    - "frrcommon.sh: watchfrr's startup 'restart all' runs all_stop --quiet before any daemon is up. daemon_stop with --quiet and no pid file skips its early return and runs kill -2 with an empty pid. zebra is stopped last without --quiet, hence 'Cannot stop zebra'"
+  workaround: none needed; the daemons start normally (watchfrr logs "all daemons up")
+
+- id: V-008
+  opened: 2026-10-15
+  version: frrouting/frr:v8.4.1 (FRR 8.4.1_git); sandbox kernel 6.18.44 only
+  symptom: zebra logs "RTADV socket ... Address family not supported by protocol(97)" and "Disabling MPLS support (no kernel support)" at start
+  verdict: lab-artifact
+  evidence:
+    - "docker logs clab-<lab>-r1 in this sandbox; sysctl net.ipv6.conf.all.forwarding is an unknown key here, so the kernel has no IPv6"
+  workaround: none needed for this IPv4-only lab; GitHub runners have IPv6, which is why V-002 shows up there and not here
+
+- id: V-009
+  opened: 2026-10-15
+  version: ansible-core 2.21.5, drift.yml at 1e810cf
+  symptom: with IPv4 forwarding off on r1, make drift fails on "ip forwarding", although the drift.yml comment says forwarding lines are ignored
+  verdict: my-config
+  evidence:
+    - "2026-10-15, lab r1 with net.ipv4.ip_forward=0: frr-reload --test lists 'ip forwarding' under Lines To Delete and make drift fails (restored to 1 afterwards)"
+    - "the filter '^(no )?ipv6? forwarding$' reads as 'ipv' plus an optional '6', so it never matches 'ip forwarding'"
+  workaround: none needed; a router with IPv4 forwarding off is broken, so failing is right. The comment over-claims and should say IPv6 only

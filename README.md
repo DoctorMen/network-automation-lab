@@ -55,6 +55,10 @@ flowchart LR
 | A clean path raises no alarm | [`test_clean_path_raises_no_alarm`](tests/live/test_locate.py) |
 | `locate` refuses to run on any device the operator doesn't own, loss at a middle hop that doesn't carry on to the destination (ICMP rate limiting) is not called loss, and a hop that didn't answer traceroute is traced again instead of being skipped, which would hand our segment to the carrier | [`tests/test_locate.py`](tests/test_locate.py) |
 | The inventory can't ship with duplicate IPs, mismatched subnets, overlapping networks, wrong BGP peer addresses, off-subnet gateways or a device with no owner | [`tests/test_inventory.py`](tests/test_inventory.py), with all problems reported at once |
+| Every node runs exactly the image (tag and digest), FRR, Alpine and busybox builds the inventory records, and CI pulls that image | [`test_running_version_matches_inventory`](tests/live/test_platform.py) reads `apk info -v` and `/etc/os-release` on all 7 nodes and `show version` on the 4 routers; [`test_ci_pulls_the_image_the_inventory_names`](tests/test_render.py) |
+| Every odd behaviour in the log has one verdict (my config, normal behaviour, platform bug or lab artifact), the version it was seen on, and a fix or workaround. None may stay unclassified past 5 working days | [`docs/verdicts.yml`](docs/verdicts.yml), linted by [`tests/test_verdicts.py`](tests/test_verdicts.py) |
+| Every design decision has a record naming the constraint, the alternatives (doing nothing included), an outside source, the stake and who decides | [`docs/decisions/`](docs/decisions/), linted by [`tests/test_decisions.py`](tests/test_decisions.py) |
+| The RAM figure below is the newest measurement, and that raw data is committed | [`tests/test_sizing.py`](tests/test_sizing.py) against [`docs/sizing/`](docs/sizing/README.md) |
 | Every claim in this table, and every fw1 rule, is in a control register with what it defends against, how it fails, the test that proves it and how often that test must pass | [`docs/controls.yml`](docs/controls.yml), linted by [`tests/test_controls.py`](tests/test_controls.py) |
 
 CI runs every test each night as well as on every push to `main` and every pull request. It keeps the live JUnit results (`results/live.xml`) and config backups as a run artifact for 90 days; the offline tests' results are in the same run's log. That gives every live claim a dated pass or fail; the register says each must pass at least every 31 days.
@@ -71,13 +75,14 @@ inventory/network.yml ──► netlab validate ──► netlab render ──�
                                      containerlab deploy ──► pytest tests/live ──► ansible drift.yml
 ```
 
-- **Routers** run [FRRouting](https://frrouting.org/) 8.4, the same open-source routing suite used in production by many cloud and ISP networks. Its CLI is close to Cisco IOS.
-- **The firewall** is a Linux node with an ordered, stateful iptables policy (`ESTABLISHED,RELATED` first, explicit deny, counted default drop) rendered from the rule list in the inventory. TCP allow rules carry `syn: true`, rendered as `--syn`, so only a connection's opening packet can match them and the rest must come through as `ESTABLISHED`. `--ctstate NEW` alone isn't enough: with the kernel default `nf_conntrack_tcp_loose=1`, conntrack picks up a forged mid-stream ACK as a NEW connection. The default drop is counted, not logged: the kernel's LOG target writes nothing from inside a container's network namespace unless the host sets `net.netfilter.nf_log_all_netns=1`, so the drop rule's packet counter is the record the tests read.
+- **Routers** run [FRRouting](https://frrouting.org/) 8.4.1, the same open-source routing suite used in production by many cloud and ISP networks. Its CLI is close to Cisco IOS. The exact image digest and package versions are in the inventory's `platform:` block, and a live test checks every node against them.
+- **The firewall** is a Linux node with an ordered, stateful iptables policy (`ESTABLISHED,RELATED` first, explicit deny, counted default drop) rendered from the rule list in the inventory. TCP allow rules carry `syn: true`, rendered as `--syn`, so only a connection's opening packet can match them and the rest must come through as `ESTABLISHED`. `--ctstate NEW` alone isn't enough: with the kernel default `nf_conntrack_tcp_loose=1`, conntrack picks up a forged mid-stream ACK as a NEW connection. The default drop is counted, not logged: the kernel's LOG target writes nothing from inside a container's network namespace unless the host sets `net.netfilter.nf_log_all_netns=1` ([V-006](docs/verdicts.yml)), so the drop rule's packet counter is the record the tests read.
+- **Odd behaviours** each get an entry in [`docs/verdicts.yml`](docs/verdicts.yml): the version, the evidence, one verdict, and the commit that fixed it or the workaround.
 - **Ansible** connects to each node through the Docker connection plugin, so no SSH keys are needed in the lab. [`deploy.yml`](ansible/deploy.yml) uses `frr-reload.py` to apply only the lines that differ, without restarting routing daemons, which is how you change a live router safely. `--check` prints the plan without applying it.
 
 ## Run it yourself
 
-You need Linux (or WSL2 on Windows) with Docker. The whole lab uses under 100 MB of RAM (measured at 87 MiB for all 7 nodes, with BFD running).
+You need Linux (or WSL2 on Windows) with Docker. The lab is small: measured at 81.3 MiB for all 7 nodes in the `sandbox` environment, a cloud VM where a stand-in replaces Containerlab ([sizing and raw data](docs/sizing/README.md)). No figure from a real Containerlab host is committed yet; every CI run that gets through the drift check measures one and uploads it as the `sizing-data` artifact.
 
 ```bash
 git clone https://github.com/DoctorMen/network-automation-lab && cd network-automation-lab
@@ -85,10 +90,11 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt -r requirements-ansible.txt
 bash -c "$(curl -sL https://get.containerlab.dev)"   # installs Containerlab
 
-make test      # offline: inventory validation, rendering, locate rules, control register (N tests)
+make test      # offline: inventory, rendering, locate rules, control register and record lints (N tests)
 make deploy    # render configs and start 7 containers
 make live      # N live tests against the running network, JUnit in results/live.xml
 make drift     # back up routers and firewall, fail on drift or an incomplete backup
+make measure LAB_ENV=laptop   # RAM per node, saved to docs/sizing/data/
 make destroy
 ```
 
@@ -109,6 +115,7 @@ docker exec clab-netauto-fw1 iptables -vnL FORWARD
 - Make the same link fail silently: `docker exec clab-netauto-r1 iptables -I INPUT -i eth2 -j DROP`, then the same with `-I OUTPUT -o eth2`. The link stays up, but in about a second BFD declares r3 down, OSPF drops that neighbor (`show ip ospf neighbor`) and the route moves to r2. Run both again with `-D` instead of `-I` to put it back.
 - Make the carrier lossy (`docker exec clab-netauto-isp iptables -I INPUT -i eth1 -p icmp -m statistic --mode random --probability 0.2 -j DROP`) and run `make locate SRC=h1 DST=203.0.113.1`. It clears each campus segment, names `r2-isp` and the carrier NOC, and writes the evidence to `build/finding.json`. The same command with `-D` removes the loss. The steps and what to send the carrier are in [`docs/runbooks/carrier-loss.md`](docs/runbooks/carrier-loss.md).
 - Forge a mid-stream ACK from the server to a user (`docker exec -i clab-netauto-h2 python3 - 10.10.10.10 20000 80 < tests/live/tools/forge_ack.py`) and watch `default-drop` count it in `docker exec clab-netauto-fw1 iptables -vnxL FORWARD`.
+- Change `frr:` in the inventory's `platform:` block to `8.4.2_git-r0`, then run `make render` and `make live`. `test_running_version_matches_inventory` names every node that runs something else.
 
 ## Sample output
 
@@ -128,14 +135,17 @@ isp# show ip bgp
 
 ## Design decisions
 
-- **Point-to-point /31s and `ip ospf network point-to-point`** on router links. No DR/BDR election, faster adjacency, and half the address space of /30s (RFC 3021).
-- **LAN-A sits behind a firewall and is reached by a static route redistributed into OSPF**, not by running OSPF on the firewall. Security devices shouldn't take part in the routing protocol unless they have to.
-- **Aggregate at the edge (`summary-only`)**. The ISP sees one stable `/8`, so internal link flaps never reach the internet routing table.
-- **BFD on every OSPF link, with FRR's default timers** (300 ms, 3 missed packets). OSPF alone needs its 40 s dead timer to notice a link that is up but passes nothing. There is no `bfd` profile, because FRR hides default timer values in `show running-config`, so a profile that spells them out would show as drift forever. The failure modes of the failover design, each with its mitigation or accepted risk, are in [docs/decisions/0009-failover.md](docs/decisions/0009-failover.md).
-- **Server LAN interface is OSPF passive.** The subnet is advertised, but no adjacency can form toward hosts.
-- **Intent is mounted read-only.** Each router's `/etc/frr/frr.conf` is its rendered file from `build/`, bind-mounted read-only. With a writable mount, `write memory` after a hand change would save straight into `build/`, and the drift check would then compare the router against its own drifted config and pass. Now `write memory` fails, the change stays only in the running config, and `make drift` catches it. The firewall's `/firewall.sh` is mounted read-only for the same reason.
-- **Expected state is generated, not hand-written.** The tests read `expected_state.json` from the same inventory that built the configs, so adding a router to the YAML automatically adds it to the tests.
-- **Documentation ranges** (`198.51.100.0/24`, `203.0.113.0/24`) for the ISP side, so nothing in the lab collides with real internet addresses.
+Each decision has a record in [`docs/decisions/`](docs/decisions/) with the constraint behind it, the alternatives (doing nothing included), outside sources, the stake and who decides. `make test` lints them.
+
+- **Point-to-point /31s and `ip ospf network point-to-point`** on router links. No DR/BDR election, faster adjacency (10 s against 40 s for the broadcast default, measured), and half the address space of /30s (RFC 3021). [0001](docs/decisions/0001-p2p-31-links.md)
+- **LAN-A sits behind a firewall and is reached by a static route redistributed into OSPF**, not by running OSPF on the firewall. Security devices shouldn't take part in the routing protocol unless they have to. [0002](docs/decisions/0002-static-route-to-lan-a.md)
+- **Aggregate at the edge (`summary-only`)**. The ISP sees one stable `/8`, so internal link flaps never reach the internet routing table. [0003](docs/decisions/0003-summary-only-aggregate.md)
+- **BFD on every OSPF link, with FRR's default timers** (300 ms, 3 missed packets). OSPF alone needs its 40 s dead timer to notice a link that is up but passes nothing. There is no `bfd` profile, because FRR hides default timer values in `show running-config`, so a profile that spells them out would show as drift forever. Each failure mode of the failover design has a mitigation or an accepted risk in its record. [0009](docs/decisions/0009-failover.md)
+- **Server LAN interface is OSPF passive.** The subnet is advertised, but no adjacency can form toward hosts. [0004](docs/decisions/0004-passive-server-lan.md)
+- **Intent is mounted read-only.** Each router's `/etc/frr/frr.conf` is its rendered file from `build/`, bind-mounted read-only. With a writable mount, `write memory` after a hand change would save straight into `build/`, and the drift check would then compare the router against its own drifted config and pass. Now `write memory` fails, the change stays only in the running config, and `make drift` catches it. The firewall's `/firewall.sh` is mounted read-only for the same reason. [0008](docs/decisions/0008-read-only-intent.md)
+- **Expected state is generated, not hand-written.** The tests read `expected_state.json` from the same inventory that built the configs, so adding a router to the YAML automatically adds it to the tests. [0005](docs/decisions/0005-generated-expected-state.md)
+- **Documentation ranges** (`198.51.100.0/24`, `203.0.113.0/24`) for the ISP side, so nothing in the lab collides with real internet addresses (RFC 5737). [0006](docs/decisions/0006-documentation-ranges.md)
+- **No management network.** Nodes run with `network-mode: none`. Otherwise Docker's eth0 default route (distance 0) beats the OSPF default and traffic leaves the lab, which is what broke the first CI run. Everything reaches the nodes with `docker exec`. [0007](docs/decisions/0007-no-management-network.md)
 
 ## Roadmap
 

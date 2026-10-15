@@ -62,6 +62,7 @@ def test_render_all_writes_a_consistent_lab(tmp_path):
     render_all(inv, tmp_path)
     topo = yaml.safe_load((tmp_path / "topology.clab.yml").read_text())
     assert set(topo["topology"]["nodes"]) == set(inv.devices)
+    assert topo["topology"]["defaults"]["image"] == inv.platform["image"]
     assert len(topo["topology"]["links"]) == len(inv.links)
     for node in topo["topology"]["nodes"].values():
         for bind in node.get("binds", []):
@@ -69,6 +70,7 @@ def test_render_all_writes_a_consistent_lab(tmp_path):
     expected = json.loads((tmp_path / "expected_state.json").read_text())
     assert expected["ospf_neighbors"]["r2"] == ["r1", "r3"]
     assert expected["bfd_peers"]["r1"] == {"10.0.12.1": "eth1", "10.0.13.1": "eth2"}
+    assert expected["platform"] == inv.platform
     assert expected["bgp_sessions"][0]["peer"] == "isp"
 
 
@@ -78,3 +80,11 @@ def test_render_is_deterministic(tmp_path):
     for f in (tmp_path / "a").rglob("*"):
         if f.is_file():
             assert f.read_text() == (tmp_path / "b" / f.relative_to(tmp_path / "a")).read_text()
+
+
+def test_ci_pulls_the_image_the_inventory_names():
+    """CI deploys the image the inventory records, so the live version check tests the real thing."""
+    ci = yaml.safe_load((INVENTORY.parents[1] / ".github" / "workflows" / "ci.yml").read_text())
+    steps = [step for job in ci["jobs"].values() for step in job["steps"]]
+    pulls = [step["run"].split()[-1] for step in steps if step.get("run", "").startswith("docker pull")]
+    assert pulls == [inv.platform["image"]]

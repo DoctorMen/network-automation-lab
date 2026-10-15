@@ -52,6 +52,8 @@ jobs:
         run: make live  # also writes results/live.xml (JUnit, timestamped)
       - name: Config drift check (Ansible)
         run: make drift
+      - name: Measure RAM (raw data for docs/sizing)
+        run: make measure LAB_ENV=github-runner NOTE="GitHub ubuntu-latest, containerlab $CLAB_VERSION, idle right after make live and make drift"
       - name: Show routing tables on failure
         if: failure()
         run: |
@@ -69,6 +71,13 @@ jobs:
             backups/
           if-no-files-found: ignore
           retention-days: 90
+      - name: Upload sizing data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sizing-data
+          path: docs/sizing/data/*-github-runner.json
+          if-no-files-found: ignore
       - name: Destroy
         if: always()
         run: make destroy || true
