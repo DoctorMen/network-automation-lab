@@ -28,8 +28,12 @@ live:            ## Test the running lab: routing, firewall, failover, drift che
 drift:           ## Back up routers and firewall, fail on drift or on a backup missing running config
 	cd ansible && ansible-playbook drift.yml
 
-apply:           ## Push intended config to routers (diff only, no restarts)
+apply:           ## Roll intended config out, canary first; roll back and stop on a failed health gate (diff only, no restarts)
 	cd ansible && ansible-playbook deploy.yml
+
+.PHONY: verify
+verify:          ## Is each change in effect, not just installed: kernels, FRR daemons, h2's QoS classes (read-only)
+	$(PY) -m netlab.verify
 
 locate:          ## Find where loss starts on a path and who owns it: make locate SRC=h1 DST=203.0.113.1
 	$(PY) -m netlab locate --src "$(SRC)" --dst "$(DST)"

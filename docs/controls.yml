@@ -401,3 +401,100 @@ controls:
       firewall.sh runs once at deploy. `make drift` compares fw1's live filter table with it, but
       only when it runs, so a hand change lives until the next run. Traffic that never crosses fw1
       (the ISP side to LAN-B) is not filtered at all.
+
+  - id: canary-rollback
+    claim: "A router change goes to the canary (r1) first and must pass a health gate: every OSPF neighbor Full, every BGP session Established, every host answering the other. A change that fails it puts the canary back on the config it ran before, and no other router is touched"
+    test: tests/live/test_rollout.py::test_failing_canary_rolls_back_and_blocks
+    period: P31D
+    threat: >-
+      A bad change (a wrong area, a removed interface line, a typo in a template) reaching every
+      router at once, and a broken router left broken until someone notices.
+    fails_when: >-
+      The gate sees only what netlab.health checks: OSPF, BGP and host-to-host ping. A change that
+      breaks a route, a firewall path or a service while those still pass goes through, and so does
+      a fault that shows after the 10 s vetting delay. Production batches are rolled back as a whole
+      only if every router fails its gate together (checked by hand in the lab once, not by a test). If
+      one router fails an earlier step (the apply or the compare), only it rolls back, and the rest of its
+      batch keeps the change (decision 0010, an accepted risk). The rollback restores the running
+      config, not build/, so a restart boots the bad intent; make drift reports it. The rollout only
+      covers the routers: fw1 and the hosts are not in it.
+
+  - id: change-window
+    claim: "Nothing changes outside the change window, and a harmless change passes every gate and reaches every router, so the gate doesn't just fail everything"
+    test: tests/live/test_rollout.py::test_change_waits_for_window_then_reaches_every_router
+    period: P31D
+    threat: >-
+      A change started in the middle of the business day, and a gate so strict that people learn
+      to bypass it.
+    fails_when: >-
+      The lab's window is open all day (the test closes it with -e). The window is checked when
+      each batch starts, so a batch can run past its end, and a window that closes after the
+      canary stops the rollout with only the canary changed. The clock is the control
+      node's, in UTC. Anyone can run frr-reload.py or vtysh on a router directly and skip all of it.
+
+  - id: patch-in-effect
+    claim: "A patch counts as done only when it runs. `make verify` reports `not in effect` for a kernel installed but not booted into, and for an FRR daemon still running the binary an upgrade replaced on disk, until it restarts. The nodes share the host's kernel, so the test installs a newer kernel's module folder on r2 to stand for the upgrade"
+    test:
+      - tests/live/test_verify.py::test_kernel_patch_without_reboot_is_not_in_effect
+      - tests/live/test_verify.py::test_daemon_patch_without_restart_is_not_in_effect
+      - tests/test_verify.py::test_newest_kernel_is_found_by_version
+      - tests/test_verify.py::test_replaced_or_stopped_daemon_is_not_in_effect
+    period: P31D
+    threat: >-
+      A patch reported as applied because the package is installed, while the old kernel or daemon
+      is still the one running, so the vulnerability or bug is still live.
+    fails_when: >-
+      The kernel check compares names under /lib/modules with uname -r, so a kernel installed
+      somewhere else, or a live-patched one, is not seen; the lab nodes install none, so on them it
+      only has something to compare in the test. The daemon check covers FRR's own processes under
+      /usr/lib/frr, not shared libraries an upgrade replaced (needrestart also reads /proc/<pid>/maps
+      for those), and not the host. It runs when called: after each rollout batch, on that batch's
+      routers, and by make verify. CI also applies the kernel rule to the runner's own installed
+      kernel, as a report that doesn't fail the job.
+
+  - id: qos-in-effect
+    claim: "h2's QoS is confirmed from its class counters: the installed rates match the inventory, and five connections to port 80 are counted in the web class. That costs a few kilobytes on a 20 Mbit link. A changed rate or a missing filter is `not in effect`"
+    test: tests/live/test_verify.py::test_qos_change_confirmed_from_class_counters
+    period: P31D
+    threat: >-
+      QoS that is configured but doing nothing (a filter lost, a class at the wrong rate), found
+      only when users complain during the next backup.
+    fails_when: >-
+      The probe checks that connections to the port land in the class, not that the class gets its
+      share under load; that is test_backup_yields_to_web's job. Rates are compared as tc prints
+      them, so the inventory must give whole mbit. Burst, quantum and leaf queues are not checked.
+      Only make verify checks it: the rollout runs netlab.verify on its own routers, and no rollout
+      changes h2's QoS, which is set when the lab deploys.
+
+  - id: bulk-yields
+    claim: "A backup yields to web traffic. h2's port is capped at 20 Mbit, standing for a link that can't be upgraded, and HTB gives web replies a class of their own. During a 15 MB copy from h2 that fills the link, h1's web p95 stays under 50 ms and every byte arrives. Measured in the sandbox lab: 2.7–6.3 ms, against 110–126 ms on one flat queue of the same rate"
+    test: tests/live/test_qos.py::test_backup_yields_to_web
+    period: P31D
+    threat: >-
+      A job that can't be skipped (a backup, a bulk copy) filling a fixed link and making the
+      production service slow for everyone while it runs.
+    fails_when: >-
+      Only h2's egress is shaped, and only traffic from source port 80 is web; requests to h2 and
+      other links are not shaped. One bulk flow and one web client were tested, on veths with MTU
+      9500. The leaf queues are plain FIFOs, because the sandbox kernel has no fq_codel or cake.
+      The 20 Mbit cap is the lab's stand-in for a slow link, not a measured one.
+
+  - id: change-record-parity
+    claim: "The change-record check fails a pull request whose description doesn't say which risks the lab could not cover: that section is missing, empty, still only the template's guidance, or a filler word like `n/a`. Until main is protected, a red check blocks nothing. What the lab can't cover is in [`docs/LAB_PARITY.md`](docs/LAB_PARITY.md)"
+    test:
+      - tests/test_change_record.py::test_a_filled_section_passes
+      - tests/test_change_record.py::test_the_untouched_template_fails
+      - tests/test_change_record.py::test_an_empty_or_filler_section_fails
+      - tests/test_change_record.py::test_a_missing_section_fails
+      - tests/test_change_record.py::test_an_issue_number_does_not_end_the_section
+      - tests/test_change_record.py::test_the_check_reads_the_github_event
+      - tests/test_change_record.py::test_ci_runs_the_check_when_the_description_changes
+    period: P31D
+    threat: >-
+      A change tested in the lab and called safe, when the lab couldn't have shown the thing that
+      breaks it (no switches, no TLS, one kernel), and nobody wrote that down.
+    fails_when: >-
+      main is not protected: a direct push skips the pull request and the check, and a red check
+      doesn't block a merge until branch protection requires it (a repository setting). The check
+      runs the pull request's own copy of netlab/changerecord.py, so a pull request could weaken it.
+      It checks that the section says something, not that it is true or complete.

@@ -1,0 +1,20 @@
+name: Change record
+
+# Every change to main goes in as a pull request, and its description is the change record. This
+# check fails while the description's "Risks the lab could not cover" section is empty (OROS CHG-4,
+# docs/LAB_PARITY.md). It runs again when the description is edited, so fixing the text turns it green.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  change-record:
+    name: Change record names what the lab could not cover
+    # Pinned, like the other jobs. The check is standard-library Python, so nothing to install.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m netlab.changerecord "$GITHUB_EVENT_PATH"

@@ -28,6 +28,16 @@ jobs:
       - run: pip install -r requirements.txt
       - run: make validate render
       - run: make test
+      - name: The runner's own kernel, by netlab.verify's rule (lab nodes install no kernel to check)
+        continue-on-error: true  # a reboot the runner is waiting for is GitHub's to do, so this reports, not gates
+        run: |
+          python3 - <<'EOF'
+          import os, platform
+          from netlab.verify import kernel_status
+          verdict = kernel_status(platform.release(), os.listdir("/lib/modules"))
+          print("runner kernel:", verdict)
+          raise SystemExit("not in effect" in verdict)
+          EOF
 
   lab:
     name: Deploy the lab and test it live

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -71,6 +72,14 @@ class Inventory:
     @property
     def hosts(self) -> dict:
         return self.raw.get("hosts", {})
+
+    @property
+    def qos(self) -> dict:
+        return self.raw.get("qos", {})
+
+    @property
+    def rollout(self) -> dict:
+        return self.raw.get("rollout", {})
 
     @property
     def devices(self) -> list[str]:
@@ -212,6 +221,29 @@ def validate(inv: Inventory) -> list[str]:
             # out NEW: with nf_conntrack_tcp_loose=1, conntrack calls a forged ACK NEW.
             if rule.get("proto") == "tcp" and rule["action"] == "accept" and not rule.get("syn") and "NEW" in rule.get("state", ["NEW"]):
                 problems.append(f"{label}: TCP accept needs syn: true, or it forwards forged mid-stream packets")
+
+    # tc reads "15mbit"; netlab verify compares the installed rates with these as text.
+    for name, q in inv.qos.items():
+        label = f"qos on {name}"
+        if name not in inv.hosts:
+            problems.append(f"{label}: {name} is not a host")
+        elif q["interface"] != inv.hosts[name]["interface"]:
+            problems.append(f"{label}: {q['interface']} is not {name}'s interface ({inv.hosts[name]['interface']})")
+        rates = [q["rate"]] + [c["rate"] for c in q["classes"]]
+        if not all(re.fullmatch(r"\d+mbit", str(r)) for r in rates):
+            problems.append(f"{label}: write every rate in whole mbit, like 20mbit")
+        elif sum(int(r[:-4]) for r in rates[1:]) > int(rates[0][:-4]):
+            problems.append(f"{label}: the class rates add up to more than the link's {q['rate']}")
+        if [c.get("default", False) for c in q["classes"]].count(True) != 1:
+            problems.append(f"{label}: exactly one class must be the default, for traffic no filter matches")
+        if q.get("probe_from") not in inv.hosts:
+            problems.append(f"{label}: probe_from {q.get('probe_from')!r} is not a host")
+
+    if inv.routers and inv.rollout.get("canary") not in inv.routers:
+        problems.append(f"rollout: canary {inv.rollout.get('canary')!r} is not a router")
+    window = inv.rollout.get("change_window", {})
+    if not all(re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d|24:00", str(window.get(k))) for k in ("start", "end")):
+        problems.append(f"rollout: change_window {window} needs a start and an end as quoted HH:MM (UTC)")
 
     # Someone has to act when a device breaks, and tools may log in only where the operator owns it.
     for name in inv.devices:
