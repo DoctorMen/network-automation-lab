@@ -65,6 +65,10 @@ flowchart LR
 
 CI runs every test each night as well as on every push to `main` and every pull request. It keeps the live JUnit results (`results/live.xml`) and config backups as a run artifact for 90 days; the offline tests' results are in the same run's log. That gives every live claim a dated pass or fail; the register says each must pass at least every 31 days.
 
+## Scored against what operators actually need
+
+[OROS 0.3](docs/oros/README.md) is a standard of 61 pass/fail requirements for network and security operations, built from 3,785 relevant Stack Exchange questions and 103 mailing-list, forum and feature-tracker posts. [The scorecard](docs/oros/scorecard.md) holds this lab to every one of them, and names the test behind each pass: **6 pass, 10 partial, 45 fail.** Most of the fails need things a seven-container lab doesn't have yet (a log collector, alerting, per-person accounts), and the scorecard says what each one is missing.
+
 ## How it works
 
 ```
@@ -92,7 +96,7 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt -r requirements-ansible.txt
 bash -c "$(curl -sL https://get.containerlab.dev)"   # installs Containerlab
 
-make test      # offline: inventory, rendering, locate rules, control register and record lints (47 tests)
+make test      # offline: inventory, rendering, locate rules, control register and record lints, scorecard (50 tests)
 make deploy    # render configs and start 7 containers
 make live      # 26 live tests against the running network, JUnit in results/live.xml
 make drift     # back up routers and firewall, fail on drift or an incomplete backup
