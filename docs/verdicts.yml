@@ -100,3 +100,26 @@
     - "the filter '^(no )?ipv6? forwarding$' reads as 'ipv' plus an optional '6', so it never matches 'ip forwarding'"
   workaround: none needed; a router with IPv4 forwarding off is broken, so failing is right
   fixed_in: PR #2 (the filter now reads ipv6 only, and its comment and docs/collection-methods.md say so)
+
+- id: V-010
+  opened: 2026-10-15
+  version: frrouting/frr:v8.4.1 (FRR 8.4.1_git), netlab/restore.py before its first commit
+  symptom: the restore drill failed once on r2's untouched backup, listing every interface's "ip address" line as missing from the throwaway router
+  verdict: my-config
+  evidence:
+    - "the boot check looked for 'zebra' anywhere in ps, and watchfrr's own arguments ('/usr/lib/frr/watchfrr zebra bgpd ospfd staticd bfdd') contain it"
+    - "2026-10-15, 5 throwaway r2 boots polled with the old check: in one it reported booted while no /usr/lib/frr/zebra process existed yet"
+    - "after matching the zebra binary's own command line: 60 boots (15 drills of 4 routers at once), 0 failures"
+  workaround: none needed
+  fixed_in: the build that added the restore drill (Scratch.wait_booted matches lines starting /usr/lib/frr/zebra)
+
+- id: V-011
+  opened: 2026-10-15
+  version: frrouting/frr:v8.4.1 (FRR 8.4.1_git), throwaway restore-drill routers (--network none) in the sandbox, 4 CPUs shared with another lab
+  symptom: in about 1 throwaway boot in 20, zebra is gone a second after it starts and only comes back about 60 s later, so the restore drill's 60 s boot wait timed out once
+  evidence:
+    - "2026-10-15, 15 rounds of 4 throwaway routers booted at once (r1, r2, r3, isp): in 3 rounds one router had no /usr/lib/frr/zebra process at 12 s; each round finished booting at 66.9 to 67.5 s, the rest at 1.1 to 1.5 s"
+    - "the same day, docker logs of one such router (round 18 of a second sample): watchfrr reports ospfd, staticd and bfdd 'state -> up' but never zebra, after 'watchfrr.sh restart all' printed 'Cannot stop zebra: pid file not found'; /var/run/frr/zebra.pid and zserv.api exist, the process does not"
+    - "watchfrr's minimum restart interval defaults to 60 s, which matches the delay"
+    - "make restore-drill against a good backup: test_every_router_restores_cleanly failed once with 'drill-na3-r1-... did not finish booting in 60 s'"
+  workaround: Scratch.wait_booted waits up to 120 s, which covers one watchfrr restart; the drill then passes, slower

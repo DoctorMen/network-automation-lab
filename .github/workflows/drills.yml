@@ -1,0 +1,103 @@
+name: Drills
+
+# Weekly drills that take longer than the main CI job should: the restore drill (OROS REC-3) and the
+# power-event drill (REC-6). Their dated JUnit results are what the control-status check in ci.yml reads.
+# Also the one-time creation of the backup repository, which no scheduled job ever does by itself.
+on:
+  # Mondays, an hour after the nightly CI run has taken a fresh backup. GitHub runs schedules on the
+  # default branch only, and in a public repo disables them after 60 days with no repository activity.
+  schedule:
+    - cron: "41 5 * * 1"
+  workflow_dispatch:
+    inputs:
+      init_backup_repo:
+        description: "Create the restic backup repository (once; refuses if one exists). Runs nothing else."
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  backup-init:
+    name: Create the backup repository (once, by hand)
+    if: ${{ inputs.init_backup_repo }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Pull backup image
+        run: docker pull restic/restic:0.16.4
+      - name: Look for an existing repository
+        id: existing
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/backup
+          key: restic-${{ github.run_id }}
+          restore-keys: restic-
+          lookup-only: true
+      # A second repository would quietly become "the newest" and orphan every snapshot before it.
+      - name: Refuse to replace it
+        if: ${{ steps.existing.outputs.cache-matched-key != '' }}
+        run: |
+          echo "A backup repository already exists (cache ${{ steps.existing.outputs.cache-matched-key }})."
+          echo "To start again, delete that cache under Actions > Caches first."
+          exit 1
+      - name: Create it, with a random password stored beside it (see docs/decisions/0014)
+        run: make backup-init BACKUP_REPO="$RUNNER_TEMP/backup/repo" BACKUP_PASSWORD="$RUNNER_TEMP/backup/password"
+      - uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/backup
+          key: restic-${{ github.run_id }}
+
+  drills:
+    name: Restore drill and power-event drill
+    if: ${{ !inputs.init_backup_repo }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CLAB_VERSION: "0.68.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt -r requirements-ansible.txt
+      - name: Install Containerlab
+        run: bash -c "$(curl -sL https://get.containerlab.dev)" -- -v "$CLAB_VERSION"
+      - name: Pull router and backup images
+        run: |
+          docker pull frrouting/frr:v8.4.1
+          docker pull restic/restic:0.16.4
+      - name: Deploy
+        id: deploy
+        run: make deploy
+      - name: Restore the backup repository (fails if it is missing)
+        id: backup-repo
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/backup
+          key: restic-${{ github.run_id }}
+          restore-keys: restic-
+          fail-on-cache-miss: true
+      - name: Restore drill (each router's latest backup on throwaway routers, and one stanza alone)
+        run: make restore-drill BACKUP_REPO="$RUNNER_TEMP/backup/repo" BACKUP_PASSWORD="$RUNNER_TEMP/backup/password"
+      - name: Power-event drill (whole-lab containerlab deploy --reconfigure)
+        if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
+        run: make power-drill
+      - name: Upload drill results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drill-results
+          path: results/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Destroy
+        if: always()
+        run: make destroy || true

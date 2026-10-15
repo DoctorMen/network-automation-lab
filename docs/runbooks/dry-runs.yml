@@ -1,0 +1,11 @@
+# Every time someone carries out a runbook in the lab, add an entry at the end. OROS 0.3 REC-6 counts
+# a run by someone who did not write the runbook (its written_by), who needed no help, and passed.
+# How to do one cold: docs/runbooks/README.md. `make test` lints this file (tests/test_runbooks.py).
+#
+#   date         YYYY-MM-DD the run happened
+#   runbook      file name without .md, e.g. link-failure
+#   by           who carried it out
+#   help_needed  true or false: did they need anything the runbook didn't say (a chat, the code, the author)?
+#   result       pass (done when its "Done when" held) or fail
+#   notes        what was unclear or wrong, how long it took
+runs: []
