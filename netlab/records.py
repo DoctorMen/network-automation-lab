@@ -67,6 +67,10 @@ def lint_decision(path: Path) -> list[str]:
         missing = [k for k in ("mode", "mitigation", "test") if not (isinstance(fm, dict) and fm.get(k))]
         if missing:
             problems.append(f"{label}: failure mode {fm!r} is missing {', '.join(missing)}")
+        elif str(fm["test"]).startswith("none"):
+            # An untested mode is allowed only as a stated decision: "none (accepted risk ...)".
+            if not re.match(r"none \(.+\)$", str(fm["test"])):
+                problems.append(f"{label}: failure mode {fm['mode']!r} has no test; say why as none (reason)")
         elif not names_a_test(fm["test"]):
             problems.append(f"{label}: failure mode test {fm['test']} does not exist")
 

@@ -48,12 +48,14 @@ jobs:
         run: docker pull frrouting/frr:v8.4.1
       - name: Deploy
         run: make deploy
-      - name: Live tests (OSPF, BGP, reachability, firewall policy, link failover)
+      - name: Live tests (routing, reachability, firewall, failover, collection, locate, platform)
         run: make live  # also writes results/live.xml (JUnit, timestamped)
       - name: Config drift check (Ansible)
         run: make drift
       - name: Measure RAM (raw data for docs/sizing)
-        run: make measure LAB_ENV=github-runner NOTE="GitHub ubuntu-latest, containerlab $CLAB_VERSION, idle right after make live and make drift"
+        run: |
+          make measure LAB_ENV=github-runner NOTE="GitHub ubuntu-latest, containerlab $CLAB_VERSION, idle right after make live and make drift"
+          cat docs/sizing/data/*-github-runner.json
       - name: Show routing tables on failure
         if: failure()
         run: |

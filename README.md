@@ -82,7 +82,7 @@ inventory/network.yml ──► netlab validate ──► netlab render ──�
 
 ## Run it yourself
 
-You need Linux (or WSL2 on Windows) with Docker. The lab is small: measured at 81.3 MiB for all 7 nodes in the `sandbox` environment, a cloud VM where a stand-in replaces Containerlab ([sizing and raw data](docs/sizing/README.md)). No figure from a real Containerlab host is committed yet; every CI run that gets through the drift check measures one and uploads it as the `sizing-data` artifact.
+You need Linux (or WSL2 on Windows) with Docker. The lab is small: measured at 88.5 MiB for all 7 nodes in the `sandbox` environment, a cloud VM where a stand-in replaces Containerlab ([sizing and raw data](docs/sizing/README.md)). No figure from a real Containerlab host is committed yet; every CI run that gets through the drift check measures one and uploads it as the `sizing-data` artifact.
 
 ```bash
 git clone https://github.com/DoctorMen/network-automation-lab && cd network-automation-lab
@@ -90,9 +90,9 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt -r requirements-ansible.txt
 bash -c "$(curl -sL https://get.containerlab.dev)"   # installs Containerlab
 
-make test      # offline: inventory, rendering, locate rules, control register and record lints (N tests)
+make test      # offline: inventory, rendering, locate rules, control register and record lints (46 tests)
 make deploy    # render configs and start 7 containers
-make live      # N live tests against the running network, JUnit in results/live.xml
+make live      # 24 live tests against the running network, JUnit in results/live.xml
 make drift     # back up routers and firewall, fail on drift or an incomplete backup
 make measure LAB_ENV=laptop   # RAM per node, saved to docs/sizing/data/
 make destroy

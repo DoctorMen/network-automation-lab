@@ -30,19 +30,19 @@ failure_modes:
     test: tests/live/test_failover.py::test_bfd_sessions_up
   - mode: BFD false positive (a busy router misses 3 packets in 0.9 s and drops a healthy adjacency)
     mitigation: Accepted risk. FRR's default timers are kept rather than tightened, and nothing alerts on a BFD flap yet
-    test: none (measured by hand, see Consequences)
+    test: none (accepted risk, measured by hand, see Consequences)
   - mode: duplicate router-ID
-    mitigation: The router-ID is the loopback, and `netlab validate` rejects a loopback that collides with another loopback or link address (netlab/inventory.py:148)
-    test: none. No unit test covers the loopback check yet; tests/test_inventory.py::test_duplicate_ip covers link addresses only
+    mitigation: The router-ID is the loopback, and `netlab validate` rejects a loopback that collides with another loopback or link address
+    test: tests/test_inventory.py::test_duplicate_loopback
   - mode: hand config change on a router, including one saved with write memory
-    mitigation: "`make drift` (ansible/drift.yml) diffs running against intended config on every CI run; intended config is mounted read-only (PR #1, pending) so write memory can't overwrite it"
-    test: ansible/drift.yml and tests/live/test_drift.py::test_write_memory_cannot_overwrite_intent
+    mitigation: "`make drift` (ansible/drift.yml) diffs running against intended config on every CI run; intended config is mounted read-only (0008) so write memory can't overwrite it, which tests/live/test_drift.py::test_write_memory_cannot_overwrite_intent proves"
+    test: tests/live/test_collection.py::test_unsaved_change_is_flagged
   - mode: single edge router (r2) or single ISP link fails
     mitigation: "Accepted risk, manual step: there is no second edge router or ISP to fail over to. LAN-A to LAN-B traffic only needs r2 while the r1-r3 link is down, so normally only internet access is lost. An engineer checks `show bgp summary` on r2 and `make drift`, then restores with `make apply` or redeploys r2"
     test: none (accepted risk)
   - mode: asymmetric return through the stateful fw1
-    mitigation: By design. fw1 is single-homed on r1:eth3 and LAN-A is reached only through r1's static route, so both directions of every flow cross the same fw1 whichever core link is in use
-    test: tests/live/test_failover.py::test_silent_failure_reroutes_fast (a new web connection, whose replies pass fw1 only as ESTABLISHED, still works after the reroute)
+    mitigation: By design. fw1 is single-homed on r1:eth3 and LAN-A is reached only through r1's static route, so both directions of every flow cross the same fw1 whichever core link is in use. The test opens a new web connection after the reroute, and its replies pass fw1 only as ESTABLISHED
+    test: tests/live/test_failover.py::test_silent_failure_reroutes_fast
   - mode: split-brain
     mitigation: Not applicable. OSPF elects no master, and the /31 point-to-point links have no DR, so no two nodes can both claim a role. Revisit when a VRRP pair exists, with an alert for both routers claiming Master
     test: none (not applicable)
@@ -57,7 +57,7 @@ OSPF on the /31 point-to-point core links already reroutes a clean failure: the 
 - `bfdd=yes` on the OSPF routers only (r1, r2, r3), with `-A 127.0.0.1` like the other daemons. Without it, bfdd's vty listens on 0.0.0.0:2617 on every lab link.
 - ` ip ospf bfd` on every OSPF point-to-point interface, with FRR's default timers (300 ms transmit and receive, multiplier 3, so 0.9 s to detect). No `bfd` profile, because one that restates the defaults shows as drift forever.
 - `expected_state.json` lists the BFD peers from the same links as the OSPF neighbors, and `test_bfd_sessions_up` checks every one is up.
-- The drill runs on every push to main, every pull request, and weekly on a schedule so it still runs when nobody pushes.
+- The drill runs on every push to main, every pull request, and nightly on a schedule so it still runs when nobody pushes.
 
 ## Consequences
 

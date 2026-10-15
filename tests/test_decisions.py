@@ -45,6 +45,16 @@ def test_failure_modes_are_optional_but_complete(tmp_path):
     assert any("missing mitigation" in p for p in problems)
 
 
+def test_untested_failure_mode_must_say_why(tmp_path):
+    """A failure mode without a test is allowed only as a stated decision, and a test it names must exist."""
+    def modes(test):
+        return f"failure_modes:\n  - mode: m\n    mitigation: accepted\n    test: {test}\nstake:"
+    assert lint(record_with(tmp_path, r"stake:", modes("none (accepted risk, no second ISP)"))) == []
+    assert any("say why" in p for p in lint(record_with(tmp_path, r"stake:", modes("none"))))
+    made_up = "tests/live/test_failover.py::test_made_up"
+    assert any(f"{made_up} does not exist" in p for p in lint(record_with(tmp_path, r"stake:", modes(made_up))))
+
+
 def test_readme_design_decisions_link_their_records():
     """Each bullet under the README's 'Design decisions' links a decision record that exists."""
     section = (ROOT / "README.md").read_text().split("## Design decisions")[1].split("\n## ")[0]

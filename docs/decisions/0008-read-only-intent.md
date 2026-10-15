@@ -2,7 +2,7 @@
 id: "0008"
 title: Mount each router's intended config read-only
 date: 2026-10-13
-status: proposed
+status: accepted
 decider: DoctorMen
 constraint: the drift check compares each router's running config with build/<router>/frr.conf, and Containerlab binds are read-write unless marked :ro
 alternatives:
@@ -25,7 +25,7 @@ Each router's `/etc/frr/frr.conf` is its rendered file from `build/`. Reproduced
 
 ## Decision
 
-Bind `frr.conf` read-only. `ansible/deploy.yml` reloads from the mounted file and no longer runs `write memory`. This is pending PR #1, so the status stays `proposed` until it is merged.
+Bind `frr.conf` read-only. `ansible/deploy.yml` reloads from the mounted file and no longer runs `write memory`. This came in with PR #1.
 
 ## Consequences
 

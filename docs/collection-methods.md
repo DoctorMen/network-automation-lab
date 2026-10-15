@@ -63,8 +63,8 @@ hosts can reach, not how they're configured.
 
 ## Collection cycle
 
-- CI runs `make drift` on every push to `main` and every pull request, after the live tests, and uploads
-  `backups/` as the `config-backups` artifact. A nightly scheduled run is being added separately.
+- CI runs `make drift` nightly, on every push to `main` and on every pull request, after the live tests, and uploads
+  `backups/` in the `results-and-backups` artifact, kept for 90 days.
 - For a lab that stays up, run it from cron. Daily keeps it inside REC-2's 24-hour cycle. The cron user
   needs Docker access, and cron's PATH has to include the venv:
 

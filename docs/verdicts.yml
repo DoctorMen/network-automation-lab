@@ -48,7 +48,7 @@
   evidence:
     - "PR #1 (commit adc9857) describes it and adds test_write_memory_cannot_overwrite_intent"
     - "2026-10-15, throwaway FRR containers with a copy of r3's config: writable bind -> 'Integrated configuration saved' and the host file holds the change; :ro -> 'Read-only file system', host file unchanged"
-  fixed_in: adc9857 (PR #1, not merged yet; decision 0008)
+  fixed_in: PR #1 (commit adc9857, decision 0008)
 
 - id: V-005
   opened: 2026-10-15

@@ -39,6 +39,13 @@ def test_duplicate_ip(tmp_path):
     assert "10.0.12.1 is already used" in out
 
 
+def test_duplicate_loopback(tmp_path):
+    """Two routers with the same loopback would share an OSPF router-ID."""
+    def m(raw):
+        raw["routers"]["r3"]["loopback"] = raw["routers"]["r1"]["loopback"]
+    assert "r3: loopback 10.255.0.1 collides with r1:lo" in problems(tmp_path, m)
+
+
 def test_ends_in_different_subnets(tmp_path):
     def m(raw):
         raw["links"][0][1] = "r2:eth1@10.0.99.1/31"
