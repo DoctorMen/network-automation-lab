@@ -20,10 +20,10 @@ test:            ## Offline tests (no lab needed)
 deploy: render   ## Render and start the lab with Containerlab
 	$(CLAB) deploy -t $(TOPO) --reconfigure
 
-live:            ## Test the running lab: OSPF, BGP, reachability, firewall, failover
+live:            ## Test the running lab: OSPF, BGP, reachability, firewall, failover, drift checks
 	$(PY) -m pytest -v tests/live
 
-drift:           ## Back up running configs and fail if any router drifted from intent
+drift:           ## Back up routers and firewall, fail on drift or on a backup missing running config
 	cd ansible && ansible-playbook drift.yml
 
 apply:           ## Push intended config to routers (diff only, no restarts)

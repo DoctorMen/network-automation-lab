@@ -1,0 +1,20 @@
+# Is each backup a complete copy of its router's running config? A backup job can report
+# success while losing lines: a cut-off pull, a header the parser chokes on, a tool that
+# "normalises" config away. So load the saved copy back on the router in test mode. Any line
+# listed under "Lines To Delete" is running config the copy is missing; "Lines To Add" are
+# lines in the copy that aren't running.
+# drift.yml imports this right after it takes the backups. Run alone:
+#   cd ansible && ansible-playbook verify_capture.yml [--limit r2] [-e capture=/abs/path/copy.conf]
+# -e capture points one router (use --limit) at another copy, for example a doctored one in a test.
+- name: Check each backup holds the whole running config
+  hosts: routers
+  gather_facts: false
+  vars:
+    capture: "{{ playbook_dir }}/../backups/{{ inventory_hostname }}.conf"
+  tasks:
+    - name: Compare running config with the saved copy
+      ansible.builtin.include_tasks: tasks/compare_frr.yml
+      vars:
+        config: "{{ capture }}"
+        label: captured
+        mismatch: "backup {{ capture }} does not match the running config (Lines To Delete = missing from the backup)"

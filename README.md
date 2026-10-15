@@ -3,7 +3,7 @@
 [![CI](https://github.com/DoctorMen/network-automation-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/DoctorMen/network-automation-lab/actions/workflows/ci.yml)
 
 **A small enterprise network, defined in one YAML file, built and tested by code.**
-Three OSPF core routers, an eBGP uplink to an ISP, a stateful firewall in front of a user LAN, and a server LAN. Every router config, the firewall policy and the lab topology are generated from [`inventory/network.yml`](inventory/network.yml). Then every push to `main`, every pull request and a weekly scheduled run deploy the whole network and prove it works: adjacencies come up, routes are where they should be, firewall policy is enforced, traffic survives a link failure (including one where the link stays up and silently drops everything), and no router has drifted from its intended config.
+Three OSPF core routers, an eBGP uplink to an ISP, a stateful firewall in front of a user LAN, and a server LAN. Every router config, the firewall policy and the lab topology are generated from [`inventory/network.yml`](inventory/network.yml). Then every push to `main`, every pull request and a nightly run deploy the whole network and prove it works: adjacencies come up, routes are where they should be, firewall policy is enforced, traffic survives a link failure (including one where the link stays up and silently drops everything), and no router or firewall has drifted from its intended config.
 
 ```mermaid
 flowchart LR
@@ -42,7 +42,10 @@ flowchart LR
 | Pulling the r1–r3 link makes OSPF reroute through r2 with no manual action, then fail back | [`test_traffic_survives_r1_r3_link_failure`](tests/live/test_failover.py) |
 | Every OSPF link has a BFD session up, with exactly the peers the inventory implies | [`test_bfd_sessions_up`](tests/live/test_failover.py) parses `show bfd peers json` |
 | A link that stays up but forwards nothing is routed around in about a second, not after OSPF's 40 s dead timer. h1 still reaches the web server through the stateful firewall, then the path fails back. Measured here: 0.80–1.20 s with BFD, 35.6–39.7 s without | [`test_silent_failure_reroutes_fast`](tests/live/test_failover.py) drops everything on r1's eth2 with iptables, first proves eth2 is still UP, and fails if the route hasn't moved within 3 s, as happens without BFD |
-| Nobody changed a router by hand. An Ansible playbook diffs running config against intended config and fails on any drift | [`ansible/drift.yml`](ansible/drift.yml) |
+| Nobody changed a router or the firewall by hand. An Ansible playbook backs up every router and the firewall off-box, diffs the running state against intent and fails on any drift. How each device type is collected, and what isn't: [`docs/collection-methods.md`](docs/collection-methods.md) | [`ansible/drift.yml`](ansible/drift.yml) |
+| A hand change on a router that was never saved fails one run of that drift check, which names the changed line. The test first proves the check passes on the clean lab | [`test_unsaved_change_is_flagged`](tests/live/test_collection.py) |
+| A router backup that is missing part of the running config fails, and the check names the missing line. Each backup is loaded back on its router in test mode; the untouched backup passes | [`test_incomplete_capture_is_flagged`](tests/live/test_collection.py) |
+| A rule added by hand on the firewall fails the drift check, which names it. The intended rules are replayed in a separate, empty network namespace, so the check never touches the live rules | [`test_firewall_hand_change_is_flagged`](tests/live/test_collection.py) |
 | A hand change saved with `write memory` can't overwrite the intended config and hide from that drift check | [`test_write_memory_cannot_overwrite_intent`](tests/live/test_drift.py) |
 | The inventory can't ship with duplicate IPs, mismatched subnets, overlapping networks, wrong BGP peer addresses or off-subnet gateways | [`tests/test_inventory.py`](tests/test_inventory.py), with all problems reported at once |
 
@@ -74,8 +77,8 @@ bash -c "$(curl -sL https://get.containerlab.dev)"   # installs Containerlab
 
 make test      # offline: inventory validation + rendering (17 tests)
 make deploy    # render configs and start 7 containers
-make live      # 14 live tests against the running network
-make drift     # Ansible drift check
+make live      # 17 live tests against the running network
+make drift     # back up routers and firewall, fail on drift or an incomplete backup
 make destroy
 ```
 
@@ -91,6 +94,7 @@ docker exec clab-netauto-fw1 iptables -vnL FORWARD
 
 - Change an IP in `inventory/network.yml` so a link's two ends are in different subnets, then run `make validate`.
 - Make an undocumented change on a router (`vtysh -c 'conf t' -c 'router ospf' -c 'passive-interface eth2'`) and run `make drift`. It fails and shows the diff. `make apply` puts the router back.
+- Open SSH on the firewall by hand (`docker exec clab-netauto-fw1 iptables -I FORWARD -p tcp --dport 22 -j ACCEPT`) and run `make drift`. It fails and names the rule. Delete it with the same command and `-D` instead of `-I`.
 - Take a link down (`docker exec clab-netauto-r1 ip link set eth2 down`) and watch `show ip route 10.20.20.0/24` on r1 move to the path through r2.
 - Make the same link fail silently: `docker exec clab-netauto-r1 iptables -I INPUT -i eth2 -j DROP`, then the same with `-I OUTPUT -o eth2`. The link stays up, but in about a second BFD declares r3 down, OSPF drops that neighbor (`show ip ospf neighbor`) and the route moves to r2. Run both again with `-D` instead of `-I` to put it back.
 
@@ -117,7 +121,7 @@ isp# show ip bgp
 - **Aggregate at the edge (`summary-only`)**. The ISP sees one stable `/8`, so internal link flaps never reach the internet routing table.
 - **BFD on every OSPF link, with FRR's default timers** (300 ms, 3 missed packets). OSPF alone needs its 40 s dead timer to notice a link that is up but passes nothing. There is no `bfd` profile, because FRR hides default timer values in `show running-config`, so a profile that spells them out would show as drift forever. The failure modes of the failover design, each with its mitigation or accepted risk, are in [docs/decisions/0009-failover.md](docs/decisions/0009-failover.md).
 - **Server LAN interface is OSPF passive.** The subnet is advertised, but no adjacency can form toward hosts.
-- **Intent is mounted read-only.** Each router's `/etc/frr/frr.conf` is its rendered file from `build/`, bind-mounted read-only. With a writable mount, `write memory` after a hand change would save straight into `build/`, and the drift check would then compare the router against its own drifted config and pass. Now `write memory` fails, the change stays only in the running config, and `make drift` catches it.
+- **Intent is mounted read-only.** Each router's `/etc/frr/frr.conf` is its rendered file from `build/`, bind-mounted read-only. With a writable mount, `write memory` after a hand change would save straight into `build/`, and the drift check would then compare the router against its own drifted config and pass. Now `write memory` fails, the change stays only in the running config, and `make drift` catches it. The firewall's `/firewall.sh` is mounted read-only for the same reason.
 - **Expected state is generated, not hand-written.** The tests read `expected_state.json` from the same inventory that built the configs, so adding a router to the YAML automatically adds it to the tests.
 - **Documentation ranges** (`198.51.100.0/24`, `203.0.113.0/24`) for the ISP side, so nothing in the lab collides with real internet addresses.
 

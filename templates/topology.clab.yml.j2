@@ -29,7 +29,9 @@ topology:
       sysctls:
         net.ipv4.ip_forward: 1
       binds:
-        - {{ name }}/firewall.sh:/firewall.sh
+        # Read-only for the same reason as frr.conf: firewall.sh is the firewall's startup
+        # config and the drift check's intent, so it must not be editable from the node.
+        - {{ name }}/firewall.sh:/firewall.sh:ro
       exec:
         - sh /firewall.sh
 {% endfor %}
