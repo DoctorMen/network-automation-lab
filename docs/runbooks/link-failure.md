@@ -58,6 +58,6 @@ Every core router has two `Full` neighbors and two BFD peers `up`, h1 reaches 10
 ## Drill it in the lab
 
 Have someone else break one of these without telling you which, then follow the steps from 1:
-`docker exec clab-netauto-r1 ip link set eth2 down` (down), or
-`docker exec clab-netauto-r1 iptables -I INPUT -i eth2 -j DROP` plus the same with `-I OUTPUT -o eth2`
+`docker exec clab-<lab>-r1 ip link set eth2 down` (down), or
+`docker exec clab-<lab>-r1 iptables -I INPUT -i eth2 -j DROP` plus the same with `-I OUTPUT -o eth2`
 (silent). Record the run in [dry-runs.yml](dry-runs.yml).

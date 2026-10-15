@@ -116,10 +116,14 @@
 - id: V-011
   opened: 2026-10-15
   version: frrouting/frr:v8.4.1 (FRR 8.4.1_git), throwaway restore-drill routers (--network none) in the sandbox, 4 CPUs shared with another lab
-  symptom: in about 1 throwaway boot in 20, zebra is gone a second after it starts and only comes back about 60 s later, so the restore drill's 60 s boot wait timed out once
+  symptom: in about 1 throwaway boot in 20, zebra or bgpd crashes as it starts and only comes back about 60 s later, so the restore drill's 60 s boot wait timed out once, and its zebra-only boot check let a drill run while bgpd was down
   evidence:
     - "2026-10-15, 15 rounds of 4 throwaway routers booted at once (r1, r2, r3, isp): in 3 rounds one router had no /usr/lib/frr/zebra process at 12 s; each round finished booting at 66.9 to 67.5 s, the rest at 1.1 to 1.5 s"
     - "the same day, docker logs of one such router (round 18 of a second sample): watchfrr reports ospfd, staticd and bfdd 'state -> up' but never zebra, after 'watchfrr.sh restart all' printed 'Cannot stop zebra: pid file not found'; /var/run/frr/zebra.pid and zserv.api exist, the process does not"
     - "watchfrr's minimum restart interval defaults to 60 s, which matches the delay"
     - "make restore-drill against a good backup: test_every_router_restores_cleanly failed once with 'drill-na3-r1-... did not finish booting in 60 s'"
-  workaround: Scratch.wait_booted waits up to 120 s, which covers one watchfrr restart; the drill then passes, slower
+    - "2026-10-15 (fix round), the same good backup: the drill failed 2 times in 7, each listing the throwaway isp's whole router bgp stanza as missing; caught once more on r2 with the throwaway's stderr 'bgpd crashed in startup, signal 11' and 'Failed to start bgpd!' while zebra ran, so the zebra-only boot check had passed"
+    - "the same day, another throwaway's stderr: 'zebra crashed in startup, signal 11'"
+    - "with bgpd killed in a booted throwaway, the old check returned in 0.45 s and frr-reload listed 17 missing lines; the new one waited 4.3 s for watchfrr to start bgpd again, then 0 problems"
+    - "after the change: 15 drills (60 boots), two boots hit a zebra crash and booted at 62.0 and 66.4 s, 0 problems"
+  workaround: Scratch.wait_booted waits until every daemon on watchfrr's command line runs and no start script is left, up to 120 s, which covers one watchfrr restart; the drill then passes, slower

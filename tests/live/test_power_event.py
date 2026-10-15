@@ -45,25 +45,34 @@ def quietly(check, *args) -> bool:
         return False
 
 
+def has_mark(r2, mark: str) -> bool:
+    """Is the hand change in r2's running config? A bool, so a failed assert shows no config: pytest
+    would otherwise print the whole running config into the JUnit file, any BGP password with it."""
+    return mark in r2.run("vtysh", "-c", "show running-config", check=False).stdout
+
+
 def test_power_event_recovers_from_startup_config(node, expected):
     """After a whole-lab power cycle every node comes back by itself: an unsaved change is gone, OSPF, BFD and BGP are up, users reach the web server and nothing has drifted."""
     r2 = node("r2")
     mark = f"unsaved-{uuid.uuid4().hex[:8]}"
     r2.run("vtysh", "-c", "conf t", "-c", "interface eth1", "-c", f"description {mark}")  # never saved
     try:
-        assert mark in r2.vtysh("show running-config")
+        assert has_mark(r2, mark), "the hand change on r2 didn't take"
         began = time.monotonic()
         subprocess.run(shlex.split(POWER_CYCLE), cwd=ROOT, check=True, capture_output=True, timeout=600)
         up = wait_for(lambda: quietly(routing_up, node, expected), timeout=240)
         recovered = round(time.monotonic() - began, 1)
         assert up, f"routing did not come back within {recovered} s of the power cycle"
-        assert mark not in r2.vtysh("show running-config"), "the unsaved change survived: the lab was not power-cycled"
+        assert not has_mark(r2, mark), "the unsaved change survived: the lab was not power-cycled"
     finally:
         # Only if the power cut didn't take it away: put r2 back as the drift check expects it.
-        if mark in r2.run("vtysh", "-c", "show running-config", check=False).stdout:
+        if has_mark(r2, mark):
             r2.run("vtysh", "-c", "conf t", "-c", "interface eth1", "-c", f"description {intended_description()}")
     h2 = expected["hosts"]["h2"]
-    assert node("h1").tcp_open(h2, 80), "h1 can't reach the web server through fw1 after the power cycle"
+    # Polled: routes can still be going into the kernel, and h2's web server starting, when the
+    # protocols already report up (failed once here, with another lab on the same CPUs).
+    reached = wait_for(lambda: node("h1").tcp_open(h2, 80), timeout=60)
+    assert reached, "h1 can't reach the web server through fw1 after the power cycle"
     drift = playbook("drift.yml")
     assert drift.returncode == 0, "a node came back different from its intended config:\n" + drift.stdout
     (ROOT / "results").mkdir(exist_ok=True)

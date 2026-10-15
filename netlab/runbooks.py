@@ -90,15 +90,3 @@ def lint_runs(folder: Path, today: date) -> list[str]:
         if run.get("date") and not (isinstance(run["date"], date) and run["date"] <= today):
             problems.append(f"{label}: date {run['date']!r} is not a past YYYY-MM-DD")
     return problems
-
-
-def cold_runs(folder: Path) -> dict[str, list[dict]]:
-    """Runs that count for REC-6: by someone other than the runbook's author, passed, no help needed."""
-    runs = (yaml.safe_load((folder / "dry-runs.yml").read_text()) or {}).get("runs") or []
-    authors = {p.stem: (read(p)[0] or {}).get("written_by") for p in runbooks(folder)}
-    counted: dict[str, list[dict]] = {name: [] for name in authors}
-    for run in runs:
-        name = run.get("runbook")
-        if name in authors and run.get("by") != authors[name] and run.get("result") == "pass" and run.get("help_needed") is False:
-            counted[name].append(run)
-    return counted

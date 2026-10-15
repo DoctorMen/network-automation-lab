@@ -97,16 +97,18 @@ class Scratch:
                               capture_output=True, text=True, timeout=60)
 
     def wait_booted(self, timeout: float = 120) -> None:
-        """FRR has loaded its startup config: the zebra daemon runs, and the start script that
-        launched it (watchfrr.sh, which ends with `vtysh -b`, the config load) has finished.
-        Match zebra's own command line: watchfrr's arguments name zebra before zebra exists.
-        120 s, not 60: in about 1 boot in 20 here zebra is gone a second after it starts, and
-        watchfrr only starts it again after its minimum restart interval (60 s), booted at 62-67 s."""
+        """FRR has loaded its startup config: every daemon watchfrr looks after runs, and no start
+        script (watchfrr.sh, which ends with `vtysh -b`, the config load) is still going.
+        Each daemon is matched by its own command line: watchfrr's arguments name them before they exist.
+        120 s, not 60: in about 1 boot in 20 here a daemon (zebra or bgpd) crashes as it starts, and
+        watchfrr starts it again, with its config, only after its minimum restart interval (60 s) (V-011)."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             ps = self.run("ps", "-o", "args").stdout
-            zebra = any(line.startswith("/usr/lib/frr/zebra ") for line in ps.splitlines())
-            if zebra and "watchfrr.sh" not in ps and "vtysh -b" not in ps:
+            lines = ps.splitlines()
+            watched = next((line.split()[1:] for line in lines if line.startswith("/usr/lib/frr/watchfrr ")), [])
+            running = {line.split()[0].rsplit("/", 1)[1] for line in lines if line.startswith("/usr/lib/frr/")}
+            if watched and set(watched) <= running and "watchfrr.sh" not in ps and "vtysh -b" not in ps:
                 return
             time.sleep(0.5)
         raise TimeoutError(f"{self.name} did not finish booting in {timeout:g} s")

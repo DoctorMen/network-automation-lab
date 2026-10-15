@@ -50,7 +50,7 @@ Steps 2 to 7 pass. `make live` runs every check at once, if there is time.
 
 Rebuild on a new host: clone the repo, `make deploy`, `make drift`. The routers' last running
 configs are in the backup repository ([docs/backups.md](../backups.md)), and `make restore-drill`
-shows they boot.
+shows they boot. To load them instead of the inventory's: [restore-from-backup.md](restore-from-backup.md).
 
 ## Drill it in the lab
 

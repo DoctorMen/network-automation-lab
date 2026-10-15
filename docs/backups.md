@@ -21,9 +21,40 @@ make a new repository in the empty mountpoint, on the local disk, and report suc
 
 In CI the repository and its password live in the Actions cache (`$RUNNER_TEMP/backup`), restored at
 the start of the backup step with `fail-on-cache-miss` and saved under a new key after a verified
-backup. Create it once with **Actions > Drills > Run workflow > init_backup_repo**. That job refuses
-if a repository already exists. Pull requests don't back up: their caches are scoped to the PR, so
-main could never restore them.
+backup. Create it once with **Actions > Drills > Run workflow > init_backup_repo**, in the order
+below. That job refuses if a repository already exists. Pull requests don't back up: their caches
+are scoped to the PR, so main could never restore them.
+
+## Starting it on GitHub, and again after the cache is lost
+
+Until these four runs have happened in this order on `main`, the lab job's backup step and the
+control-status job are red. Wait for each run to finish before starting the next: each one restores
+the cache the one before saved. Each can be started from the Actions tab (Run workflow, branch
+`main`), with `gh`, or with the REST API (`POST /repos/OWNER/NAME/actions/workflows/<file>/dispatches`).
+
+1. **Create the repository.** Drills with `init_backup_repo` ticked:
+   `gh workflow run drills.yml --ref main -f init_backup_repo=true`, or the API with
+   `{"ref": "main", "inputs": {"init_backup_repo": "true"}}`. It must show: job *Create the backup
+   repository* green, its *Refuse to replace it* step skipped, `created a restic repository at ...`,
+   and a cache `restic-<run id>` under Actions > Caches. The drill job is skipped.
+2. **One CI run with a backup.** `gh workflow run ci.yml --ref main`, or the API with
+   `{"ref": "main"}` (the nightly run does the same). It must show, in the lab job: *Restore the
+   backup repository* finds `restic-<run id of step 1>`, *Back up configs* ends with `verified
+   snapshot ...: 5 files, every inventory device, restic check --read-data clean`, and *Keep the
+   repository* saves a new `restic-<run id>`. Its control-status job is still red, naming only the
+   drill tests (`has no result in the evidence`): no drill has run yet.
+3. **One drill run.** `gh workflow run drills.yml --ref main`, or the API with `{"ref": "main"}` and
+   no inputs (`init_backup_repo` defaults to false). It must show: job *Restore drill and power-event
+   drill* green, `4 passed` for the restore drill and `1 passed` for the power drill, and a
+   `drill-results` artifact holding `restore-drill.xml`, `power-drill.xml` and
+   `single-item-restore.json` (its `seconds` under `limit_seconds`, 300).
+4. **One more CI run**, as in step 2. Its control-status job must be green and end with `every
+   control in docs/controls.yml: latest test green and inside its period (N control tests)`.
+
+After a lost cache, do the same four steps. If a broken `restic-` cache is still listed, delete it
+first (Actions > Caches, or `gh cache delete <key>`), or step 1 refuses. The snapshots in the lost
+repository are gone; each CI run's `results-and-backups` artifact still holds that night's
+`backups/` for 90 days.
 
 ## What `make backup` checks
 
@@ -51,9 +82,10 @@ daemons file as the real node (read from `build/topology.clab.yml`), `--network 
 capabilities zebra and bgpd need (`NET_ADMIN`, `NET_RAW`, `SYS_ADMIN`; without them only watchfrr and
 staticd start). When FRR has finished loading, `frr-reload.py --test` must find no difference, and
 `ip -o link` must show only `lo`. The live routers' running configs are hashed before and after.
-Measured here: about 7 s for all four routers, 16 s for the whole drill. About 1 boot in 20, zebra
-dies at start and watchfrr restarts it 60 s later; that drill takes about 75 s, so the boot wait is
-120 s (V-011 in [verdicts.yml](verdicts.yml)).
+Measured here: about 7 s for all four routers, 16 s for the whole drill. About 1 boot in 20, zebra or
+bgpd crashes as it starts and watchfrr starts it again 60 s later; that drill takes about 75 s. So the
+drill waits until every daemon on watchfrr's command line runs, for up to 120 s, not only for zebra
+(V-011 in [verdicts.yml](verdicts.yml)).
 
 `test_drill_notices_a_bad_backup` boots a copy of r2's backup that kept `show running-config`'s header,
 the format the collection pass used to save. FRR starts and loads the lines after the header, so a

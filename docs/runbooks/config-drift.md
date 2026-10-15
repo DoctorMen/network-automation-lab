@@ -50,6 +50,6 @@ Nothing may be "fixed" until we know which. `<lab>` below is the `name:` in `bui
 ## Drill it in the lab
 
 Someone else makes one hand change, for example
-`docker exec clab-netauto-r2 vtysh -c "conf t" -c "router ospf" -c "passive-interface eth2"`, or
-`docker exec clab-netauto-fw1 iptables -I FORWARD -p tcp --dport 22 -j ACCEPT`. Then run `make drift`
+`docker exec clab-<lab>-r2 vtysh -c "conf t" -c "router ospf" -c "passive-interface eth2"`, or
+`docker exec clab-<lab>-fw1 iptables -I FORWARD -p tcp --dport 22 -j ACCEPT`. Then run `make drift`
 and follow the steps. Record the run in [dry-runs.yml](dry-runs.yml).

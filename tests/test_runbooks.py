@@ -31,10 +31,10 @@ def test_runbooks_lint_clean():
     assert runbooks.lint(FOLDER, DEVICES) == []
 
 
-def test_top_incident_and_power_event_types_have_runbooks():
-    """The top incident types and the power event each have a runbook (OROS REC-6)."""
+def test_top_incident_dr_and_power_event_types_have_runbooks():
+    """The top incident types, restoring from backup (DR) and the power event each have a runbook (OROS REC-6)."""
     names = {p.stem for p in runbooks.runbooks(FOLDER)}
-    assert {"link-failure", "bgp-down", "config-drift", "power-event"} <= names
+    assert {"link-failure", "bgp-down", "config-drift", "restore-from-backup", "power-event"} <= names
 
 
 def test_unknown_host_is_reported(tmp_path):
@@ -75,8 +75,8 @@ def test_hosts_list_covers_every_device_acted_on(tmp_path):
     assert runbooks.lint(bad, DEVICES, TODAY) == ["bgp-down.md: acts on fw1, which hosts: doesn't list"]
 
 
-def test_dry_run_record_is_checked_and_counts_only_cold_runs(tmp_path):
-    """A run counts for REC-6 only by someone other than the author, passed, with no help."""
+def test_dry_run_record_is_checked(tmp_path):
+    """Each recorded run names a runbook that exists and a result of pass or fail."""
     copy = tmp_path / "runbooks"
     shutil.copytree(FOLDER, copy)
     (copy / "dry-runs.yml").write_text(
@@ -89,6 +89,3 @@ def test_dry_run_record_is_checked_and_counts_only_cold_runs(tmp_path):
         "dry-runs.yml: run #4: no runbook called rip-down",
         "dry-runs.yml: run #4: result 'maybe' is not one of ['fail', 'pass']",
     ]
-    counted = runbooks.cold_runs(copy)
-    assert [r["by"] for r in counted["link-failure"]] == ["DoctorMen"]
-    assert counted["bgp-down"] == [] and counted["power-event"] == []

@@ -5,6 +5,7 @@
 | [link-failure](link-failure.md) | A core link is down, or up and passing nothing |
 | [bgp-down](bgp-down.md) | The eBGP session to the ISP is down: no internet |
 | [config-drift](config-drift.md) | `make drift` failed: a device differs from its intended config |
+| [restore-from-backup](restore-from-backup.md) | A router must go back to the config it last ran, from the backup |
 | [power-event](power-event.md) | Every node restarted after a power outage |
 | [carrier-loss](carrier-loss.md) | Loss toward the internet: ours or the carrier's? |
 
@@ -22,21 +23,21 @@ no real phone numbers; roles, not names.
 ## Run one cold
 
 These runbooks were written by an AI assistant (`written_by`). So the owner running one alone, without
-help, is the test OROS REC-6 asks for: someone who did not write it carries it out in the lab. Copy and
-paste this, from the repo root, on a machine with Docker and Containerlab:
+help, is the test OROS REC-6 asks for: someone who did not write it carries it out in the lab. It
+takes two people, a helper who breaks the lab and a runner who doesn't know how.
 
-```bash
-git pull && make deploy && make live          # a clean lab: every live test passes
-# The fault. Ideally someone else picks one and runs it without telling you which:
-docker exec clab-netauto-r1 ip link set eth2 down
-# Now open docs/runbooks/link-failure.md and follow it from step 1, without any other help:
-# no chat, no reading the code, no asking the author. Time it.
-make live && make drift                        # afterwards: is the lab really back?
-```
+1. Runner, from the repo root on a machine with Docker and Containerlab:
+   `git pull && make deploy && make live` (a clean lab: every live test passes).
+2. Helper: pick one fault from the "Drill it in the lab" sections at the end of the runbooks and run
+   it. Don't say which. Tell the runner only what an alert or a user would ("users can't reach the
+   internet", "the nightly drift check failed", "power is back", "r2 lost its config, put it back
+   from the backup"). `<lab>` in those commands is the `name:` in `build/topology.clab.yml`.
+3. Runner: pick the runbook from the table above by that symptom, and follow it from step 1 with
+   nothing else: no chat, no reading the code, no asking the helper or the author. Time it.
+4. Runner: `make live && make drift` afterwards. Is the lab really back?
 
-Other faults to drill the same way are at the end of each runbook (bgp-down, config-drift, power-event).
-
-Then record it at the end of [`dry-runs.yml`](dry-runs.yml), even if it failed, and commit:
+Then record it at the end of [`dry-runs.yml`](dry-runs.yml), even if it failed (the wrong runbook
+picked is a fail too), and commit. `runbook` is the one the helper's fault belongs to:
 
 ```yaml
   - date: 2026-10-20

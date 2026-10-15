@@ -98,12 +98,14 @@ def gh(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["gh", *args], capture_output=True, text=True, timeout=300)
 
 
-def fetch(repo: str, evidence: Path, needed: set[str], since: datetime) -> None:
+def fetch(repo: str | None, evidence: Path, needed: set[str], since: datetime) -> None:
     """Download the JUnit artifacts of runs on main, newest first, until every needed test has a result
-    that ran. Older runs can't change a test's latest result, so there's no need to read them all."""
+    that ran. Older runs can't change a test's latest result, so there's no need to read them all.
+    With no repo, gh takes it from the checkout's git remote."""
+    where = ["--repo", repo] if repo else []
     runs = []
     for workflow in WORKFLOWS:
-        listed = gh("run", "list", "--repo", repo, "--workflow", workflow, "--branch", "main",
+        listed = gh("run", "list", *where, "--workflow", workflow, "--branch", "main",
                     "--limit", "200", "--json", "databaseId,createdAt")
         if listed.returncode:
             raise RuntimeError(f"gh run list --workflow {workflow} failed: {listed.stderr.strip()}")
@@ -116,13 +118,13 @@ def fetch(repo: str, evidence: Path, needed: set[str], since: datetime) -> None:
         target = evidence / str(run["databaseId"])
         if not target.exists():  # this run's own results are already here
             # No matching artifact (a run that failed before uploading, or expired) is not an error.
-            gh("run", "download", str(run["databaseId"]), "--repo", repo, "--dir", str(target), "--pattern", ARTIFACTS)
+            gh("run", "download", str(run["databaseId"]), *where, "--dir", str(target), "--pattern", ARTIFACTS)
 
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="netlab.control_status")
     p.add_argument("--evidence", default=ROOT / "build" / "evidence", type=Path, help="JUnit files, one folder per run")
-    p.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", "DoctorMen/network-automation-lab"))
+    p.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY"), help="OWNER/NAME; set in CI, else gh reads the git remote")
     p.add_argument("--offline", action="store_true", help="only the files already in --evidence")
     args = p.parse_args(argv)
     register = controls.load()
@@ -136,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
     if problems:
         print(f"\n{len(problems)} control test(s) not green within their period:\n  - " + "\n  - ".join(problems), file=sys.stderr)
         return 1
-    print(f"\nevery control in docs/controls.yml: latest test green and inside its period ({len(lines)} tests)")
+    print(f"\nevery control in docs/controls.yml: latest test green and inside its period ({len(lines)} control tests)")
     return 0
 
 

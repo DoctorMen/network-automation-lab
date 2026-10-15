@@ -55,5 +55,5 @@ The session is `Established`, r2 sends the aggregate
 
 ## Drill it in the lab
 
-Someone else shuts the session: `docker exec clab-netauto-r2 vtysh -c "conf t" -c "router bgp 65001" -c "neighbor 198.51.100.1 shutdown"`.
+Someone else shuts the session: `docker exec clab-<lab>-r2 vtysh -c "conf t" -c "router bgp 65001" -c "neighbor 198.51.100.1 shutdown"`.
 Then follow the steps from 1. Record the run in [dry-runs.yml](dry-runs.yml).

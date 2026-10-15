@@ -72,12 +72,17 @@ password (16 bytes, 0600) into the cache beside the repository.
 
 ## Consequences
 
-- The password beside the repository protects nothing from someone who can read the cache. Today the
-  backups hold only configs rendered from a public inventory. If the configs gain a secret (BGP or OSPF
-  authentication), move the password to a repository secret: a cache restored by a pull request from a
-  fork could otherwise be read by that PR's workflow.
+- The password beside the repository protects nothing from someone who can read the cache, and any
+  workflow run in this repository can restore it, a pull request's included (it runs the pull
+  request's own copy of the workflow). That is acceptable because the repository holds nothing secret.
+  `make backup` sends exactly the files the collection pass (`make drift`, `ansible/drift.yml`) wrote
+  to `backups/`, and never reads a router itself, so a secret can reach the repository only through
+  that capture. The collection pass reads each running config through the redacting vtysh of
+  [decision 0016](0016-secrets-guardrails.md), which writes the r2–isp BGP password as its sha256
+  tag. A new kind of secret in a config needs the same redaction in the capture before it is backed up.
 - After merge, CI is red at the backup step until the repository is created once. That is the design:
-  the first run and a lost target look the same, so a person decides.
-- A cache unused for 7 days is evicted, and the next run fails loudly. Re-create it with
-  `init_backup_repo`; the history before it is lost.
+  the first run and a lost target look the same, so a person decides. The order to start it is in
+  [docs/backups.md](../backups.md#starting-it-on-github-and-again-after-the-cache-is-lost).
+- A cache unused for 7 days is evicted, and the next run fails loudly. Re-create it the same way; the
+  history before it is lost.
 - How it works, with the restore drill: [docs/backups.md](../backups.md).
