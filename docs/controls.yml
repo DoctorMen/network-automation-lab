@@ -494,7 +494,7 @@ controls:
     threat: Shortcuts nobody decided on, and accepted risks that outlive the reason they were accepted.
     fails_when: >-
       It knows only the risky line kinds in netlab/risks.py; a new kind of shortcut needs a new
-      detector, and a gap with no config line (RISK-9, RISK-10, RISK-12) is tied to nothing. RISK-15's
+      detector, and a gap with no config line (RISK-9, RISK-10, RISK-12, RISK-20) is tied to nothing. RISK-15's
       detector reads the hosts' lines in the topology, so collecting the hosts won't flag it stale by
       itself. Every review_by is 2027-01-15, so the whole register goes red on 2027-01-16 by design.
       It can record who an entry was shown to, but not prove the meeting happened.

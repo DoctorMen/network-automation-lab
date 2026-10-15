@@ -82,7 +82,7 @@ failure_modes:
 
 - `serial: [1, "100%"]`: the canary named in the inventory's `rollout:` block goes alone, then the other three. netlab renders it first in the Ansible inventory.
 - Before a batch: refuse outside the change window, and note the network's problems (`python -m netlab.health`).
-- Each router saves `show running-config` (its fallback), applies the difference, and is compared with intent again, so a line frr-reload.py didn't take fails the batch.
+- Each router saves `show running-config` (its fallback), applies the difference, gets its BGP passwords on stdin (decision 0016), and is compared with intent again, so a line frr-reload.py didn't take fails the batch. The fallback is read through the redacting vtysh without its password lines, the way the apply reads the running config, so a rollback neither deletes nor sets a password.
 - The health gate: every OSPF neighbor Full and every BGP session Established (from `expected_state.json`), every host pinging every other host, waiting up to `gate_timeout` (20 s) for any problem the batch added to clear. The canary waits out `vetting_delay` (10 s) and is checked again.
 - Rescue: reload the fallback, then fail. `any_errors_fatal` and `max_fail_percentage: 0` stop the play.
 - After each batch, `python -m netlab.verify` checks that its routers run what is installed: the newest installed kernel, and every enabled FRR daemon from its binary on disk (`tests/live/test_verify.py`).
@@ -91,6 +91,7 @@ failure_modes:
 ## Consequences
 
 - A rollout with nothing to change takes about 35 s here (34.7 and 35.5 s measured), most of it the vetting delay and the health checks (about 1.7 s each). To save CI time the tests shorten both waits with -e: the failing-canary test gives the gate 10 s (28-33 s a run, against 38.6 s with the inventory's 20 s, measured back to back), and the good-change test uses a 5 s vetting delay (36-39 s a run).
+- `make deploy` ends with `make apply` (decision 0016), so on a new lab the rollout starts right after `containerlab deploy`. Every router first waits until each daemon its daemons file starts answers vtysh, and whatever is still settling is in the gate's baseline, so it doesn't fail the canary. The vetting delay adds 10 s to every deploy.
 - After a rollback the router runs its old config while build/ holds the new intent, so `make drift` is red until the change is reverted. That is on purpose: the bad change is still in the source of truth.
 - frr-reload.py never restarts a daemon, so no reboot or restart happens inside or outside the window. A patch that needs one is reported by netlab.verify, not done.
 - The window is open all day in the lab so CI can run at any hour; the test closes it with `-e change_window=...`.
