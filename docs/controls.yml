@@ -15,7 +15,8 @@
 # GitHub disables scheduled runs in a public repo after 60 days with no repository activity,
 # so a quiet repo can miss its period without any test going red.
 #
-# Lab numbers quoted below were measured on fw1 with the forged-ACK tool in tests/live/tools/.
+# Firewall numbers below were measured on fw1 with the forged-ACK tool in tests/live/tools/;
+# timings come from decision 0009. All were measured in the sandbox lab.
 
 controls:
   - id: ospf-adjacencies
@@ -63,7 +64,7 @@ controls:
       is down, so the core keeps sending internet traffic to r2, which has nowhere to send it.
 
   - id: passive-server-lan
-    claim: "The server LAN is advertised into OSPF, but the router interface facing it is passive, so no OSPF hello reaches a host"
+    claim: "The server LAN is advertised into OSPF, but the router interface facing it is passive, so no OSPF hello reaches a host. Every other core router has an OSPF route to it"
     test: tests/live/test_routing.py::test_host_lans_are_passive
     period: P31D
     threat: >-
@@ -99,7 +100,7 @@ controls:
       directory listing.
 
   - id: fw1:deny-ssh-to-servers
-    claim: "The firewall blocks SSH from users to servers. The test also proves SSH is actually listening, so the block came from policy, not a dead service"
+    claim: "The firewall blocks SSH (port 22) from users to servers. The test also proves h2's port 22 answers from the server's own gateway, so the block came from policy, not a dead service. The listener is a stand-in TCP server, not sshd"
     test:
       - tests/live/test_dataplane.py::test_firewall_blocks_ssh_to_servers
       - tests/live/test_dataplane.py::test_firewall_counts_the_drop
@@ -176,7 +177,7 @@ controls:
       a peer missing from the inventory is never expected.
 
   - id: bfd-silent-failure
-    claim: "A link that stays up but forwards nothing is routed around in about a second, not after OSPF's 40 s dead timer. h1 still reaches the web server through the stateful firewall, then the path fails back. Measured here: 0.80–1.20 s with BFD, 35.6–39.7 s without"
+    claim: "A link that stays up but forwards nothing is routed around in about a second, not after OSPF's 40 s dead timer. h1 still reaches the web server through the stateful firewall, then the path fails back. Measured in the sandbox lab: 0.80–1.20 s with BFD, 35.6–39.7 s without. CI on real Containerlab holds it to 3 s"
     test: tests/live/test_failover.py::test_silent_failure_reroutes_fast
     period: P31D
     threat: >-
@@ -189,14 +190,14 @@ controls:
       link, r1-r3.
 
   - id: drift-check
-    claim: "Nobody changed a router or the firewall by hand. An Ansible playbook backs up every router and the firewall off-box, diffs the running state against intent and fails on any drift. How each device type is collected, and what isn't: [`docs/collection-methods.md`](docs/collection-methods.md)"
+    claim: "No router or firewall differs from its intended config when the check runs. An Ansible playbook backs up every router and the firewall off-box, diffs the running state against intent and fails on any drift. How each device type is collected, and what isn't: [`docs/collection-methods.md`](docs/collection-methods.md)"
     test:
       - tests/live/test_collection.py::test_unsaved_change_is_flagged
       - tests/live/test_collection.py::test_firewall_hand_change_is_flagged
     period: P31D
     threat: An undocumented hand change (a quick fix, a mistake, an intruder) living on a router or the firewall.
     fails_when: >-
-      A change made and undone between runs is never seen. Forwarding lines are ignored on purpose.
+      A change made and undone between runs is never seen. `ipv6 forwarding` lines are ignored on purpose (V-009).
       Kernel state outside FRR and fw1's filter table (an interface set down, a sysctl, a host route,
       a nat or mangle rule) is not compared, and h1 and h2 are not collected at all
       (docs/collection-methods.md).

@@ -8,7 +8,7 @@ collected. It covers OROS REC-2.
 
 | Device type | Nodes | How it's collected | Off-box copy | Checked against running |
 |---|---|---|---|---|
-| Router (FRR 8.4.1) | r1, r2, r3, isp | `vtysh -c "show running-config no-header"` over `docker exec` (Ansible's Docker connection) | `backups/<router>.conf` | Intent and startup: `frr-reload.py --test` with `build/<router>/frr.conf`. The copy: `frr-reload.py --test` with the copy itself ([`verify_capture.yml`](../ansible/verify_capture.yml)) |
+| Router (FRR 8.4.1) | r1, r2, r3, isp (see below) | `vtysh -c "show running-config no-header"` over `docker exec` (Ansible's Docker connection) | `backups/<router>.conf` | Intent and startup: `frr-reload.py --test` with `build/<router>/frr.conf`. The copy: `frr-reload.py --test` with the copy itself ([`verify_capture.yml`](../ansible/verify_capture.yml)) |
 | Firewall (iptables) | fw1 | `iptables-save` over `docker exec` | `backups/fw1.rules` | Intent and startup: `firewall.sh`'s iptables lines replayed in a new network namespace, then `iptables -S` diffed with the live `iptables -S` |
 | Host | h1, h2 | Not collected | none | none (gap, below) |
 
@@ -30,8 +30,12 @@ collected. It covers OROS REC-2.
   `service integrated-vtysh-config` still fails (the capture test checks this), and so would one that
   lost a `password` line (same code path; the lab routers have no password to test it with). The one
   exception is `frr version`, a stamp FRR adds itself.
-- `ip forwarding` and `ipv6 forwarding` are ignored in both checks. They mirror a kernel sysctl that the
-  topology sets, and they vary by host.
+- `ipv6 forwarding` is ignored in both checks. It mirrors a kernel sysctl that varies by host (GitHub
+  runners turn it on), and the lab runs no IPv6. `ip forwarding` is not ignored: a router with IPv4
+  forwarding off is broken, so the check should fail ([V-009](verdicts.yml)).
+
+- isp stands in for the carrier. It is collected only because this lab builds it; a real carrier's
+  router is out of reach, and only `make locate` enforces the inventory's ownership rule.
 
 ## The firewall: an awkward device
 

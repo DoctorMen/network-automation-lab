@@ -98,4 +98,5 @@
   evidence:
     - "2026-10-15, lab r1 with net.ipv4.ip_forward=0: frr-reload --test lists 'ip forwarding' under Lines To Delete and make drift fails (restored to 1 afterwards)"
     - "the filter '^(no )?ipv6? forwarding$' reads as 'ipv' plus an optional '6', so it never matches 'ip forwarding'"
-  workaround: none needed; a router with IPv4 forwarding off is broken, so failing is right. The comment over-claims and should say IPv6 only
+  workaround: none needed; a router with IPv4 forwarding off is broken, so failing is right
+  fixed_in: PR #2 (the filter now reads ipv6 only, and its comment and docs/collection-methods.md say so)

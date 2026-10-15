@@ -7,10 +7,10 @@ Every requirement in [the standard](standard.md), scored against this repository
 How each requirement is scored:
 
 - **pass**: the requirement's *Pass* test is demonstrated in this lab by a test or lint in this repo, and that test fails when the requirement isn't met. Each one was checked by breaking what it guards (removing the config line, truncating the backup, injecting the fault) and watching the test go red.
-- **partial**: part of the *Pass* test is demonstrated. The row says what is missing.
+- **partial**: real pieces of the requirement are in place, and the row names them, but the *Pass* test is not demonstrated. The row says what is missing. The before figures used the same rule.
 - **fail**: nothing here demonstrates the *Pass* test.
 
-Each first score was then checked by a second reviewer against the code and the live lab, and several were marked down on that check. The lab is seven containers, so a pass shows the method works at lab scale, not that a production network meets the requirement. `make test` checks that this page lists all 61 requirements, that the totals add up, and that every test it names exists.
+Each first score was then checked again, independently, against the code and the live lab, and several were marked down on that check. Both passes were AI-assisted, like the coding behind the standard ([how OROS was made](README.md)). The lab is seven containers, so a pass shows the method works at lab scale, not that a production network meets the requirement. `make test` checks that this page lists all 61 requirements, that the totals add up, and that every test it names exists.
 
 ## 1 Notice
 
@@ -110,7 +110,7 @@ Each first score was then checked by a second reviewer against the code and the 
 | ATT-1 | Scope register | fail | No scope register. |
 | ATT-2 | Finding dispute record | fail | No scanner findings to dispute. |
 | ATT-3 | One artifact first | fail | No request log and no shareable evidence pack. |
-| ATT-4 | Control works as claimed | partial | Every claimed control is in [the control register](../controls.yml) with its test and a 31-day period, and CI keeps dated JUnit results for 90 days. Nothing yet checks that each control's last green run is inside its period, and the nightly run starts only once this is on `main`. |
+| ATT-4 | Control works as claimed | partial | Every claimed control is in [the control register](../controls.yml) with its test and a 31-day period, and CI keeps dated JUnit results for 90 days. Nothing yet checks that each control's last green run is inside its period, and GitHub runs the nightly schedule only on `main`, so it starts once this is merged. |
 | ATT-5 | Scored baseline | fail | No benchmark scoring of the nodes. |
 
 ## 10 Justify the decision

@@ -23,9 +23,9 @@ The live tests need to know which OSPF neighbors, BGP sessions, loopbacks and ho
 
 ## Decision
 
-`netlab render` writes `build/expected_state.json` from the same `inventory/network.yml` that produced the configs. The live tests read only that file, never literals. The platform block (image, digest, FRR, Alpine and busybox versions) goes in the same file for `test_running_version_matches_inventory`.
+`netlab render` writes `build/expected_state.json` from the same `inventory/network.yml` that produced the configs. The live tests take routers, neighbors, sessions and addresses from that file. The platform block (image, digest, FRR, Alpine and busybox versions) goes in the same file for `test_running_version_matches_inventory`.
 
 ## Consequences
 
-- Adding a router to the YAML adds it to the tests with no test edits.
+- Adding a router to the YAML adds it to the routing, BFD, platform and management checks with no test edits. The failover, locate and collection drills still name the routers and links they break (r1-r3, r1-r2, r2), so a new topology needs those drills rewritten.
 - The offline render tests deliberately keep literal strings (`router-id 10.255.0.1`, `summary-only`), so a generator bug can't hide behind generated expectations.

@@ -1,4 +1,6 @@
 """Control plane: are the protocols up and carrying the routes they should?"""
+import ipaddress
+
 from .conftest import wait_for
 
 
@@ -41,6 +43,12 @@ def test_host_lans_are_passive(node, expected):
         for ifname in interfaces:
             info = node(router).vtysh_json(f"show ip ospf interface {ifname}")["interfaces"][ifname]
             assert info.get("timerPassiveIface") is True, f"{router} {ifname} sends OSPF hellos toward hosts"
+            # Passive must not mean missing: the LAN is still in every other core router's table.
+            lan = str(ipaddress.ip_interface(f"{info['ipAddress']}/{info['ipAddressPrefixlen']}").network)
+            for other in expected["passive_interfaces"]:
+                if other != router:
+                    assert wait_for(lambda: lan in node(other).vtysh_json("show ip route ospf")), \
+                        f"{other} has no OSPF route to {lan}"
     assert any(expected["passive_interfaces"].values()), "the inventory implies no passive interface"
 
 

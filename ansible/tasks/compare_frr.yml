@@ -14,8 +14,9 @@
   register: reload_test
   changed_when: false
 
-# IP forwarding mirrors a kernel sysctl that the topology owns, so it varies by host
-# (for example, GitHub runners enable IPv6 forwarding). Everything else must match.
+# IPv6 forwarding mirrors a kernel sysctl that varies by host (GitHub runners enable it), and
+# the lab doesn't use IPv6. IPv4 forwarding is not filtered: a router with it off is broken,
+# so drift should fail (docs/verdicts.yml V-009). Everything else must match.
 # frr-reload.py never lists lines it refuses to remove (password, line vty,
 # service integrated-vtysh-config...), it only logs them, so count those log lines too.
 # The one exception is the version stamp FRR adds itself.
@@ -24,7 +25,7 @@
     listed: >-
       {{ reload_test.stdout_lines
          | map('trim') | reject('match', '^(Lines To (Add|Delete)|=*)$')
-         | reject('match', '^(no )?ipv6? forwarding$')
+         | reject('match', '^(no )?ipv6 forwarding$')
          | list }}
     unremovable: >-
       {{ reload_test.stderr_lines

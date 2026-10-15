@@ -2,8 +2,9 @@
 # and the expected state the tests check are generated from this file.
 lab_name: netauto
 
-# Who runs this lab. Tools log in only to devices this team owns; everything else is
-# someone else's network, observed from outside and escalated to its owner.
+# Who runs this lab. `make locate` runs commands only on devices this team owns; everything
+# else is someone else's network, observed from outside and escalated to its owner. (isp is
+# the lab's stand-in carrier, so the lab's own deploy, tests and drift check still reach it.)
 operator: campus NOC
 
 # What every node actually runs: all seven use this one image. Read from the lab
