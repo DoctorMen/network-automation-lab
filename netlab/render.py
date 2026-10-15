@@ -54,6 +54,12 @@ def render_firewall(inv: Inventory, name: str, env: Environment | None = None) -
     return env.get_template("firewall.sh.j2").render(name=name, fw=inv.firewalls[name])
 
 
+def bfd_peers(inv: Inventory, router: str) -> dict[str, str]:
+    """BFD runs on every OSPF link (frr.conf.j2), so its peers come from the same links: address -> interface."""
+    ospf = inv.ospf_neighbors(router)
+    return {str(remote.address.ip): local.interface for local, remote in inv.neighbors(router) if remote.device in ospf}
+
+
 def expected_state(inv: Inventory) -> dict:
     """What a healthy lab looks like. The live tests compare against this."""
     bgp_sessions = []
@@ -62,6 +68,7 @@ def expected_state(inv: Inventory) -> dict:
             bgp_sessions.append({"router": name, "peer": n["peer"], "address": n["address"]})
     return {
         "ospf_neighbors": {r: inv.ospf_neighbors(r) for r in inv.routers if inv.ospf_neighbors(r)},
+        "bfd_peers": {r: bfd_peers(inv, r) for r in inv.routers if inv.ospf_neighbors(r)},
         "bgp_sessions": bgp_sessions,
         "loopbacks": {r: str(ipaddress.IPv4Interface(v["loopback"]).ip) for r, v in inv.routers.items()},
         "hosts": {h: v["address"].split("/")[0] for h, v in inv.hosts.items()},

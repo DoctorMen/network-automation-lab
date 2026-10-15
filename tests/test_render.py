@@ -14,7 +14,7 @@ inv = load(INVENTORY)
 def test_core_router_runs_ospf_on_router_links_only():
     conf = render_router(inv, "r1")["frr.conf"]
     assert "router ospf\n ospf router-id 10.255.0.1" in conf
-    assert "interface eth1\n description to-r2:eth1\n ip address 10.0.12.0/31\n ip ospf area 0\n ip ospf network point-to-point" in conf
+    assert "interface eth1\n description to-r2:eth1\n ip address 10.0.12.0/31\n ip ospf area 0\n ip ospf network point-to-point\n ip ospf bfd" in conf
     # The firewall link is not an OSPF adjacency; LAN-A arrives via a redistributed static route.
     eth3 = conf.split("interface eth3")[1].split("exit")[0]
     assert "ospf" not in eth3
@@ -40,6 +40,9 @@ def test_daemons_match_protocols():
     assert "bgpd=no" in render_router(inv, "r1")["daemons"]
     assert "bgpd=yes" in render_router(inv, "r2")["daemons"]
     assert "ospfd=no" in render_router(inv, "isp")["daemons"]
+    # bfdd only serves OSPF here, so it runs exactly where ospfd does.
+    assert "bfdd=yes" in render_router(inv, "r1")["daemons"]
+    assert "bfdd=no" in render_router(inv, "isp")["daemons"]
 
 
 def test_firewall_default_drop_and_rule_order():
@@ -59,6 +62,7 @@ def test_render_all_writes_a_consistent_lab(tmp_path):
             assert (tmp_path / bind.split(":")[0]).exists(), bind
     expected = json.loads((tmp_path / "expected_state.json").read_text())
     assert expected["ospf_neighbors"]["r2"] == ["r1", "r3"]
+    assert expected["bfd_peers"]["r1"] == {"10.0.12.1": "eth1", "10.0.13.1": "eth2"}
     assert expected["bgp_sessions"][0]["peer"] == "isp"
 
 
