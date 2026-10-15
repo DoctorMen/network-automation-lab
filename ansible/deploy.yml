@@ -113,6 +113,8 @@
           when: canary in ansible_play_batch
 
       rescue:
+        # Keep this first. When only some routers of a batch fail, any_errors_fatal ends the play after
+        # the rescue's first task, and the routers that didn't fail keep the change (decision 0010).
         # frr-reload.py runs `write` after reloading any file other than <confdir>/frr.conf, which the
         # read-only intent refuses, so it exits 1 after rolling back. Pointing --confdir at the
         # fallback's own folder makes the fallback that file, so it doesn't try.

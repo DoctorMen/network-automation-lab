@@ -74,7 +74,8 @@ def test_failing_canary_rolls_back_and_blocks(node, expected):
     bad[first] = without_first_ospf_link(bad[first])
     try:
         change_intent(bad)
-        result = deploy()
+        # 10 s, not the inventory's 20, to save CI time: the lost neighbor doesn't come back, so the gate fails either way.
+        result = deploy("-e", "gate_timeout=10")
         assert result.returncode != 0, "the rollout carried on past a canary that failed its health gate:\n" + result.stdout
         assert f"{first} failed \"Health gate" in result.stdout, "the rollout stopped, but not at the canary's gate:\n" + result.stdout
         assert running(node, first) == before, f"{first} is not back on its pre-change config"
@@ -97,7 +98,8 @@ def test_change_waits_for_window_then_reaches_every_router(node, expected):
         refused = deploy("-e", json.dumps({"change_window": closed}))
         assert refused.returncode != 0 and "outside the change window" in refused.stdout, refused.stdout
         assert not [r for r in routers if marker in running(node, r)], "a router changed outside the window"
-        done = deploy()
+        # 5 s, not the inventory's 10, to save CI time: a harmless change stays healthy either way.
+        done = deploy("-e", "vetting_delay=5")
         assert done.returncode == 0, "a harmless change failed the rollout, so the failing-canary test proves nothing:\n" + done.stdout
         assert [r for r in routers if marker not in running(node, r)] == [], "the change did not reach every router"
     finally:

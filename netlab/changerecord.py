@@ -25,7 +25,7 @@ def parity_problems(body: str | None) -> list[str]:
         return [f'the description has no "{HEADING}" section (copy it from .github/pull_request_template.md)']
     section = []
     for line in lines[starts[0] + 1:]:
-        if line.startswith("#"):
+        if re.match(r"#{1,6} ", line):  # the next heading; "#42 has the same risk" is part of the answer
             break
         section.append(line.strip())
     answer = " ".join(section).strip(" -*_.:")

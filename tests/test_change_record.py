@@ -36,6 +36,12 @@ def test_a_missing_section_fails():
     assert parity_problems("<!--\n## Risks the lab could not cover\nhidden\n-->") != []
 
 
+def test_an_issue_number_does_not_end_the_section():
+    """Only a Markdown heading ends the section, so an answer that starts with '#42' still counts."""
+    body = "## Risks the lab could not cover\n#42 has the same risk: the lab has no switches.\n## Notes\nlater"
+    assert parity_problems(body) == []
+
+
 def test_the_check_reads_the_github_event(tmp_path):
     """The CI job passes $GITHUB_EVENT_PATH; the exit code is what turns the check red."""
     def check(body):

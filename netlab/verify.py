@@ -15,10 +15,10 @@ named, prints a line per node and check, and exits 1 if anything is `not in effe
 """
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import subprocess
-import sys
 from pathlib import Path
 
 import yaml
@@ -121,8 +121,11 @@ def main(argv: list[str] | None = None) -> int:
     build = ROOT / "build"
     expected = json.loads((build / "expected_state.json").read_text())
     lab = yaml.safe_load((build / "topology.clab.yml").read_text())["name"]
-    nodes = (sys.argv[1:] if argv is None else argv) or [*expected["loopbacks"], *expected["qos"]]
-    lines = report(expected, lab, nodes)
+    every = [*expected["loopbacks"], *expected["qos"]]
+    p = argparse.ArgumentParser(prog="netlab.verify", description="Is each change in effect, not just installed?")
+    p.add_argument("nodes", nargs="*", choices=every, metavar="NODE",
+                   help=f"a router or a host with QoS: {', '.join(every)} (default: all of them)")
+    lines = report(expected, lab, p.parse_args(argv).nodes or every)
     print("\n".join(lines))
     return 1 if any("not in effect" in line for line in lines) else 0
 

@@ -413,9 +413,11 @@ controls:
       The gate sees only what netlab.health checks: OSPF, BGP and host-to-host ping. A change that
       breaks a route, a firewall path or a service while those still pass goes through, and so does
       a fault that shows after the 10 s vetting delay. Production batches are rolled back as a whole
-      only if every router fails its gate together (checked by hand in the lab once, not by a test). The
-      rollback restores the running config, not build/, so a restart boots the bad intent; make drift
-      reports it. The rollout only covers the routers: fw1 and the hosts are not in it.
+      only if every router fails its gate together (checked by hand in the lab once, not by a test). If
+      one router fails an earlier step (the apply or the compare), only it rolls back, and the rest of its
+      batch keeps the change (decision 0010, an accepted risk). The rollback restores the running
+      config, not build/, so a restart boots the bad intent; make drift reports it. The rollout only
+      covers the routers: fw1 and the hosts are not in it.
 
   - id: change-window
     claim: "Nothing changes outside the change window, and a harmless change passes every gate and reaches every router, so the gate doesn't just fail everything"
@@ -446,7 +448,9 @@ controls:
       somewhere else, or a live-patched one, is not seen; the lab nodes install none, so on them it
       only has something to compare in the test. The daemon check covers FRR's own processes under
       /usr/lib/frr, not shared libraries an upgrade replaced (needrestart also reads /proc/<pid>/maps
-      for those), and not the host. It runs when called: after each rollout batch and by make verify.
+      for those), and not the host. It runs when called: after each rollout batch, on that batch's
+      routers, and by make verify. CI also applies the kernel rule to the runner's own installed
+      kernel, as a report that doesn't fail the job.
 
   - id: qos-in-effect
     claim: "h2's QoS is confirmed from its class counters: the installed rates match the inventory, and five connections to port 80 are counted in the web class. That costs a few kilobytes on a 20 Mbit link. A changed rate or a missing filter is `not in effect`"
@@ -459,6 +463,8 @@ controls:
       The probe checks that connections to the port land in the class, not that the class gets its
       share under load; that is test_backup_yields_to_web's job. Rates are compared as tc prints
       them, so the inventory must give whole mbit. Burst, quantum and leaf queues are not checked.
+      Only make verify checks it: the rollout runs netlab.verify on its own routers, and no rollout
+      changes h2's QoS, which is set when the lab deploys.
 
   - id: bulk-yields
     claim: "A backup yields to web traffic. h2's port is capped at 20 Mbit, standing for a link that can't be upgraded, and HTB gives web replies a class of their own. During a 15 MB copy from h2 that fills the link, h1's web p95 stays under 50 ms and every byte arrives. Measured in the sandbox lab: 2.7–6.3 ms, against 110–126 ms on one flat queue of the same rate"
@@ -480,6 +486,7 @@ controls:
       - tests/test_change_record.py::test_the_untouched_template_fails
       - tests/test_change_record.py::test_an_empty_or_filler_section_fails
       - tests/test_change_record.py::test_a_missing_section_fails
+      - tests/test_change_record.py::test_an_issue_number_does_not_end_the_section
       - tests/test_change_record.py::test_the_check_reads_the_github_event
       - tests/test_change_record.py::test_ci_runs_the_check_when_the_description_changes
     period: P31D

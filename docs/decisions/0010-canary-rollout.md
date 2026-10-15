@@ -48,6 +48,21 @@ failure_modes:
   - mode: a production router fails the gate
     mitigation: every router of the batch runs the gate, so all of them roll back, and any_errors_fatal stops the play
     test: none (checked by hand in the lab once, not in the suite to save CI time. r2 lost its OSPF link to r1, and r2, r3 and isp all went back to their exact pre-change config)
+  - mode: one production router fails a step other than the gate (frr-reload.py's apply, or the compare with intent) and the others don't
+    mitigation: >-
+      Accepted risk. That router rolls back and any_errors_fatal ends the play, but the other routers in its batch
+      keep the change, which the gate never checked, and nothing rolls them back. The rollout exits non-zero, without
+      its "rolled back" message, because the rescue stops after its first task. Revert the change in the inventory
+      and run make apply again. A rescue that also rolls back the rest of the batch is not built: Ansible has already
+      marked those routers failed by then, so it is more than a few lines to get right, and it would be untested
+    test: none (accepted risk; checked with ansible-core 2.21.5 and four mock hosts. In the batch of three the failing one was rescued and the other two kept the change)
+  - mode: something on a batch's routers was already not in effect before the rollout (a stopped daemon, a kernel waiting for a reboot)
+    mitigation: >-
+      Accepted risk. netlab.verify runs after the batch has changed and fails on it, although the change didn't cause
+      it, and nothing rolls back. On the canary that stops every rollout after the canary; on a production router every
+      rollout changes every router and then fails. Unlike the health gate, verify has no list of known problems, so run
+      make verify before make apply and fix what it reports first
+    test: none (accepted risk; checked by hand once on the canary, where a kernel waiting for a reboot stopped the rollout at r1's verify)
   - mode: a patch is installed but not running (a daemon replaced on disk, a kernel not rebooted into)
     mitigation: netlab.verify runs after each batch and fails the rollout on `not in effect`. The test proves the check; that the rollout stops on it is not tested
     test: tests/live/test_verify.py::test_daemon_patch_without_restart_is_not_in_effect
@@ -72,7 +87,7 @@ failure_modes:
 
 ## Consequences
 
-- A rollout with nothing to change takes about 35 s here (34.7 and 35.5 s measured), most of it the vetting delay and the health checks (about 1.7 s each). The failing-canary test takes 39-44 s, 20 s of it the gate waiting before it gives up.
+- A rollout with nothing to change takes about 35 s here (34.7 and 35.5 s measured), most of it the vetting delay and the health checks (about 1.7 s each). To save CI time the tests shorten both waits with -e: the failing-canary test gives the gate 10 s (28-33 s a run, against 38.6 s with the inventory's 20 s, measured back to back), and the good-change test uses a 5 s vetting delay (36-39 s a run).
 - After a rollback the router runs its old config while build/ holds the new intent, so `make drift` is red until the change is reverted. That is on purpose: the bad change is still in the source of truth.
 - frr-reload.py never restarts a daemon, so no reboot or restart happens inside or outside the window. A patch that needs one is reported by netlab.verify, not done.
 - The window is open all day in the lab so CI can run at any hour; the test closes it with `-e change_window=...`.
