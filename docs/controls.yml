@@ -767,7 +767,7 @@ controls:
       contacting anyone. No payment processor or scrubbing vendor is listed: the lab has neither.
 
   - id: backup-at-destination
-    claim: "A backup is judged where it lands. `make backup` sends every router's and the firewall's captured config to a restic repository, then reads the snapshot back from there: one file per device, each with the capture's sha256, and `restic check --read-data` clean. Data rotted at the destination fails the job, although `restic backup` itself exits 0"
+    claim: "A backup is judged where it lands. `make backup` sends every router's config and the firewall's and edge routers' rules, as `make drift` captured them, to a restic repository, then reads the snapshot back from there: one file per config and ruleset, each with the capture's sha256, and `restic check --read-data` clean. Data rotted at the destination fails the job, although `restic backup` itself exits 0"
     test:
       - tests/live/test_backup.py::test_backup_is_verified_at_destination
       - tests/live/test_backup.py::test_corrupt_destination_fails_the_backup
@@ -776,11 +776,28 @@ controls:
       A backup job that reports success while the copy at the destination is incomplete or
       unreadable, found out on the day of the restore.
     fails_when: >-
-      It backs up what make drift captured (routers and fw1); h1 and h2 are not backed up. In CI the
-      destination is the Actions cache, evicted after 7 days without use, and a pull request's run
-      never writes it. The password file sits beside the repository (decision 0014), so anyone who
-      can read the cache can read the backups. Two runs at once each save their own copy; the newer
-      one wins and the other's snapshot is lost.
+      It backs up what make drift captured (the routers' configs, fw1's rules, and r2's and r3's edge
+      rules); h1 and h2 are not backed up. In CI the destination is the Actions cache, evicted after
+      7 days without use, and a pull request's run never writes it. The password file sits beside the
+      repository (decision 0014, RISK-29), so anyone who can read the cache can read the backups. Two
+      runs at once each save their own copy; the newer one wins and the other's snapshot is lost
+      (RISK-26).
+
+  - id: backup-no-secret
+    claim: "A capture holding the BGP password in clear is never backed up: `make backup` names the file and the secret, not its value, and stops before restic runs, and a capture whose secret file is missing is refused too, since nothing could tell. Every file in the snapshot it reads back is searched as well, and in CI the backup runs only after the secret scan of `backups/` has passed"
+    test:
+      - tests/test_backup.py::test_a_capture_holding_a_password_is_never_sent
+      - tests/test_backup.py::test_a_secret_at_the_destination_is_named
+      - tests/live/test_backup.py::test_backup_is_verified_at_destination
+    period: P31D
+    threat: >-
+      A password that slipped past the redaction landing in the backup repository, which keeps every
+      snapshot and whose own password sits beside it in the Actions cache.
+    fails_when: >-
+      It searches for the secrets the inventory's bgp_auth names, by their exact value: a secret of
+      another kind, or one written another way (base64, a hash FRR computes from it), is not found.
+      The repository's password is beside it in the cache, so this is what keeps the backups harmless
+      to read (RISK-29).
 
   - id: backup-target-missing
     claim: "A missing or unmounted backup target fails the job loudly and nothing is written: the job never creates a repository, which would hide exactly that. In CI the cache restore is set to fail on a miss"
@@ -802,7 +819,7 @@ controls:
     period: P31D
     threat: A device dropped from the backup without a word (unreachable that night, a collection error), missed only when it is needed.
     fails_when: >-
-      The device list is the inventory's routers and firewalls. A file that is present but old (a
+      The device list is the inventory's routers, firewalls and edge routers. A file that is present but old (a
       stale capture left in backups/) is backed up as it is; `make drift` rewrites every file first,
       and CI runs them in that order.
 
@@ -839,10 +856,10 @@ controls:
     fails_when: >-
       It runs with the weekly drill, so a stop is caught up to a week late. It runs on the same
       GitHub scheduler as the backups: if GitHub disables the repository's schedules (60 days without
-      activity), neither runs and nothing alerts. That needs a check from outside GitHub.
+      activity), neither runs and nothing alerts. That needs a check from outside GitHub (RISK-25).
 
   - id: power-event-drill
-    claim: "After a whole-lab power cycle every node comes back by itself from its startup config: an unsaved change on r2 is gone, OSPF, BFD and BGP are up, h1 reaches the web server through fw1, and nothing has drifted. Routing was back 19.6 s after the cut here. A weekly job is set up to run it"
+    claim: "After a whole-lab power cycle every node comes back by itself from its startup config: an unsaved change on r2 is gone and OSPF, BFD and BGP are up; once `make apply` has set the BGP password again (it is in no startup config), h1 reaches the web server through fw1 and nothing has drifted. Routing was back 19.6 s after the cut here. A weekly job is set up to run it"
     test: tests/live/test_power_event.py::test_power_event_recovers_from_startup_config
     period: P31D
     threat: >-
@@ -851,12 +868,14 @@ controls:
     fails_when: >-
       The cut is a Containerlab redeploy, which also gives every node a fresh filesystem, so it is a
       colder start than a real power blip. Every node restarts at once; one node coming back while its
-      neighbours stay up is not drilled (`docker restart` loses the node's links, decision 0015). The
+      neighbours stay up is not drilled (`docker restart` loses the node's links, decision 0015,
+      RISK-27). Nothing runs `make apply` by itself after a real power cut, so until someone does, the
+      BGP session stays down against a real carrier, and in the lab it came back with no MD5 (RISK-28). The
       weekly job has not run on GitHub yet, where the cut is `containerlab deploy --reconfigure`;
       here it was the sandbox's whole-lab redeploy.
 
   - id: runbooks
-    claim: "Runbooks for link failure, BGP down, config drift, restoring a router from backup, a power event and carrier loss each name an owner, a coordinator, who updates stakeholders, a review date and their hosts. The check fails on a missing field, a review older than 180 days, or a host that isn't in the inventory or in the runbook's own host list"
+    claim: "Runbooks for link failure, BGP down, config drift, restoring a router from backup, a power event, carrier loss and a DDoS blackhole at the ISP each name an owner, a coordinator, who updates stakeholders, a review date and their hosts. The check fails on a missing field, a review older than 180 days, or a host that isn't in the inventory or in the runbook's own host list"
     test:
       - tests/test_runbooks.py::test_runbooks_lint_clean
       - tests/test_runbooks.py::test_top_incident_dr_and_power_event_types_have_runbooks
@@ -883,7 +902,7 @@ controls:
     threat: Controls claimed to an auditor whose tests stopped running, or have been red for weeks, with nobody looking.
     fails_when: >-
       It runs in the scheduled workflow it checks: if GitHub stops scheduling, the check stops too and
-      says nothing. Artifacts are kept 90 days, the longest period. It doesn't run on pull requests.
+      says nothing (RISK-25); the next push to main runs it again. Artifacts are kept 90 days, the longest period. It doesn't run on pull requests.
       The CI job has not run on GitHub yet, and fetching earlier runs' artifacts with gh is proven
       only with a fake gh (the proxy here blocks artifact downloads).
       It trusts that each named test proves its claim (control-register).

@@ -1,6 +1,6 @@
 # Backups and restores
 
-`make drift` collects every router's running config and fw1's rules into `backups/`
+`make drift` collects every router's running config, fw1's rules and r2's and r3's edge rules into `backups/`
 ([collection-methods.md](collection-methods.md)). That folder is staging, on the machine that ran the
 check, and gitignored. The backup is the next step: `make backup` sends that capture to a restic
 repository that outlives the machine, and judges the result there. The weekly restore drill then
@@ -40,7 +40,8 @@ the cache the one before saved. Each can be started from the Actions tab (Run wo
 2. **One CI run with a backup.** `gh workflow run ci.yml --ref main`, or the API with
    `{"ref": "main"}` (the nightly run does the same). It must show, in the lab job: *Restore the
    backup repository* finds `restic-<run id of step 1>`, *Back up configs* ends with `verified
-   snapshot ...: 5 files, every inventory device, restic check --read-data clean`, and *Keep the
+   snapshot ...: 7 files, every inventory device, no secret in clear (1 searched for), restic check
+   --read-data clean`, and *Keep the
    repository* saves a new `restic-<run id>`. Its control-status job is still red, naming only the
    drill tests (`has no result in the evidence`): no drill has run yet.
 3. **One drill run.** `gh workflow run drills.yml --ref main`, or the API with `{"ref": "main"}` and
@@ -60,16 +61,24 @@ repository are gone; each CI run's `results-and-backups` artifact still holds th
 
 1. `BACKUP_REPO` holds a restic repository (its `config` file). If not: fail, write nothing. Docker
    gets the paths with `--mount`, which refuses a missing source; `-v` would create it on the host.
-2. The capture has a non-empty file for every router (`<router>.conf`) and firewall (`<fw>.rules`)
-   in the inventory. If one is missing: fail, naming it, and send nothing. A partial backup would
-   look like a good one.
-3. `restic backup` of exactly those files, with the lab's name as the snapshot's host (`--host`), which
+2. The capture has a non-empty file for every router (`<router>.conf`), firewall (`<fw>.rules`) and
+   edge router (`<router>.rules`, each router with an `edge.sh`: r2 and r3) in the inventory, seven
+   files in all. If one is missing: fail, naming it, and send nothing. A partial backup would look
+   like a good one.
+3. No captured file holds a lab secret in clear. Each secret the inventory's `bgp_auth` names is read
+   from its file in the secret store (`NETLAB_SECRETS`, or `.secrets/`) and searched for in every
+   file. A hit fails the job, naming the file and the secret but not its value, and nothing is sent:
+   a snapshot can't quietly be taken back out of the repository. A secret whose file is missing fails
+   it too, since nothing could tell. The capture should only ever hold the sha256 tag
+   ([decision 0016](decisions/0016-secrets-guardrails.md)), so a hit means the redaction broke. In CI
+   the backup steps also run only after the lab job's own secret scan of `backups/` has passed.
+4. `restic backup` of exactly those files, with the lab's name as the snapshot's host (`--host`), which
    is how the restore drill finds this lab's newest snapshot.
-4. Read the new snapshot back from the destination as one tar (`restic dump --archive tar`): every
-   file present, nothing extra, each with the capture's sha256. Then `restic check --read-data`,
-   which reads every pack.
+5. Read the new snapshot back from the destination as one tar (`restic dump --archive tar`): every
+   file present, nothing extra, each with the capture's sha256 and no secret in it. Then
+   `restic check --read-data`, which reads every pack.
 
-Why step 4: restic deduplicates. Back up the same configs twice and the second run sends nothing; it
+Why step 5: restic deduplicates. Back up the same configs twice and the second run sends nothing; it
 trusts the blobs already there. Measured here: with one byte flipped in every data pack, `restic
 backup` still exited 0, and only the read-back showed `ciphertext verification failed`.
 `test_corrupt_destination_fails_the_backup` proves the job fails there.
@@ -106,8 +115,12 @@ By hand, from the same repository:
 ```bash
 export RESTIC_REPOSITORY=/mnt/backup/netlab-restic RESTIC_PASSWORD_FILE=~/.config/netlab/restic-password
 restic snapshots                                   # or run it in restic/restic:0.16.4
-restic dump latest /src/r2.conf | sed -n '/^router bgp/,/^exit/p' > /tmp/bgp.conf
+restic dump latest /src/r2.conf | sed -n '/^router bgp/,/^exit/p' | grep -v ' password sha256:' > /tmp/bgp.conf
 ```
+
+The `grep -v` leaves out the BGP password's sha256 tag, which a router would otherwise take as its
+key; `make apply` sets the real one afterwards
+([restore-from-backup.md](runbooks/restore-from-backup.md)).
 
 ## How fresh, and who notices
 
@@ -118,4 +131,5 @@ restic dump latest /src/r2.conf | sed -n '/^router bgp/,/^exit/p' > /tmp/bgp.con
 - A failed scheduled run emails the person who last changed the schedule (GitHub's default).
 - Not covered: all of this runs on GitHub's scheduler. If GitHub disables the repository's schedules
   (after 60 days without activity in a public repo), backups, drills and the checks stop together and
-  nothing says so. Catching that needs a dead-man's switch outside GitHub.
+  nothing says so. Catching that needs a dead-man's switch outside GitHub (accepted risk RISK-25 in
+  [risks.yml](risks.yml)).

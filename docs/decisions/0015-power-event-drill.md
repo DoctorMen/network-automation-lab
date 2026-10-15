@@ -23,9 +23,12 @@ failure_modes:
   - mode: a node returns without its config, or with a hand change that was never saved
     mitigation: intent is mounted read-only and fw1's start script runs at deploy; the drill makes an unsaved change first and checks it is gone, then routing, the web path through fw1 and drift
     test: tests/live/test_power_event.py::test_power_event_recovers_from_startup_config
+  - mode: the drill passes while the BGP session runs without its password, which no startup config holds (decision 0016)
+    mitigation: the drill runs make apply after the cut, as the runbook's step 3 says, and checks authentication is enabled on both ends of the session
+    test: tests/live/test_power_event.py::test_power_event_recovers_from_startup_config
   - mode: one node restarts while its neighbours stay up
     mitigation: none drilled; containers lose their links on restart in this lab
-    test: none (accepted risk, docker restart cannot keep a Containerlab node's links)
+    test: none (accepted risk RISK-27 in docs/risks.yml, docker restart cannot keep a Containerlab node's links)
 ---
 
 ## Context
@@ -37,17 +40,21 @@ FRR can't be restarted inside its container without the container exiting.
 ## Decision
 
 The power event is the whole lab redeployed: `containerlab deploy --reconfigure` in CI (`make
-power-drill`, `POWER_CYCLE` in the Makefile), `labctl.sh up` with this sandbox's Containerlab stand-in.
+power-drill`, `POWER_CYCLE` in the Makefile), `labctl.sh cycle` with this sandbox's Containerlab stand-in.
 `tests/live/test_power_event.py` makes a hand change on r2 that is never saved, cuts the power, waits
 for every OSPF adjacency, BFD peer and BGP session the inventory expects, then checks the change is
-gone, h1 reaches h2:80 through fw1, and `drift.yml` passes. It redeploys every node, so it is skipped in
+gone. It runs `make apply`, because the BGP password is in no startup config ([decision
+0016](0016-secrets-guardrails.md), accepted risk RISK-28), checks the session is back with
+authentication on both ends, then that h1 reaches h2:80 through fw1 and `drift.yml` passes. It redeploys every node, so it is skipped in
 `make live` and runs weekly in `.github/workflows/drills.yml`, after the restore drill. Measured here:
-36.5 s for the test, routing back 19.6 s after the cut.
+36.5 s for the test before it ran `make apply`, 70 to 80 s with it (four runs on 2026-10-15; `make
+apply` takes about 40 s with the canary rollout); routing back 10.8 to 20.2 s after the cut.
 
 ## Consequences
 
-- The person's version is [docs/runbooks/power-event.md](../runbooks/power-event.md): `make deploy` is
-  the cut, then the runbook's steps. A run by someone other than its author goes in
+- The person's version is [docs/runbooks/power-event.md](../runbooks/power-event.md): `containerlab
+  deploy --reconfigure` is the cut (not `make deploy`, which sets the password again itself), then the
+  runbook's steps. A run by someone other than its author goes in
   `docs/runbooks/dry-runs.yml`.
 - CI time for the redeploy on a GitHub runner is not measured yet; the drills job has its own
   20-minute limit.

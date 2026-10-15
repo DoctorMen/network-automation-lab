@@ -110,6 +110,8 @@ jobs:
           fail-on-cache-miss: true
       - name: Back up configs to restic and verify them at the destination
         id: backup
+        # make backup also searches the capture, and the snapshot it reads back, for this run's password
+        # (from NETLAB_SECRETS), and sends nothing if the capture holds it.
         if: ${{ !cancelled() && steps.backup-repo.outcome == 'success' }}
         run: make backup BACKUP_REPO="$RUNNER_TEMP/backup/repo" BACKUP_PASSWORD="$RUNNER_TEMP/backup/password"
       - name: Keep the repository for the next run

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from netlab import backup
+from netlab import backup, secrets
 
 from .conftest import BUILD, ROOT
 from .test_collection import playbook
@@ -48,9 +48,11 @@ def destination(tmp_path_factory):
 
 
 def collected() -> list[str]:
-    """The files drift.yml writes, from the Ansible inventory it runs against: <router>.conf, <firewall>.rules."""
+    """The files drift.yml writes, from the Ansible inventory it runs against: <router>.conf,
+    <firewall>.rules, and <router>.rules for each edge router (its edge.sh rules)."""
     groups = yaml.safe_load((BUILD / "ansible_inventory.yml").read_text())["all"]["children"]
-    return sorted([f"{r}.conf" for r in groups["routers"]["hosts"]] + [f"{f}.rules" for f in groups["firewalls"]["hosts"]])
+    return sorted([f"{r}.conf" for r in groups["routers"]["hosts"]] + [f"{f}.rules" for f in groups["firewalls"]["hosts"]]
+                  + [f"{r}.rules" for r in groups["edge_routers"]["hosts"]])
 
 
 def data_packs(repo: Path, password: Path) -> list[str]:
@@ -64,7 +66,8 @@ def data_packs(repo: Path, password: Path) -> list[str]:
 
 
 def test_backup_is_verified_at_destination(destination, capture):
-    """A backup lands with one file per router and firewall that make drift collects, each with the capture's sha256."""
+    """A backup lands with one file for each config and ruleset make drift collects, each with the
+    capture's sha256, and no file at the destination holds the BGP password in clear."""
     repo, password = destination
     done = run_backup(repo, password, capture)
     assert done.returncode == 0, done.stdout + done.stderr
@@ -73,9 +76,13 @@ def test_backup_is_verified_at_destination(destination, capture):
     listed = [json.loads(line) for line in backup.restic(repo, password, "ls", "--json", "latest").stdout.splitlines()]
     files = sorted(n["name"] for n in listed if n.get("type") == "file")
     assert files == collected()
+    values = [(secrets.store() / n).read_bytes().strip() for n in secrets.names(backup.load(ROOT / "inventory" / "network.yml"))]
+    assert values and all(values), "no BGP password in the secret store to search for"
     for name in files:
         restored = backup.restic(repo, password, "dump", "latest", f"/src/{name}").stdout
         assert backup.sha256(restored) == backup.sha256((capture / name).read_bytes()), f"{name} differs at the destination"
+        # A bool, so a failure can't print the password into the JUnit file.
+        assert not any(v in restored for v in values), f"{name} at the destination holds the BGP password in clear"
 
 
 def test_missing_target_fails_loudly(tmp_path, capture, destination):

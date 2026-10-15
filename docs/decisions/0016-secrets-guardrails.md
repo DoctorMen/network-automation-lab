@@ -55,6 +55,9 @@ failure_modes:
   - mode: the sha256 tag in a published backup is reversed by guessing
     mitigation: The password is 128 random bits from `secrets.token_hex`, never chosen by a person, so its tag can't be brute-forced
     test: tests/test_secrets.py::test_secret_store_is_private_and_never_overwritten
+  - mode: a router restarts or loses power and comes back without its password, which no startup config holds
+    mitigation: make apply sets it again (step 3 of the power-event runbook, drilled weekly); until someone runs it a real carrier's session stays down, and in the lab both ends come back with no MD5 at all
+    test: none (accepted risk RISK-28 in docs/risks.yml, nothing runs make apply by itself after a restart)
   - mode: root on a router prints the key with ss -tnie, or reads the 0600 store
     mitigation: Accepted. Anyone with root on a lab node already controls the session
     test: none (accepted risk RISK-8 in docs/risks.yml)

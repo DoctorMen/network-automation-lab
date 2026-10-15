@@ -52,7 +52,7 @@ def has_mark(r2, mark: str) -> bool:
 
 
 def test_power_event_recovers_from_startup_config(node, expected):
-    """After a whole-lab power cycle every node comes back by itself: an unsaved change is gone, OSPF, BFD and BGP are up, users reach the web server and nothing has drifted."""
+    """After a whole-lab power cycle every node comes back by itself: an unsaved change is gone, OSPF, BFD and BGP are up; once make apply has set the BGP password again, users reach the web server and nothing has drifted."""
     r2 = node("r2")
     mark = f"unsaved-{uuid.uuid4().hex[:8]}"
     r2.run("vtysh", "-c", "conf t", "-c", "interface eth1", "-c", f"description {mark}")  # never saved
@@ -68,6 +68,15 @@ def test_power_event_recovers_from_startup_config(node, expected):
         # Only if the power cut didn't take it away: put r2 back as the drift check expects it.
         if has_mark(r2, mark):
             r2.run("vtysh", "-c", "conf t", "-c", "interface eth1", "-c", f"description {intended_description()}")
+    # The BGP password is in no startup config (decision 0016), so the cut took it. Setting it again is
+    # step 3 of the runbook: make apply. The session resets and comes back with it.
+    applied = playbook("deploy.yml")
+    assert applied.returncode == 0, "make apply failed after the power cycle:\n" + applied.stdout
+    assert wait_for(lambda: quietly(routing_up, node, expected), timeout=120), "BGP did not come back once its password was set"
+    # In the lab both ends lost the password, so the session could come back without it. It must not stay so.
+    unauthenticated = [f"{router} -> {e['peer']}" for router, ends in expected.get("bgp_md5", {}).items() for e in ends
+                       if not node(router).vtysh_json(f"show bgp neighbors {e['neighbor']}")[e["neighbor"]].get("authenticationEnabled")]
+    assert unauthenticated == [], f"BGP came back without its password after make apply: {unauthenticated}"
     h2 = expected["hosts"]["h2"]
     # Polled: routes can still be going into the kernel, and h2's web server starting, when the
     # protocols already report up (failed once here, with another lab on the same CPUs).

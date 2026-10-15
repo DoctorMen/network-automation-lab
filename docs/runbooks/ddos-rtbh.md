@@ -1,3 +1,11 @@
+---
+owner: campus NOC
+coordinator: NOC shift lead
+comms: NOC shift lead tells the service desk and h2's service owner that h2 is dark to the internet while the blackhole is on, and again when it is lifted
+last_reviewed: 2026-10-15
+hosts: [r2, isp]
+written_by: Claude (AI assistant)
+---
 # Runbook: DDoS on a published host, blackhole it at the ISP
 
 A flood aimed at a published host (today only h2:80, decision 0012) fills the ISP link, and then
@@ -7,6 +15,15 @@ full: the packets have already crossed it. The lever is at the ISP. A remote-tri
 dark to the internet, which is the price; the link, every other host and the campus's own access to
 the target stay up. No contract, no always-on fee. (OROS REC-7; the contact sheet is
 [docs/outside-levers.yml](../outside-levers.yml).)
+
+## Who does what
+
+- **Responder** (on-call network engineer): steps 1 to 3 and 5, on r2 only. Nobody else changes r2
+  while the blackhole is on.
+- **Coordinator** (NOC shift lead): decides to pull the lever, because it takes the host off the
+  internet, and decides when to lift it.
+- **Comms** (NOC shift lead): step 4 to the ISP NOC, and the service desk and the host's service owner
+  when it goes on and when it comes off.
 
 ## How it is wired
 

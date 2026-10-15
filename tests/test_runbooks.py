@@ -39,7 +39,7 @@ def test_top_incident_dr_and_power_event_types_have_runbooks():
 
 def test_unknown_host_is_reported(tmp_path):
     """A runbook that acts on r9, which the inventory doesn't have, fails the check, front matter or body."""
-    bad = folder_with(tmp_path, "bgp-down", "hosts: [r1, r2, h1]", "hosts: [r1, r2, h1, r9]")
+    bad = folder_with(tmp_path, "bgp-down", "hosts: [r1, r2, h1, isp]", "hosts: [r1, r2, h1, isp, r9]")
     assert runbooks.lint(bad, DEVICES, TODAY) == ["bgp-down.md: host r9 is not in the inventory"]
     bad = folder_with(tmp_path / "body", "bgp-down", "docker exec clab-<lab>-r2 ip -s link", "docker exec clab-<lab>-r9 ip -s link")
     assert runbooks.lint(bad, DEVICES, TODAY) == ["bgp-down.md: names r9, which is not in the inventory"]

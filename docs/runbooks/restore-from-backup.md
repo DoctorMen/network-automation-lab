@@ -35,20 +35,26 @@ this runbook is for when the backup is the source. The backups are restic snapsh
    ```
    CI's repository is in the Actions cache, which only a workflow can read; each CI run's
    `results-and-backups` artifact holds the same files for 90 days.
-2. **Pick the snapshot.** `restic snapshots --host <lab>` lists them, newest last, each with all five
-   devices. Use `latest` unless the coordinator names an older ID.
+2. **Pick the snapshot.** `restic snapshots --host <lab>` lists them, newest last, each with seven
+   files: every router's config, fw1's rules, and r2's and r3's edge rules. Use `latest` unless the coordinator names an older ID.
 3. **Put the router's backup where it boots from.** `build/<router>/frr.conf` is the router's startup
    config (bind-mounted read-only as `/etc/frr/frr.conf`) and what `make apply` loads:
-   `restic dump --host <lab> latest /src/r2.conf > build/r2/frr.conf`. Overwrite the file in place
-   like this; don't delete it first, or the running container keeps the old one.
+   `restic dump --host <lab> latest /src/r2.conf | grep -v ' password sha256:' > build/r2/frr.conf`.
+   The backup holds r2's BGP password only as its sha256 tag
+   ([decision 0016](../decisions/0016-secrets-guardrails.md)); kept, the tag would become the key and
+   the session would drop. Overwrite the file in place like this; don't delete it first, or the
+   running container keeps the old one.
 4. **Load it.**
    - The router is running: `make apply`. frr-reload changes only the lines that differ, without
      restarting daemons; the other routers' files are unchanged, so nothing happens on them.
-     Measured here: dump and `make apply` of r2 in 5.7 s; OSPF `Full` and BGP up when checked 12 s later.
+     Measured here, after the drill below: dump and `make apply` of r2 in 39 s, most of it the canary's
+     checks; BGP was up with its password when it ended, and both OSPF neighbors `Full` 5 s later.
    - The router or the whole lab host is gone: on a new host run `make render` first (topology and
      daemons files), then step 3 for every router, then
      `sudo containerlab deploy -t build/topology.clab.yml --reconfigure`. Not `make deploy`: it renders
-     `build/` again from the inventory, over the restored files.
+     `build/` again from the inventory, over the restored files. Then `make apply`: step 3 left the
+     password out, so a router booted from its backup has none until `make apply` sets it from the
+     secret store (the running-router path above does that already).
    - fw1: its start script loads its rules from `firewall.sh` on every deploy. To load the backed-up
      rules instead: `restic dump --host <lab> latest /src/fw1.rules | docker exec -i clab-<lab>-fw1 iptables-restore`.
 5. **See it work.** `docker exec clab-<lab>-r2 vtysh -c "show ip ospf neighbor" -c "show bgp summary"`:

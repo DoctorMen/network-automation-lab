@@ -74,6 +74,15 @@ jobs:
         run: |
           docker pull frrouting/frr:v8.4.1
           docker pull restic/restic:0.16.4
+      - name: Create this run's BGP password
+        # No GitHub secret exists, so every run gets a new random one, 0600 in a 0700 folder outside
+        # the checkout. `make deploy` sets it on r2 and isp through vtysh's stdin (decision 0016).
+        run: |
+          echo "NETLAB_SECRETS=$RUNNER_TEMP/netlab-secrets" >> "$GITHUB_ENV"
+          NETLAB_SECRETS="$RUNNER_TEMP/netlab-secrets" make secrets
+          # Masked: if a value ever reached this log, GitHub would print *** instead. echo is a shell
+          # builtin, so the value is on no command line.
+          for f in "$RUNNER_TEMP"/netlab-secrets/*; do echo "::add-mask::$(cat "$f")"; done
       - name: Deploy
         id: deploy
         run: make deploy

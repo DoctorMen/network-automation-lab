@@ -1,7 +1,7 @@
 ---
 owner: campus NOC
 coordinator: NOC shift lead
-comms: NOC shift lead updates the service desk; the carrier ticket goes out only with build/finding.json
+comms: NOC shift lead updates the service desk; the carrier ticket goes out only with the finding bundle from make finding (results/finding/)
 last_reviewed: 2026-10-15
 hosts: [h1, r1, r2, isp]
 written_by: Claude (AI assistant)
@@ -15,8 +15,10 @@ re-run, using only devices we own. We can't log into the carrier's router and do
 
 ## Who does what
 
-- **Responder** (on-call network engineer): steps 1 to 4, from devices we own only.
-- **Coordinator** (NOC shift lead): reads the verdict, and opens the carrier ticket or keeps it ours.
+- **Responder** (on-call network engineer): steps 1 to 4, from devices we own only, then `make finding`
+  for the bundle the carrier gets (below).
+- **Coordinator** (NOC shift lead): reads the verdict, and opens the carrier ticket with that bundle or
+  keeps it ours.
 - **Comms** (NOC shift lead): tells the service desk whose fault it looks like, and when that is confirmed.
 
 ## Steps

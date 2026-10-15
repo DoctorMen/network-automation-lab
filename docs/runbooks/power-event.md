@@ -11,8 +11,9 @@ written_by: Claude (AI assistant)
 Every node lost power and has restarted. A router comes back with its startup config only; anything
 typed by hand and never put into the inventory is gone. The firewall keeps no config at all: its rules
 come back only because its start script runs. In the lab the power event is a whole-lab redeploy,
-`make deploy` (`containerlab deploy --reconfigure`): every node is stopped and started again from
-the rendered files. `<lab>` below is the `name:` in `build/topology.clab.yml`.
+`sudo containerlab deploy -t build/topology.clab.yml --reconfigure`: every node is stopped and started
+again from the rendered files. Not `make deploy`, which also sets the BGP password again at the end
+and so skips what a real power cut does. `<lab>` below is the `name:` in `build/topology.clab.yml`.
 
 ## Who does what
 
@@ -27,7 +28,12 @@ the rendered files. `<lab>` below is the `name:` in `build/topology.clab.yml`.
 1. **Power is stable.** No restart in the last 10 minutes. Starting checks during a flap wastes them.
 2. **Every node is running.** `docker ps --filter name=clab-<lab>- --format '{{.Names}} {{.Status}}'`
    lists 7 nodes, all `Up`. A missing one: `make deploy` brings the whole lab back.
-3. **Routing is back.** On r1, r2 and r3:
+3. **Routing is back.** First `make apply`: the r2–isp BGP password is in no startup config
+   ([decision 0016](../decisions/0016-secrets-guardrails.md)), so the power cut took it, and against a
+   real carrier the session stays down until it is set again. In the lab isp loses it too, so the
+   session can come back with no password at all; after `make apply`,
+   `docker exec clab-<lab>-r2 vtysh -c "show bgp neighbors 198.51.100.1"` says `Peer Authentication Enabled`.
+   Then on r1, r2 and r3:
    `docker exec clab-<lab>-r1 vtysh -c "show ip ospf neighbor" -c "show bfd peers brief"`
    (two `Full`, two `up` each), and the same on `clab-<lab>-r2` and `clab-<lab>-r3`.
    On r2, `docker exec clab-<lab>-r2 vtysh -c "show bgp summary"`: 198.51.100.1 shows a prefix count.
@@ -55,5 +61,5 @@ shows they boot. To load them instead of the inventory's: [restore-from-backup.m
 ## Drill it in the lab
 
 `make power-drill` does steps 2 to 7 by itself after a whole-lab redeploy, and first makes a hand
-change on r2 that must be gone afterwards. Run by a person: `make deploy` is the power cut, then
-follow the steps from 1 and record the run in [dry-runs.yml](dry-runs.yml).
+change on r2 that must be gone afterwards. Run by a person: the `containerlab deploy ... --reconfigure`
+above is the power cut, then follow the steps from 1 and record the run in [dry-runs.yml](dry-runs.yml).

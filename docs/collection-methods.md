@@ -5,7 +5,8 @@ and the firewall it copies the running state off the box into `backups/` and che
 against its intended config. For the routers it also checks the copy against the device. This page
 lists the method for each device type, the devices that need a method of their own, and what isn't
 collected. It covers OROS REC-2. `backups/` is staging on the machine that ran the check; `make backup`
-sends it to the backup destination and verifies it there ([backups.md](backups.md)).
+sends every file in the Off-box copy column below to the backup destination, after searching it for
+the lab's secrets, and verifies it there ([backups.md](backups.md)).
 
 | Device type | Nodes | How it's collected | Off-box copy | Checked against running |
 |---|---|---|---|---|

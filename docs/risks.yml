@@ -472,3 +472,113 @@
   presented_to: pending
   presented_on: null
   presented_evidence: null
+
+- id: RISK-25
+  kind: accepted-risk
+  title: GitHub can stop the nightly backups, the weekly drills and the control check together
+  detectors: [scheduled-workflow]
+  likelihood: 3
+  impact: 3
+  reasoning: >-
+    In a public repository GitHub disables scheduled workflows after 60 days without activity, and a
+    person must enable them again. Then the nightly CI run (and its backup), the weekly restore and
+    power drills and the control-status check all stop, and nothing says so: the check that would
+    notice runs in the workflow that stopped (decision 0014). A dead-man's switch outside GitHub would
+    catch it, but the lab has no always-on host to run one. Likely for a repository that goes quiet.
+  compensating_control: tests/test_control_status.py::test_latest_green_older_than_its_period_fails
+  compensates: >-
+    the next push to main runs ci.yml's control-status job, which fails naming every control whose
+    latest result is older than its period (31 days, 90 for the restore drill); nothing runs when
+    nothing at all happens in the repository
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-26
+  kind: accepted-risk
+  title: of two CI runs at once, one run's backup snapshot is lost
+  detectors: [backup-cache-per-run]
+  likelihood: 2
+  impact: 1
+  reasoning: >-
+    Each run restores the newest copy of the restic repository from the Actions cache, adds its
+    snapshot and saves the result under its own key (decision 0014). Two runs at once (the nightly run
+    and a push) start from the same copy, and the next run restores only the newer of the two saves,
+    so the other run's snapshot is gone. Everything before it is intact, and it holds configs that the
+    next night's snapshot holds again. A concurrency group would queue the runs, but it also cancels a
+    queued run when a third arrives.
+  compensating_control: tests/live/test_restore.py::test_latest_backup_is_recent
+  compensates: one snapshot is lost, not the repository; if backups stop altogether the restore drill fails when the newest is 36 hours old
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-27
+  kind: accepted-risk
+  title: one router restarting while its neighbours stay up is never drilled
+  likelihood: 3
+  impact: 2
+  reasoning: >-
+    The power drill restarts the whole lab at once (decision 0015). A Containerlab node restarted on
+    its own comes back without its links on both ends, so a single router's crash or upgrade restart,
+    the more common event, can't be drilled here. What it would show is how its neighbours handle it
+    going away and coming back. No config line holds it, so no detector can.
+  compensating_control: tests/live/test_failover.py::test_silent_failure_reroutes_fast
+  compensates: >-
+    to its neighbours a router that stops is links that stop answering, which is drilled: BFD drops it
+    in about a second and traffic takes the other path; that a router comes back from its startup
+    config is the power drill's
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-28
+  kind: accepted-risk
+  title: after a power cut or restart the BGP password is gone until someone runs `make apply`
+  detectors: [password-runtime-only]
+  likelihood: 2
+  impact: 4
+  reasoning: >-
+    The password is set through vtysh's stdin and is in no startup config (decision 0016), so a router
+    that restarts comes back without it. Against a real carrier, which keeps its key, the session stays
+    down and the campus has no internet until a person runs `make apply` (step 3 of the power-event
+    runbook); nothing runs it by itself. In the lab both ends lose it, and the session came back in 7 s
+    with no MD5 on either end (2026-10-15), so it runs unauthenticated until then. Putting the
+    password in the startup config would put it in clear in the one folder that must be safe to print.
+  compensating_control: tests/live/test_power_event.py::test_power_event_recovers_from_startup_config
+  compensates: >-
+    the weekly drill cuts the power, runs `make apply` as the runbook says, and fails unless the session
+    comes back with authentication enabled on both ends
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-29
+  kind: accepted-risk
+  title: the backup repository's password is kept beside it in the Actions cache
+  detectors: [backup-password-in-cache]
+  likelihood: 3
+  impact: 1
+  reasoning: >-
+    No repository secret can be set from here, so drills.yml's one-time init writes a random restic
+    password into the same cache as the repository (decision 0014). Any workflow run in this repository
+    can restore that cache, a pull request's own copy of a workflow included, and so read every backup.
+    Impact is low because the backups hold configs rendered from the public inventory, with the BGP
+    password only as the sha256 tag of 128 random bits. A pull request's run can't write main's cache.
+  compensating_control: tests/test_backup.py::test_a_capture_holding_a_password_is_never_sent
+  compensates: >-
+    the repository can only ever hold the redacted capture: `make backup` refuses a capture holding a
+    lab secret in clear before restic runs, and searches every file it reads back from the snapshot
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null

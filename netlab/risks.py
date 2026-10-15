@@ -84,6 +84,15 @@ DETECTORS = {
                                    "the internet edge lets every ICMP type in to the router itself"),
     "sysctl-not-collected": Detector("build", "*/edge.sh", r"^sysctl -qw \S+=", None,
                                      "a kernel setting set at deploy, which `make drift` never reads back"),
+    # Backups, drills and the password they meet (decisions 0014, 0015, 0016).
+    "scheduled-workflow": Detector("repo", ".github/workflows/*.yml", r"^\s*- cron: ", None,
+                                   "a scheduled workflow, which GitHub stops running after 60 days without repository activity"),
+    "backup-cache-per-run": Detector("repo", ".github/workflows/*.yml", r"^\s*(- )?uses: actions/cache/save@", None,
+                                     "each run saves its own copy of the backup repository, and only the newest is used next"),
+    "backup-password-in-cache": Detector("repo", ".github/workflows/*.yml", r'BACKUP_PASSWORD="\$RUNNER_TEMP/backup/', None,
+                                         "the backup repository's password is kept in the same Actions cache as the repository"),
+    "password-runtime-only": Detector("repo", "ansible/deploy.yml", r"^\s*cmd: vtysh -f /dev/stdin$", None,
+                                      "a BGP password set in the running config only, so a restart or power cut loses it"),
 }
 
 
