@@ -213,6 +213,17 @@ def validate(inv: Inventory) -> list[str]:
             if rule.get("proto") == "tcp" and rule["action"] == "accept" and not rule.get("syn") and "NEW" in rule.get("state", ["NEW"]):
                 problems.append(f"{label}: TCP accept needs syn: true, or it forwards forged mid-stream packets")
 
+    for name, h in inv.hosts.items():
+        unknown = set(h.get("published", [])) - set(h.get("services", []))
+        if unknown:
+            problems.append(f"{name}: published port(s) {sorted(unknown)} have no listener in services")
+    for name, r in inv.routers.items():
+        wan = r.get("wan_filter")
+        if wan and wan["interface"] not in {ep.interface for ep in inv.interfaces(name)}:
+            problems.append(f"{name}: wan_filter interface {wan['interface']} is not on any link")
+    problems.extend(rtbh_problems(inv))
+    problems.extend(scope_problems(inv))
+
     # Someone has to act when a device breaks, and tools may log in only where the operator owns it.
     for name in inv.devices:
         if not inv.owner(name):
@@ -220,4 +231,70 @@ def validate(inv: Inventory) -> list[str]:
     if inv.operator not in {inv.owner(d) for d in inv.devices}:
         problems.append(f"operator {inv.operator!r} owns no device, so no tool may log in anywhere")
 
+    return problems
+
+
+def bgp_peer_address(inv: Inventory, router: str, peer: str) -> str | None:
+    """The address `router` uses for its BGP session with `peer`, from its neighbor list."""
+    return next((n["address"] for n in inv.routers.get(router, {}).get("bgp", {}).get("neighbors", [])
+                 if n["peer"] == peer), None)
+
+
+def rtbh_problems(inv: Inventory) -> list[str]:
+    """The blackhole lever only works if both ends peer and the community is the provider's to define."""
+    rtbh = inv.raw.get("rtbh")
+    if not rtbh:
+        return []
+    problems = []
+    provider, customer = rtbh.get("provider"), rtbh.get("customer")
+    if not (bgp_peer_address(inv, provider, customer) and bgp_peer_address(inv, customer, provider)):
+        problems.append(f"rtbh: {provider} and {customer} must be BGP neighbors of each other")
+    else:
+        # A community is <AS>:<value>; the blackhole community belongs to the AS that acts on it.
+        asn = inv.asn(inv.routers[provider]["bgp"]["local_as"])
+        if str(rtbh.get("community", "")).split(":")[0] != str(asn):
+            problems.append(f"rtbh: community {rtbh.get('community')!r} is not in the provider's AS {asn}")
+    if not isinstance(rtbh.get("tag"), int):
+        problems.append(f"rtbh: tag {rtbh.get('tag')!r} must be a number")
+    return problems
+
+
+SCOPE_CATEGORIES = {"cde", "connected-to", "security-impacting"}
+SCOPE_DESIGNS = {"tokenisation", "p2pe", "segmentation", "truncation", "holding less"}
+
+
+def scope_problems(inv: Inventory) -> list[str]:
+    """Every device has a scope decision, and the topology can't contradict it (OROS ATT-1)."""
+    scope = inv.raw.get("scope")
+    if not scope:
+        return []
+    problems = [f"scope: no {key}" for key in ("framework", "segment", "design", "acceptance") if not scope.get(key)]
+    if scope.get("design") and scope["design"] not in SCOPE_DESIGNS:
+        problems.append(f"scope: design {scope['design']!r} is not one of {sorted(SCOPE_DESIGNS)}")
+    systems, out = scope.get("systems") or {}, scope.get("out_of_scope") or []
+    for name in [*systems, *out]:
+        if name not in inv.devices:
+            problems.append(f"scope: {name} is not a device")
+    for name in inv.devices:
+        if name not in systems and name not in out:
+            problems.append(f"scope: {name} has no scope decision (list it under systems or out_of_scope)")
+        elif name in systems and name in out:
+            problems.append(f"scope: {name} is both in and out of scope")
+    for name, entry in systems.items():
+        problems += [f"scope: {name} has no {key}" for key in ("category", "clause", "why") if not (entry or {}).get(key)]
+        if (entry or {}).get("category") and entry["category"] not in SCOPE_CATEGORIES:
+            problems.append(f"scope: {name} category {entry['category']!r} is not one of {sorted(SCOPE_CATEGORIES)}")
+    # Some of it is decided by the topology: everything on the segment is a CDE system, and
+    # everything that filters traffic is in scope, whatever the register says.
+    hosts = [h for h, v in inv.hosts.items() if v.get("segment") == scope.get("segment")]
+    if not hosts:
+        problems.append(f"scope: no host is on segment {scope.get('segment')}")
+    on_segment = hosts + [remote.device for h in hosts for _, remote in inv.neighbors(h)]
+    for name in on_segment:
+        if (systems.get(name) or {}).get("category") != "cde":
+            problems.append(f"scope: {name} is on {scope.get('segment')}, so it must be in systems as cde")
+    filters = [*inv.firewalls, *(r for r, v in inv.routers.items() if "wan_filter" in v)]
+    for name in filters:
+        if name not in systems:
+            problems.append(f"scope: {name} filters traffic into the segment, so it must be in systems")
     return problems

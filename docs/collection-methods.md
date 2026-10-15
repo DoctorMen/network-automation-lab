@@ -9,7 +9,8 @@ collected. It covers OROS REC-2.
 | Device type | Nodes | How it's collected | Off-box copy | Checked against running |
 |---|---|---|---|---|
 | Router (FRR 8.4.1) | r1, r2, r3, isp (see below) | `vtysh -c "show running-config no-header"` over `docker exec` (Ansible's Docker connection) | `backups/<router>.conf` | Intent and startup: `frr-reload.py --test` with `build/<router>/frr.conf`. The copy: `frr-reload.py --test` with the copy itself ([`verify_capture.yml`](../ansible/verify_capture.yml)) |
-| Firewall (iptables) | fw1 | `iptables-save` over `docker exec` | `backups/fw1.rules` | Intent and startup: `firewall.sh`'s iptables lines replayed in a new network namespace, then `iptables -S` diffed with the live `iptables -S` |
+| Firewall (iptables) | fw1 | `iptables-save` over `docker exec` | `backups/fw1.rules` | Intent and startup: `firewall.sh`'s iptables lines replayed in a new network namespace, then `iptables -S` and `iptables -t raw -S` diffed with the live ones |
+| Edge router rules (iptables) | r2, r3 (the `edge_routers` group: routers with an `edge.sh`) | `iptables-save` over `docker exec`, by the same play as fw1 | `backups/<router>.rules` | Intent and startup: `edge.sh`'s iptables lines, replayed and diffed the same way as fw1's |
 | Host | h1, h2 | Not collected | none | none (gap, below) |
 
 ## Routers
@@ -53,16 +54,18 @@ collected. It covers OROS REC-2.
 - Checked in the FRR image (busybox `unshare`, iptables 1.8.7 legacy): the new namespace has a
   different `net:[...]` inode and starts with empty ACCEPT chains; after the replay, the live
   `iptables-save -c`, counters included, was the same as before apart from its timestamp comments.
-- Limits: `iptables -S` lists the filter table only. `firewall.sh` only writes that table, but a hand
-  change to the nat, mangle or raw table would only show in `backups/fw1.rules`, not fail the check.
+- Limits: the check compares the filter and raw tables (the anti-spoof rules live in raw, decision
+  0012). A hand change to the nat or mangle table would only show in `backups/fw1.rules`, not fail the check.
   Counters aren't compared. `backups/fw1.rules` itself isn't loaded back and compared with the live
   rules, the way the router backups are.
 
-## Router kernel state: not collected (a stated gap)
+## Router kernel state: mostly not collected (a stated gap)
 
-The router checks compare FRR's config, not the Linux kernel underneath it. An iptables rule on a
-router (say, a DROP left behind by an interrupted failover test), an interface set down by hand, or a
-kernel route added outside FRR is not flagged. The live tests notice the effect on traffic, not the
+The router checks compare FRR's config, not the Linux kernel underneath it. The exception is iptables
+on the routers with an `edge.sh` (r2's internet filter, r3, which has no rules, so any rule there is
+drift): their filter and raw tables are compared like fw1's. An iptables rule on r1 or isp (say, a DROP
+left behind by an interrupted failover test), a sysctl such as r3's `rp_filter`, an interface set down
+by hand, or a kernel route added outside FRR is not flagged. The live tests notice the effect on traffic, not the
 change itself. `/etc/frr/daemons`, which says which routing daemons start, is mounted read-only like
 `frr.conf`, so it can't drift on the router, but nothing checks that every daemon it lists is running.
 

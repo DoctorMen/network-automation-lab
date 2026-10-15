@@ -71,6 +71,7 @@ jobs:
             echo "=== $r"; docker exec clab-netauto-$r vtysh -c "show ip route" -c "show ip ospf neighbor" -c "show bfd peers brief" -c "show bgp summary" || true
           done
           docker exec clab-netauto-fw1 iptables -vnL FORWARD || true
+          docker exec clab-netauto-r2 sh -c 'iptables -vnL; iptables -t raw -vnL' || true
       - name: Upload test results and config backups
         if: always()
         uses: actions/upload-artifact@v4

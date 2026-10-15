@@ -37,15 +37,54 @@ router bgp {{ local_as }}
  bgp router-id {{ router_id }}
  no bgp ebgp-requires-policy
 {% for n in bgp_neighbors %} neighbor {{ n.address }} remote-as {{ n.remote_as }}
+{% if rtbh and rtbh.role == 'provider' and n.address == rtbh.peer %}
+ neighbor {{ n.address }} disable-connected-check
+{% endif %}
  neighbor {{ n.address }} description {{ n.peer }}
 {% endfor %} !
  address-family ipv4 unicast
 {% for net in router.bgp.networks | default([]) %}  network {{ net }}
 {% endfor %}{% if router.bgp.aggregate is defined %}  aggregate-address {{ router.bgp.aggregate }} summary-only
   redistribute ospf
-{% endif %} exit-address-family
+{% endif %}
+{% if rtbh and rtbh.role == 'customer' %}
+  redistribute static route-map RTBH-TRIGGER
+  neighbor {{ rtbh.peer }} unsuppress-map RTBH-TRIGGER
+{% elif rtbh and rtbh.role == 'provider' %}
+  neighbor {{ rtbh.peer }} route-map RTBH-FROM-CUSTOMER in
+{% endif %}
+ exit-address-family
 exit
 !
+{% endif %}
+{% if rtbh and rtbh.role == 'customer' %}
+! RTBH trigger (decision 0012): a static route tagged {{ rtbh.tag }} goes to the ISP with its blackhole
+! community, past the summary-only aggregate (unsuppress-map). No route carries the tag until an
+! operator adds one during an attack (docs/runbooks/ddos-rtbh.md).
+route-map RTBH-TRIGGER permit 10
+ match tag {{ rtbh.tag }}
+ set community {{ rtbh.community }}
+exit
+!
+{% elif rtbh and rtbh.role == 'provider' %}
+! RTBH service: a host route from the customer, inside what it announces, carrying {{ rtbh.community }}
+! is pointed at {{ rtbh.discard }}, which goes to Null0, and is kept inside this AS (no-export, RFC 7999).
+! The next hop is not on the link, hence disable-connected-check on that neighbor.
+bgp community-list standard RTBH seq 5 permit {{ rtbh.community }}
+!
+ip prefix-list RTBH-HOSTS seq 5 permit {{ rtbh.customer_prefix }} ge 32
+!
+route-map RTBH-FROM-CUSTOMER permit 10
+ match community RTBH
+ match ip address prefix-list RTBH-HOSTS
+ set community no-export additive
+ set ip next-hop {{ rtbh.discard }}
+exit
+!
+route-map RTBH-FROM-CUSTOMER permit 20
+exit
+!
+ip route {{ rtbh.discard }}/32 Null0
 {% endif %}
 {% if router.role == 'isp' %}
 ! Stand-in for "the internet": a /24 the ISP originates.

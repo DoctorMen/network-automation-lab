@@ -48,7 +48,7 @@ def test_daemons_match_protocols():
 def test_firewall_default_drop_and_rule_order():
     script = render_firewall(inv, "fw1")
     assert "iptables -P FORWARD DROP" in script
-    names = [line.split("--comment ")[1].strip('"') for line in script.splitlines() if "--comment" in line]
+    names = [line.split("--comment ")[1].strip('"') for line in script.splitlines() if line.startswith("iptables -A FORWARD")]
     assert names == ["allow-established", "allow-icmp", "allow-web", "deny-ssh-to-servers", "allow-internet", "default-drop"]
 
 
