@@ -50,7 +50,8 @@ controls:
     fails_when: >-
       It only covers what r2 sends. Nothing filters what r2 accepts (`no bgp ebgp-requires-policy`,
       no inbound route-map), so the ISP could announce a more-specific of a campus prefix and r2
-      would prefer it for traffic r2 forwards.
+      would prefer it for traffic r2 forwards. While an RTBH trigger is on, the attacked /32 goes out
+      on purpose (rtbh-lever); this test runs with none on.
 
   - id: default-route-via-ospf
     claim: "The edge router hands a default route to the core through OSPF"
@@ -82,8 +83,8 @@ controls:
       Someone on a lab link, or on the ISP side, reaching a daemon's vty and changing routing.
       A daemon started without `-A 127.0.0.1` listens on every address (bfdd did, at first).
     fails_when: >-
-      BGP listens on every address, and nothing filters the WAN edge, so r2's port 179 answers from
-      the ISP side. UDP listeners (BFD) are not checked. The vtys have no password: anyone with
+      BGP listens on every address; from the ISP side only the peer's own address reaches it, through
+      r2's edge filter (wan-filter). UDP listeners (BFD) are not checked. The vtys have no password: anyone with
       `docker exec` on the host is root on every node, and that is the real management path.
 
   - id: users-reach-web-and-internet
@@ -107,9 +108,9 @@ controls:
     period: P31D
     threat: A user, or malware on a user's machine, logging in to or brute-forcing servers over SSH.
     fails_when: >-
-      Only traffic that crosses fw1 is filtered. From the ISP side h2:22 is open
-      (`nc -z 10.20.20.10 22` from isp succeeds). A broader accept placed above it wins, and SSH
-      moved to another port is not matched by this rule (the default drop still catches it).
+      Only traffic that crosses fw1 is filtered; the ISP side is r2's job (wan-filter), and r1, r2 and
+      r3 still reach h2:22. A broader accept placed above it wins, and SSH moved to another port is not
+      matched by this rule (the default drop still catches it).
 
   - id: fw1:allow-established
     claim: "The firewall is stateful: a forged TCP ACK from the server LAN, for a connection no user opened, is dropped instead of being let in as return traffic"
@@ -198,9 +199,9 @@ controls:
     threat: An undocumented hand change (a quick fix, a mistake, an intruder) living on a router or the firewall.
     fails_when: >-
       A change made and undone between runs is never seen. `ipv6 forwarding` lines are ignored on purpose (V-009).
-      Kernel state outside FRR and fw1's filter table (an interface set down, a sysctl, a host route,
-      a nat or mangle rule) is not compared, and h1 and h2 are not collected at all
-      (docs/collection-methods.md).
+      Kernel state outside FRR and the filter and raw tables of fw1, r2 and r3 (an interface set down,
+      a sysctl such as rp_filter, a host route, a nat or mangle rule, an iptables rule on r1 or isp) is
+      not compared, and h1 and h2 are not collected at all (docs/collection-methods.md).
 
   - id: unsaved-change
     claim: "A hand change on a router that was never saved fails one run of that drift check, which names the changed line. The test first proves the check passes on the clean lab"
@@ -227,8 +228,8 @@ controls:
     period: P31D
     threat: An ACCEPT rule added by hand on fw1, the quickest way to open a hole nobody reviewed.
     fails_when: >-
-      `iptables -S` lists the filter table only, so a nat, mangle or raw change is backed up but
-      not failed. Counters are not compared.
+      The filter and raw tables are compared; a nat or mangle change is backed up but not failed.
+      Counters are not compared.
 
   - id: intent-read-only
     claim: "A hand change saved with `write memory` can't overwrite the intended config and hide from that drift check"
@@ -373,16 +374,17 @@ controls:
       An opening, not a defence: dropping all ICMP would break path MTU discovery and ping, so it
       is let through.
     fails_when: >-
-      It matches every ICMP type in both directions, from anywhere: the ISP side can ping h1
-      (measured), so it can sweep LAN-A for live hosts, and ICMP can carry a tunnel.
+      It matches every ICMP type in both directions, from anywhere fw1 sees. r2 now stops new pings
+      from the internet side, but LAN-B can still ping h1 and sweep LAN-A for live hosts, and ICMP
+      can carry a tunnel.
 
   - id: fw1:allow-internet
     claim: "Users can open connections to the internet range"
     test: tests/live/test_dataplane.py::test_lan_a_reaches_internet
     period: P31D
     threat: >-
-      Connections into LAN-A from the internet side: the rule only matches packets from LAN-A,
-      so it can never open one inbound.
+      Connections into LAN-A from the internet side: the rule only matches packets from LAN-A
+      arriving on the inside interface (eth1), so it can never open one inbound.
     fails_when: >-
       It matches every protocol, so it can't carry --syn: a forged mid-stream ACK from h1 to the
       internet is forwarded and then adopted by conntrack (see fw1:allow-established). Splitting it
@@ -400,7 +402,7 @@ controls:
     fails_when: >-
       firewall.sh runs once at deploy. `make drift` compares fw1's live filter table with it, but
       only when it runs, so a hand change lives until the next run. Traffic that never crosses fw1
-      (the ISP side to LAN-B) is not filtered at all.
+      (the ISP side to LAN-B) is filtered by r2 instead (wan-filter).
 
   - id: canary-rollback
     claim: "A router change goes to the canary (r1) first and must pass a health gate: every OSPF neighbor Full, every BGP session Established, every host answering the other. A change that fails it puts the canary back on the config it ran before, and no other router is touched"
@@ -498,3 +500,109 @@ controls:
       doesn't block a merge until branch protection requires it (a repository setting). The check
       runs the pull request's own copy of netlab/changerecord.py, so a pull request could weaken it.
       It checks that the section says something, not that it is true or complete.
+
+  - id: wan-filter
+    claim: "From the internet side only the published web port (h2:80) answers, plus BGP from the ISP's own peer address. A scan of every campus address on 27 TCP management ports (SSH, telnet, HTTP(S), BGP, NETCONF, every FRR vty), from the peer address and from another internet address, finds nothing else open, and the same scan from inside finds h2's port 22 and r2's BGP answering, so the closure is r2's edge filter"
+    test: tests/live/test_edge.py::test_wan_scan_finds_only_published_ports
+    period: P31D
+    threat: >-
+      Anyone on the internet reaching a management port (SSH, a router vty, BGP from a stranger's
+      address) or a service nobody decided to publish. Before decision 0012, h2:22 and r2:179 answered
+      from 203.0.113.1.
+    fails_when: >-
+      TCP only: UDP (SNMP, BFD) is not scanned, and a filtered UDP port can't be told from an open one
+      by a connect scan. 27 ports, not all 65535. It scans from the lab's one ISP. IPv6 is not filtered
+      or scanned: this sandbox has none, but under real containerlab the links may get link-local
+      addresses and bgpd may then listen on [::]:179 for the directly attached ISP (decision 0012).
+      The published port is open to the whole internet by design, so a hole in h2's web server is not
+      this control's to catch. The management-plane fallback half of OROS ACC-7 needs a management
+      path the lab doesn't have yet.
+
+  - id: anti-spoof
+    claim: "A forged source address is refused at every edge we own while real traffic through the same edge passes: fw1 drops what a user sends as a server, r3 drops what the server LAN sends as a user (strict reverse-path filter), and r2 drops private source addresses from the internet, even to the published port"
+    test:
+      - tests/live/test_edge.py::test_lan_a_cannot_forge_its_source
+      - tests/live/test_edge.py::test_server_lan_cannot_forge_its_source
+      - tests/live/test_edge.py::test_internet_cannot_forge_a_private_source
+    period: P31D
+    threat: >-
+      A host sending as someone it isn't, to get past a rule that trusts a source address, to bounce
+      replies at a victim, or to hide where an attack came from (BCP 38). Before decision 0012, 5 of 5
+      SYNs h1 forged as 10.20.20.99 reached h2, and 5 of 5 forged pings reached the ISP.
+    fails_when: >-
+      Subnet-level only: h1 can still send as another LAN-A address, which needs per-port binding on a
+      switch (OROS CON-1). The internet can still forge any public address; r2 drops only RFC 1918
+      sources. r3's check is a sysctl, which `make drift` doesn't compare; the live test reads it. On a
+      host whose conf.all.rp_filter is 2, edge.sh pins it to 0 so eth3's 1 (strict) applies.
+
+  - id: fw1:anti-spoof-inside
+    claim: "fw1's raw table drops anything arriving on the inside interface whose source is not the inside subnet, before any FORWARD rule"
+    test:
+      - tests/live/test_edge.py::test_lan_a_cannot_forge_its_source
+      - tests/test_scope.py::test_anti_spoof_on_every_edge_we_control
+    period: P31D
+    threat: A user sending as a server or as the internet, which allow-icmp and allow-web would otherwise forward.
+    fails_when: >-
+      It trusts the whole inside subnet. It is in the raw table, which the drift check compares since
+      decision 0012; a rule added to nat or mangle is still not compared.
+
+  - id: segmentation
+    claim: "LAN-B is a toy payments segment with a scope register: every device has a scope decision, every in-scope one its PCI DSS clause, and the validator refuses a register the topology contradicts. From every out-of-scope device, LAN-B answers TCP only on published ports and pings only where the register records an exception (h1, for monitoring), and each closed probe answers from inside LAN-B, so the block is policy"
+    test:
+      - tests/live/test_scope.py::test_out_of_scope_cannot_reach_in_scope
+      - tests/test_scope.py::test_every_device_has_a_scope_decision
+      - tests/test_scope.py::test_register_the_topology_contradicts_is_refused
+      - tests/test_scope.py::test_segmentation_probes_every_out_of_scope_device
+    period: P31D
+    threat: >-
+      The payments segment's scope quietly growing: a server added to LAN-B with no decision, a filter
+      called out of scope, or an out-of-scope system that can reach a service it shouldn't.
+    fails_when: >-
+      It is a toy: no card data, no assessor (acceptance is open, decision 0013). It probes the services
+      the inventory lists over TCP, and echo pings. h1's ping exception is wider than its reason (fw1's
+      allow-icmp passes every ICMP type), and whether LAN-A's reach (h2:80 and pings) makes it
+      connected-to is an assessor's call nobody has made. Outbound from LAN-B is not restricted (PCI
+      DSS 1.3.2 not met). The clause wording was checked against a secondary source, not the PCI SSC
+      document.
+
+  - id: edge-drift
+    claim: "A hole opened by hand in r2's internet filter, or an anti-spoof rule deleted from r2's or fw1's raw table, fails the drift check, which names each change"
+    test: tests/live/test_edge.py::test_edge_filter_hand_change_is_flagged
+    period: P31D
+    threat: An ACCEPT added on the internet edge to "just test something", or an anti-spoof rule removed, and never put back.
+    fails_when: >-
+      Same limits as firewall-hand-change: only when `make drift` runs, nat and mangle not compared,
+      counters not compared. r3's rp_filter sysctl is not compared; its filter and raw tables (empty)
+      are, but no test changes them. r1 and isp have no edge.sh, so an iptables rule left on them is
+      not flagged.
+
+  - id: rtbh-lever
+    claim: "The DDoS lever is lined up: one line on r2 makes the ISP blackhole just the attacked host's /32 (community 65100:666), the rest of the campus still routes, the campus still reaches the host, and removing the line restores it"
+    test:
+      - tests/live/test_rtbh.py::test_rtbh_blackholes_only_the_attacked_host
+      - tests/test_scope.py::test_rtbh_is_lined_up_at_both_ends
+    period: P31D
+    threat: >-
+      A flood on one published host filling the ISP link, so everything behind r2 goes down with it,
+      and nothing can be done from our side once the packets have crossed the link.
+    fails_when: >-
+      It completes the attack for that host: the internet can't reach it while the blackhole is on.
+      The ISP here is a lab stand-in that we configure ourselves; a real carrier's community and rules
+      are its own and must be checked with it. A trigger left on is only caught when `make drift` runs.
+
+  - id: outside-levers
+    claim: "Every outside lever (the ISP's blackhole, a source network's abuse desk, a lookalike domain's registrar, the police) has a holder, a contact and the evidence it needs, checked within the last 90 days"
+    test:
+      - tests/test_levers.py::test_contact_sheet_lints_clean
+      - tests/test_levers.py::test_entry_without_evidence_or_contact_is_reported
+      - tests/test_levers.py::test_stale_check_is_reported
+      - tests/test_levers.py::test_ddos_lever_is_the_blackhole_the_lab_configures
+    period: P31D
+    threat: >-
+      Looking for who to call, and what they want, in the middle of an attack; or calling with the
+      wrong evidence and losing a day.
+    fails_when: >-
+      It checks that each entry is filled in and was re-dated within 90 days, not that the contact
+      answers. The ISP contact is a lab stand-in; the others are public channels (RDAP abuse contacts,
+      ICANN's registrar duties, IC3) checked by reading their published pages on 2026-10-15, not by
+      contacting anyone. No payment processor or scrubbing vendor is listed: the lab has neither.

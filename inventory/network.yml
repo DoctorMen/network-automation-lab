@@ -40,6 +40,12 @@ routers:
       neighbors:
         - { peer: isp, remote_as: isp, address: 198.51.100.1 }
       aggregate: 10.0.0.0/8
+    # What r2 lets in from the internet on its ISP link: replies, ping, BGP from the peer address, and
+    # the hosts' published ports; anything from a private address is dropped first (BCP 38). Rendered
+    # to build/r2/edge.sh. Decision 0012.
+    wan_filter:
+      interface: eth3
+      bogons: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]   # RFC 1918: never a real internet source
   r3:
     owner: campus NOC
     role: core
@@ -60,6 +66,8 @@ firewalls:
     owner: campus NOC
     inside:  { interface: eth1, address: 10.10.10.1/24 }
     outside: { interface: eth2, address: 10.0.100.2/30, gateway: 10.0.100.1 }
+    # Before any rule, the raw table drops whatever arrives on the inside interface from outside the
+    # inside subnet (anti-spoof-inside, rendered from `inside`; decision 0012).
     # Default policy for forwarded traffic is DROP. Order matters.
     # syn: true matches only a connection's opening packet (SYN set; ACK, RST, FIN clear). The rest of
     # the connection then passes as ESTABLISHED, so a forged mid-stream packet hits the default drop.
@@ -68,11 +76,48 @@ firewalls:
       - { name: allow-icmp,        proto: icmp,                      action: accept }
       - { name: allow-web,         proto: tcp, syn: true, dst: 10.20.20.0/24, dport: 80, action: accept }
       - { name: deny-ssh-to-servers, proto: tcp, dst: 10.20.20.0/24, dport: 22, action: drop }
-      - { name: allow-internet,    src: 10.10.10.0/24, dst: 203.0.113.0/24,    action: accept }
+      - { name: allow-internet,    in_interface: eth1, src: 10.10.10.0/24, dst: 203.0.113.0/24, action: accept }
 
 hosts:
   h1: { owner: campus NOC, interface: eth1, address: 10.10.10.10/24, gateway: 10.10.10.1, segment: LAN-A }
-  h2: { owner: campus NOC, interface: eth1, address: 10.20.20.10/24, gateway: 10.20.20.1, segment: LAN-B, services: [80, 22] }
+  # published: the ports the internet may reach (r2's WAN filter). h2:22 stays inside. Decision 0012.
+  h2: { owner: campus NOC, interface: eth1, address: 10.20.20.10/24, gateway: 10.20.20.1, segment: LAN-B, services: [80, 22], published: [80] }
+
+# Toy PCI DSS scope (OROS ATT-1, decision 0013). LAN-B stands in for a payments segment, kept small by
+# segmentation. Every device has a scope decision: `systems` are in scope, each with its clause, and
+# netlab validate fails if a device on the segment, or one that filters traffic, is missing or out
+# of scope. expected_state.json's `segmentation` tuples, generated from this block, are what
+# tests/live/test_scope.py probes from every out-of-scope device. Clause wording was checked
+# against a copy of the standard's text (decision 0013), not the PCI SSC document itself.
+scope:
+  framework: PCI DSS v4.0.1
+  segment: LAN-B
+  design: segmentation
+  acceptance: "open: no assessor (QSA) has reviewed this scope; it is a lab exercise"
+  systems:
+    h2:  { category: cde, clause: "1.3.1, 11.4.5", why: "the toy payment page; inbound only to its published port" }
+    r3:  { category: cde, clause: "1.3.1, 1.4.3", why: "on LAN-B itself (its gateway); strict reverse-path filter on eth3" }
+    r2:  { category: security-impacting, clause: "1.4.1, 1.4.2, 1.4.3", why: "filters the internet edge into LAN-B" }
+    fw1: { category: security-impacting, clause: "1.3.1, 1.4.3", why: "filters LAN-A, the users, before anything reaches LAN-B" }
+    r1:  { category: connected-to, clause: "11.4.5", why: "routes LAN-A's traffic to LAN-B and filters nothing, so the segmentation test covers its path" }
+  # Probed by the segmentation test. h1 reaches the published port like any internet client, plus the
+  # exception below; whether that makes LAN-A connected-to is the open question for an assessor.
+  out_of_scope: [h1, isp]
+  # Flows into the segment beyond the published ports, each with its reason. The segmentation test
+  # probes each one as open, and the same flow from every other out-of-scope device as closed.
+  exceptions:
+    - { src: h1, proto: icmp, why: "monitoring and troubleshooting pings from the user LAN, through fw1's allow-icmp; the dataplane, failover and firewall tests ping h2 from h1" }
+
+# The carrier's remote-triggered blackhole (RTBH), the DDoS lever in docs/outside-levers.yml
+# (decision 0012). r2 sends any static route tagged `tag` to the ISP with `community`; the ISP points
+# it at `discard`, which it routes to Null0, so traffic to that host dies inside the ISP. It is lined
+# up, not pulled: no route carries the tag until an operator adds one (docs/runbooks/ddos-rtbh.md).
+rtbh:
+  provider: isp
+  customer: r2
+  community: "65100:666"
+  tag: 666
+  discard: 192.0.2.1
 
 # Egress queueing on h2's server-LAN port, rendered as tc commands in the topology's exec steps.
 # HTB caps the port at a fixed rate, standing in for a link that can't be upgraded, and gives web

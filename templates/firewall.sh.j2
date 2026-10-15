@@ -6,11 +6,17 @@ ip addr add {{ fw.outside.address }} dev {{ fw.outside.interface }} 2>/dev/null 
 ip route replace default via {{ fw.outside.gateway }}
 sysctl -qw net.ipv4.ip_forward=1 || true  # also set by the topology
 
+# anti-spoof-inside: whatever arrives on the inside interface must come from the inside subnet, or a
+# user could send as a server or as the internet (BCP 38, RFC 2827). The raw table runs before
+# conntrack and every FORWARD rule, so this holds for every protocol, allow-icmp and allow-web included.
+iptables -t raw -F PREROUTING
+iptables -t raw -A PREROUTING -i {{ fw.inside.interface }} ! -s {{ inside_net }} -j DROP -m comment --comment "anti-spoof-inside"
+
 iptables -F FORWARD
 iptables -P FORWARD DROP
 {% for rule in fw.rules %}
 # {{ rule.name }}
-iptables -A FORWARD{% if rule.state is defined %} -m conntrack --ctstate {{ rule.state | join(',') }}{% endif %}{% if rule.proto is defined %} -p {{ rule.proto }}{% endif %}{% if rule.syn | default(false) %} --syn{% endif %}{% if rule.src is defined %} -s {{ rule.src }}{% endif %}{% if rule.dst is defined %} -d {{ rule.dst }}{% endif %}{% if rule.dport is defined %} --dport {{ rule.dport }}{% endif %} -j {{ rule.action | upper }} -m comment --comment "{{ rule.name }}"
+iptables -A FORWARD{% if rule.in_interface is defined %} -i {{ rule.in_interface }}{% endif %}{% if rule.state is defined %} -m conntrack --ctstate {{ rule.state | join(',') }}{% endif %}{% if rule.proto is defined %} -p {{ rule.proto }}{% endif %}{% if rule.syn | default(false) %} --syn{% endif %}{% if rule.src is defined %} -s {{ rule.src }}{% endif %}{% if rule.dst is defined %} -d {{ rule.dst }}{% endif %}{% if rule.dport is defined %} --dport {{ rule.dport }}{% endif %} -j {{ rule.action | upper }} -m comment --comment "{{ rule.name }}"
 {% endfor %}
 # Whatever reaches the end is dropped by the policy. This rule's packet counter is the record:
 # LOG writes nothing from a container's network namespace unless the host sets

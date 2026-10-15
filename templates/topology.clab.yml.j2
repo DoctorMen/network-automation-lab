@@ -21,6 +21,12 @@ topology:
         - {{ name }}/frr.conf:/etc/frr/frr.conf:ro
         - {{ name }}/daemons:/etc/frr/daemons:ro
         - vtysh.conf:/etc/frr/vtysh.conf:ro
+{% if name in edge %}
+        # What the router enforces at its edges (filters, reverse-path checks): read-only like frr.conf.
+        - {{ name }}/edge.sh:/edge.sh:ro
+      exec:
+        - sh /edge.sh
+{% endif %}
 {% endfor %}
 {% for name in inv.firewalls %}
     {{ name }}:
