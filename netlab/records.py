@@ -24,6 +24,9 @@ def lint(path: str | Path, today: date | None = None) -> list[str]:
     if path.is_dir():
         records = sorted(path.glob("[0-9][0-9][0-9][0-9]-*.md"))
         problems = [] if records else [f"{path}: no decision records"]
+        # A misnamed record (009-x.md) would otherwise be skipped without a word.
+        problems += [f"{p.name}: not named NNNN-slug.md, so it is not linted" for p in sorted(path.glob("*.md"))
+                     if p not in records and p.name != "README.md"]
         numbers = [r.name[:4] for r in records]
         problems += [f"{path}: {n} is used by more than one record" for n in sorted(set(numbers)) if numbers.count(n) > 1]
         return problems + [p for r in records for p in lint_decision(r)]

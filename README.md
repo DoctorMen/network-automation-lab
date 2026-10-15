@@ -90,7 +90,7 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt -r requirements-ansible.txt
 bash -c "$(curl -sL https://get.containerlab.dev)"   # installs Containerlab
 
-make test      # offline: inventory, rendering, locate rules, control register and record lints (46 tests)
+make test      # offline: inventory, rendering, locate rules, control register and record lints (47 tests)
 make deploy    # render configs and start 7 containers
 make live      # 24 live tests against the running network, JUnit in results/live.xml
 make drift     # back up routers and firewall, fail on drift or an incomplete backup

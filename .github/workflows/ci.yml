@@ -53,6 +53,7 @@ jobs:
       - name: Config drift check (Ansible)
         run: make drift
       - name: Measure RAM (raw data for docs/sizing)
+        continue-on-error: true  # a sizing reading is evidence, not a network test
         run: |
           make measure LAB_ENV=github-runner NOTE="GitHub ubuntu-latest, containerlab $CLAB_VERSION, idle right after make live and make drift"
           cat docs/sizing/data/*-github-runner.json

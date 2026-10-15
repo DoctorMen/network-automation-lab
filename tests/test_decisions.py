@@ -63,3 +63,10 @@ def test_readme_design_decisions_link_their_records():
     for bullet in bullets:
         links = re.findall(r"\]\((docs/decisions/\d{4}-[\w-]+\.md)\)", bullet)
         assert links and all((ROOT / link).exists() for link in links), f"no record linked: {bullet[:60]}"
+
+
+def test_misnamed_record_is_reported(tmp_path):
+    """A record whose file name lint can't parse is reported, not skipped."""
+    (tmp_path / RECORD.name).write_text(RECORD.read_text())
+    (tmp_path / "009-typo.md").write_text(RECORD.read_text())
+    assert lint(tmp_path) == ["009-typo.md: not named NNNN-slug.md, so it is not linted"]
