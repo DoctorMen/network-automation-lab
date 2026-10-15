@@ -100,3 +100,32 @@
     - "the filter '^(no )?ipv6? forwarding$' reads as 'ipv' plus an optional '6', so it never matches 'ip forwarding'"
   workaround: none needed; a router with IPv4 forwarding off is broken, so failing is right
   fixed_in: PR #2 (the filter now reads ipv6 only, and its comment and docs/collection-methods.md say so)
+
+- id: V-012
+  opened: 2026-10-15
+  version: frrouting/frr:v8.4.1 (FRR 8.4.1_git)
+  symptom: FRR's support-bundle script wrote nothing and still exited 0; with upstream's command list it wrote the BGP password in clear
+  verdict: platform-bug
+  evidence:
+    - "2026-10-15, lab r1: python3 /usr/lib/frr/generate_support_bundle.py -l /tmp -> CRITICAL:root:Cannot read config file: /etc/frr/support_bundle_commands.conf, rc=0, no file written. The image ships the script but not the list"
+    - "2026-10-15, lab r2 with TCP MD5 on: the same script with FRR 8.4.1's tools/etc/frr/support_bundle_commands.conf wrote zebra_support_bundle.log, which runs show running-config and held the password in clear"
+  workaround: netlab/bundle/support_bundle_commands.conf, vendored without show running-config and passed with -c; netlab finding --verify refuses an empty log or a password line (decision 0017)
+
+- id: V-013
+  opened: 2026-10-15
+  version: frrouting/frr:v8.4.1 (FRR 8.4.1_git), frr-reload.py from the image
+  symptom: a reload put the BGP password on a vtysh command line and in frr-reload.log, and a reload from intent with no password line dropped the session
+  verdict: normal-behaviour
+  evidence:
+    - "2026-10-15, lab na4: with a hand change on r2 and frr-reload.py run without --bindir, tests/live/test_secrets.py found the password in clab-na4-r2:/var/log/frr/frr-reload.log and in /proc/<pid>/cmdline of a docker exec on the host. frr-reload.py runs vtysh -c with each line it changes and logs them at INFO"
+    - "2026-10-15, same lab with the password hidden as a tag but not dropped: connectionsDropped went from 6 to 7 during make apply, because frr-reload.py deleted a line the intended file doesn't hold"
+  workaround: frr-reload.py runs with --bindir pointing at the redacting vtysh in drop mode, so it never sees a password line; deploy.yml sets the password itself through vtysh's stdin (decision 0016)
+
+- id: V-014
+  opened: 2026-10-15
+  version: ansible-core from ansible>=10, community.docker connection
+  symptom: with no_log on and the password only in the task's stdin, the password still appeared in a file on the routers and on the controller
+  verdict: normal-behaviour
+  evidence:
+    - "2026-10-15, lab na4 with ansible_pipelining false: tests/live/test_secrets.py found it in AnsiballZ_command.py under /root/.ansible/tmp in clab-na4-r2 and clab-na4-isp, and under the controller's /root/.ansible/tmp/ansible-local-*. Without pipelining, Ansible writes each module with its arguments to a temp file on the target; no_log only hides output"
+  workaround: ansible_pipelining true in ansible/group_vars/routers.yml, which pipes the module to the remote Python instead (decision 0016)

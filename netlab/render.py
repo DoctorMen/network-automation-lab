@@ -150,6 +150,19 @@ def bfd_peers(inv: Inventory, router: str) -> dict[str, str]:
     return {str(remote.address.ip): local.interface for local, remote in inv.neighbors(router) if remote.device in ospf}
 
 
+def bgp_md5(inv: Inventory, router: str) -> list[dict]:
+    """The TCP MD5 sessions this router must authenticate: its ASN, the peer's address and the
+    secret's name. Never the password: that stays in the secret store (netlab/secrets.py)."""
+    sessions = []
+    for auth in inv.raw.get("bgp_auth", []):
+        if router in auth["routers"]:
+            peer = next(p for p in auth["routers"] if p != router)
+            bgp = inv.routers[router]["bgp"]
+            address = next(n["address"] for n in bgp["neighbors"] if n["peer"] == peer)
+            sessions.append({"asn": inv.asn(bgp["local_as"]), "peer": peer, "neighbor": address, "secret": auth["secret"]})
+    return sessions
+
+
 def expected_state(inv: Inventory) -> dict:
     """What a healthy lab looks like. The live tests compare against this."""
     bgp_sessions = []
@@ -164,6 +177,7 @@ def expected_state(inv: Inventory) -> dict:
                                for r in inv.routers if inv.ospf_neighbors(r)},
         "bgp_sessions": bgp_sessions,
         "qos": inv.qos,  # what netlab verify checks on each host's interface
+        "bgp_md5": {r: sessions for r in inv.routers if (sessions := bgp_md5(inv, r))},
         "loopbacks": {r: str(ipaddress.IPv4Interface(v["loopback"]).ip) for r, v in inv.routers.items()},
         "hosts": {h: v["address"].split("/")[0] for h, v in inv.hosts.items()},
         # Every address on a device we own: what a scan from the internet side has to find closed.
@@ -182,8 +196,10 @@ def ansible_inventory(inv: Inventory) -> str:
     """Ansible reaches each node through the Docker connection plugin, no SSH needed."""
     # The canary first: deploy.yml rolls out in this order, one router and then the rest (decision 0010).
     routers = sorted(inv.routers, key=lambda r: r != inv.rollout.get("canary"))
+    md5 = {r: sessions for r in inv.routers if (sessions := bgp_md5(inv, r))}
     hosts = {
-        "routers": {r: {"ansible_host": f"clab-{inv.lab_name}-{r}"} for r in routers},
+        "routers": {r: {"ansible_host": f"clab-{inv.lab_name}-{r}", **({"bgp_md5": md5[r]} if r in md5 else {})}
+                    for r in routers},
         "firewalls": {f: {"ansible_host": f"clab-{inv.lab_name}-{f}"} for f in inv.firewalls},
         # Routers with an edge.sh: drift.yml compares their iptables rules the way it does the firewall's.
         "edge_routers": {r: {"ansible_host": f"clab-{inv.lab_name}-{r}", "rules_script": "edge.sh"}

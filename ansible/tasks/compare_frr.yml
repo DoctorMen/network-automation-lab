@@ -1,18 +1,23 @@
 # Does a config file on the control node match this router's running config?
-# Used twice: by drift.yml against the intended config, and by verify_capture.yml against
-# the backup. frr-reload.py --test parses the file as a reload would and lists every line
-# that differs, without changing anything.
-# Vars: config (path on the control node), label (staging name), mismatch (failure text).
+# Used by drift.yml against the intended config, by verify_capture.yml against the backup, and by
+# deploy.yml for its plan. frr-reload.py --test parses the file as a reload would and lists every
+# line that differs, without changing anything. It reads the running config through the redacting
+# vtysh (--bindir), so a BGP password shows as its sha256 tag, here and in any failure message.
+# Vars: config (path on the control node), label (staging name), mismatch (failure text),
+#       with_password_tags (add the tag each password should have; the intended config has none),
+#       fail_on_difference (default true; deploy.yml only wants the plan).
 - name: Stage the {{ label }} config on the router
   ansible.builtin.copy:
-    src: "{{ config }}"
+    content: "{{ lookup('file', config) }}\n{{ password_tags if with_password_tags | default(false) else '' }}"
     dest: /tmp/{{ label }}.conf
     mode: "0644"
+  check_mode: false
 
 - name: Compare running config with the {{ label }} config
-  ansible.builtin.command: /usr/lib/frr/frr-reload.py --test /tmp/{{ label }}.conf
+  ansible.builtin.command: /usr/lib/frr/frr-reload.py --test --bindir {{ vtysh_dir }} /tmp/{{ label }}.conf
   register: reload_test
   changed_when: false
+  check_mode: false
 
 # IPv6 forwarding mirrors a kernel sysctl that varies by host (GitHub runners enable it), and
 # the lab doesn't use IPv6. IPv4 forwarding is not filtered: a router with it off is broken,
@@ -37,3 +42,4 @@
     that: listed + unremovable == []
     fail_msg: "{{ inventory_hostname }} {{ mismatch }}:\n{{ reload_test.stdout }}\n{{ unremovable | join('\n') }}"
     success_msg: "{{ inventory_hostname }} running config matches the {{ label }} config"
+  when: fail_on_difference | default(true)

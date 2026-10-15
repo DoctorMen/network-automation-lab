@@ -243,6 +243,81 @@ controls:
       notices. It doesn't stop anyone editing build/ or the inventory on the host, which is a change
       to intent and goes through git review.
 
+  - id: bgp-md5-session
+    claim: "The r2–isp BGP session uses TCP MD5 on both ends, with a random password (a new one every CI run), and a wrong password on the carrier's end takes the session down"
+    test: tests/live/test_secrets.py::test_bgp_session_uses_its_secret_and_a_wrong_one_drops_it
+    period: P31D
+    threat: >-
+      A spoofed or hijacked BGP peer on the hand-off injecting routes or resetting the session, and
+      MD5 that is configured on paper but not enforced.
+    fails_when: >-
+      TCP MD5 (RFC 2385) is weak and obsoleted by TCP-AO, which FRR 8.4.1 lacks. Root on either
+      router can read the key with `ss -tnie` (RISK-8). It protects the session, not the routes:
+      the carrier itself can still announce anything (RISK-1).
+
+  - id: no-plaintext-secret
+    claim: "While `make apply` puts back a hand change and `make drift` runs, no command line, environment, FRR log, container log, playbook output, or file in `build/` or `backups/` holds that password in clear, and the session never drops"
+    test:
+      - tests/live/test_secrets.py::test_no_secret_in_env_argv_logs_or_files
+      # Deterministic: it reads the playbooks, so it can't miss a short-lived process.
+      - tests/test_secrets.py::test_secrets_reach_a_router_only_on_stdin
+    period: P31D
+    threat: >-
+      The password leaking where other people read it: a CI artifact, a log, another process's view
+      of /proc, Ansible's temp files, or frr-reload.py's log.
+    fails_when: >-
+      Sampling /proc about 40 times a second can miss a process shorter than that: with the password
+      moved onto vtysh's command line, the live test went red in 9 runs of 10 (5 of 6 in review, then
+      4 of 4). The offline test catches that change every time, but only in ansible/: it reads the
+      playbooks, not what a tool they call does with its input. In CI, other users' /proc environ is
+      closed to the test; each router's own processes are read with docker exec instead. The secret
+      store itself is a plaintext 0600 file (RISK-8). It checks this password only; a new kind of
+      secret needs its own check.
+
+  - id: secret-never-rendered
+    claim: "The password is never rendered: `build/` names only the secret's file, the store is 0600 and never overwritten, and backups and drift output show a sha256 tag in its place"
+    test:
+      - tests/test_secrets.py::test_no_rendered_file_holds_a_password
+      - tests/test_secrets.py::test_secret_store_is_private_and_never_overwritten
+      - tests/test_secrets.py::test_redacting_vtysh_tags_or_drops_passwords
+      - tests/test_secrets.py::test_bgp_auth_names_a_real_session_and_a_secret_file
+    period: P31D
+    threat: The password ending up in the intent every tool prints, diffs and uploads.
+    fails_when: >-
+      The sha256 tag is safe to publish only because the password is random; a chosen password
+      would make it guessable. The redaction matches FRR 8.4's `neighbor X password` line form only.
+
+  - id: secret-blocked-at-commit
+    claim: "A secret staged in a commit is refused by the gitleaks pre-commit hook, and one committed with `--no-verify` and deleted again is still found by the full-history scan CI runs"
+    test:
+      - tests/test_secrets.py::test_staged_secret_is_blocked_at_commit
+      - tests/test_secrets.py::test_history_scan_finds_a_secret_committed_with_no_verify
+    period: P31D
+    threat: A token or password committed by accident and pushed, then "removed" in a later commit.
+    fails_when: >-
+      The hook works only where `pre-commit install` was run, and --no-verify skips it. The CI scan
+      reports but blocks nothing until branch protection requires the secrets check (RISK-10).
+      gitleaks knows only the patterns it has rules for.
+
+  - id: marked-file-push
+    claim: "A file carrying the confidential marker is refused by the pre-push hook. Pushed anyway with `--no-verify`, the CI scan of the pushed history goes red and names it"
+    test: tests/test_secrets.py::test_marked_file_is_blocked_at_push_and_alerted_by_ci
+    period: P31D
+    threat: Confidential material moved out through a public GitHub repo, by accident or on purpose.
+    fails_when: >-
+      Only files that carry the marker are caught; an unmarked confidential file passes. Pushed with
+      --no-verify, the file is public before the CI alert, which is detection, not prevention. Other
+      routes out (cloud uploads, USB, email) are not covered.
+
+  - id: frr-password-rule
+    claim: "gitleaks' default rules miss a BGP password in an FRR backup; this repo's rule catches it, and lets the sha256 tag through"
+    test: tests/test_secrets.py::test_frr_password_rule_catches_what_default_rules_miss
+    period: P31D
+    threat: A router backup with a password in clear passing the scanner unseen.
+    fails_when: >-
+      The rule knows FRR's `neighbor X password` form only; other vendors' syntax, or OSPF keys if
+      they are ever added, need their own rules.
+
   - id: inventory-validation
     claim: "The inventory can't ship with duplicate IPs, mismatched subnets, overlapping networks, wrong BGP peer addresses, off-subnet gateways or a device with no owner"
     test:
@@ -301,6 +376,32 @@ controls:
       Ownership is what the inventory says; a wrong `owner:` is trusted. Retracing stops after 5
       tries, so a hop that never answers is skipped and its segment merged with the next.
 
+  - id: finding-bundle
+    claim: "`make finding` sends the carrier a bundle they can re-run: every command's raw output, an ICMP capture on our hand-off port, FRR support bundles, versions, clocks and RFC citations, and no BGP password. Its `reproduce.sh`, run from a copy with only sh and docker, names the same segment and owner, and says it did not reproduce once the loss is gone. CI re-runs it on a clean runner"
+    test: tests/live/test_finding.py::test_carrier_finding_reproduces_from_the_bundle_alone
+    period: P31D
+    threat: >-
+      A carrier that can't check our evidence closing the ticket as "no fault found", or a re-run
+      that agrees whatever it measures.
+    fails_when: >-
+      The re-run happens in a lab copy where the fault is recreated by lab/condition.sh; on the real
+      network the carrier would run the same commands against the live fault. A clean CI runner
+      stands in for someone outside the team; no outsider has re-run one yet. The capture has
+      userspace timestamps (about 1 ms) and is taken at our end only, so no one-way claim is made.
+
+  - id: finding-verify
+    claim: "`netlab finding --verify` refuses a bundle with a missing or edited file, an empty support log, no probe in its capture, a missing citation, an image without a digest, or a BGP password, and `reproduce.sh` says Reproduced only when its own run agrees"
+    test:
+      - tests/test_finding.py::test_verify_names_every_gap_in_a_bundle
+      - tests/test_finding.py::test_reproduce_agrees_only_when_its_own_run_does
+      - tests/test_finding.py::test_pcap_counts_only_echo_to_and_from_the_target
+      - tests/test_finding.py::test_only_an_earlier_bundle_is_ever_deleted
+    period: P31D
+    threat: Sending a bundle that can't be re-run or trusted, or that carries a secret.
+    fails_when: >-
+      It checks that the evidence is there and consistent, not that it is right: a measurement taken
+      during a reconvergence is complete and still wrong. The password check knows FRR's line form.
+
   - id: platform-version
     claim: "Every node runs exactly the image (tag and digest), FRR, Alpine and busybox builds the inventory records, and CI pulls that image"
     test:
@@ -340,6 +441,46 @@ controls:
     fails_when: >-
       It checks each record has its fields, a 'do nothing' option, an outside source and real
       failure-mode tests, not that the reasoning is sound. A decision made with no record is not seen.
+
+  - id: selection-records
+    claim: "FRR, Containerlab, Ansible, iptables, gitleaks, Docker, GitHub Actions and restic each have a selection record with its constraint, a no-purchase line, staffing, and sources its maker didn't write, a measurement of our own among them. A new image in the inventory, Makefile, hooks or CI fails the check until it has one"
+    test:
+      - tests/test_selections.py::test_every_selection_record_lints_clean
+      - tests/test_selections.py::test_sources_from_the_seller_alone_are_rejected
+      - tests/test_selections.py::test_outside_pages_alone_are_not_enough
+      - tests/test_selections.py::test_missing_no_purchase_line_is_reported
+      - tests/test_selections.py::test_every_tool_has_a_selection_record
+      - tests/test_selections.py::test_image_names_are_found_with_or_without_a_namespace
+      - tests/test_selections.py::test_a_record_may_cite_tests_that_arrive_with_its_tool
+    period: P31D
+    threat: A tool chosen on the seller's word, with nothing to show a skeptic and no cheaper option considered.
+    fails_when: >-
+      The lint checks a source is off the maker's domains, not that it is right or still online.
+      Coverage is every image named outside a comment in the inventory, Makefile, hooks or workflows,
+      plus the tools listed in netlab/records.py (Containerlab, Ansible, iptables, Docker, GitHub
+      Actions). The Python libraries (pytest, Jinja2, PyYAML, pre-commit) and GitHub's own actions
+      have no record of their own, and an image behind a registry port (localhost:5000/app:1) is not
+      detected. Until the lab runs a tool, its record may cite tests that arrive with it: restic's
+      cite the backup tests, which aren't in this tree until the backup change merges.
+
+  - id: risk-register
+    claim: "Every risky config line of a kind `make risks` scans for (no eBGP inbound policy, OSPF without authentication, privileged nodes, any ICMP type through fw1, an out-of-support base OS and more) is covered by a risk register entry with likelihood, impact, reasoning, a compensating test, an owner and a review date. An entry whose line is gone is flagged to close, and a decision record that accepts a risk must name its entry. None has been presented to management yet"
+    test:
+      - tests/test_risks.py::test_every_risky_config_line_has_a_risk_record
+      - tests/test_risks.py::test_a_deleted_risk_names_its_config_line
+      - tests/test_risks.py::test_fixing_the_config_flags_the_risk_as_stale
+      - tests/test_risks.py::test_every_risk_a_decision_record_accepts_is_in_the_register
+      - tests/test_risks.py::test_a_selection_record_cites_only_risks_in_the_register
+      - tests/test_risks.py::test_every_risk_record_is_complete
+      - tests/test_risks.py::test_summary_lists_what_management_has_not_seen
+    period: P31D
+    threat: Shortcuts nobody decided on, and accepted risks that outlive the reason they were accepted.
+    fails_when: >-
+      It knows only the risky line kinds in netlab/risks.py; a new kind of shortcut needs a new
+      detector, and a gap with no config line (RISK-9, RISK-10, RISK-12) is tied to nothing. RISK-15's
+      detector reads the hosts' lines in the topology, so collecting the hosts won't flag it stale by
+      itself. Every review_by is 2027-01-15, so the whole register goes red on 2027-01-16 by design.
+      It can record who an entry was shown to, but not prove the meeting happened.
 
   - id: sizing
     claim: "The RAM figure below is the newest measurement, and that raw data is committed"

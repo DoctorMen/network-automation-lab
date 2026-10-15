@@ -1,0 +1,20 @@
+# Loaded by every playbook here for the routers group (Ansible reads group_vars/ beside a playbook).
+#
+# BGP TCP MD5 secrets: one 0600 file per session in the secret store, named by the inventory's
+# bgp_auth list (decision 0016). `make secrets` creates them; CI sets NETLAB_SECRETS to a fresh
+# directory under $RUNNER_TEMP, so each run has new passwords.
+secrets_dir: "{{ lookup('env', 'NETLAB_SECRETS') or (playbook_dir ~ '/../.secrets') }}"
+
+# Where tasks/redacting_vtysh.yml puts files/vtysh_redacted.py on each router, as `vtysh`.
+# frr-reload.py runs it instead of the real one when given --bindir.
+vtysh_dir: /tmp/netlab-bin
+
+# The intended config says nothing about passwords, so for a comparison it gets the line each
+# session should have, as the redacting vtysh shows it: one block per session, password tagged.
+password_tags: "{% for s in bgp_md5 | default([]) %}router bgp {{ s.asn }}\n neighbor {{ s.neighbor }} password sha256:{{ lookup('file', secrets_dir ~ '/' ~ s.secret) | hash('sha256') }}\nexit\n{% endfor %}"
+
+# Send each module to the router over `docker exec`'s stdin instead of writing it to a file there
+# first. A module carries its arguments, so without this the password given to vtysh on stdin
+# (deploy.yml) would sit in /root/.ansible/tmp on the router while the task runs. Set here rather
+# than in ansible.cfg so it holds whichever directory ansible-playbook is started from.
+ansible_pipelining: true

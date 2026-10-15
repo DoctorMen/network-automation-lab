@@ -58,6 +58,15 @@ jobs:
         run: bash -c "$(curl -sL https://get.containerlab.dev)" -- -v "$CLAB_VERSION"
       - name: Pull router image
         run: docker pull frrouting/frr:v8.4.1
+      - name: Create this run's BGP password
+        # No GitHub secret exists, so every run gets a new random one, 0600 in a 0700 folder outside
+        # the checkout. `make deploy` sets it on r2 and isp through vtysh's stdin (decision 0016).
+        run: |
+          echo "NETLAB_SECRETS=$RUNNER_TEMP/netlab-secrets" >> "$GITHUB_ENV"
+          NETLAB_SECRETS="$RUNNER_TEMP/netlab-secrets" make secrets
+          # Masked: if a value ever reached this log, GitHub would print *** instead. echo is a shell
+          # builtin, so the value is on no command line.
+          for f in "$RUNNER_TEMP"/netlab-secrets/*; do echo "::add-mask::$(cat "$f")"; done
       - name: Deploy
         id: deploy
         run: make deploy
@@ -67,6 +76,15 @@ jobs:
         # Runs even when a live test failed, so every run still backs up the configs.
         if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: make drift
+      - name: Secret scan of this run's backups, results and build/
+        # Runs after drift, so it sees every file this run wrote. gitleaks knows the patterns; the
+        # grep knows this run's actual password, read from its file (-f), never from a command line.
+        if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
+        run: |
+          make gitleaks
+          for f in "$NETLAB_SECRETS"/*; do
+            if grep -rlF -f "$f" backups results build; then echo "::error::this run's BGP password is in the files above"; exit 1; fi
+          done
       - name: Measure RAM (raw data for docs/sizing)
         continue-on-error: true  # a sizing reading is evidence, not a network test
         run: |
@@ -92,6 +110,14 @@ jobs:
             backups/
           if-no-files-found: ignore
           retention-days: 90
+      - name: Upload the finding bundle (re-run by the reproduce job)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: finding-bundle
+          path: results/finding/
+          if-no-files-found: ignore
+          retention-days: 90
       - name: Upload sizing data
         if: always()
         uses: actions/upload-artifact@v4
@@ -102,3 +128,39 @@ jobs:
       - name: Destroy
         if: always()
         run: make destroy || true
+
+  reproduce:
+    name: Re-run the finding from its bundle alone (clean runner)
+    # A runner that never saw the repo stands in for someone outside the team (OROS PRV-3): it gets
+    # the bundle the lab job uploaded, stands up the lab from the bundle's copy, and re-runs it.
+    needs: lab
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CLAB_VERSION: "0.68.0"
+    steps:
+      # No actions/checkout: nothing from the repo, only the bundle.
+      - uses: actions/download-artifact@v4
+        with:
+          name: finding-bundle
+          path: finding
+      - name: Install Containerlab
+        run: bash -c "$(curl -sL https://get.containerlab.dev)" -- -v "$CLAB_VERSION"
+      - name: Stand up the lab from the bundle (Containerlab pulls the image the topology names)
+        run: sudo containerlab deploy -t finding/lab/topology.clab.yml
+      - name: On a healthy lab the bundle must say it did not reproduce
+        # Exit 1 is "Did not reproduce". 0 would mean the check can't fail; 2 means it couldn't tell.
+        run: |
+          rc=0; sh finding/reproduce.sh || rc=$?
+          if [ "$rc" != 1 ]; then echo "::error::expected Did not reproduce (exit 1), got exit $rc"; exit 1; fi
+      - name: Recreate the fault (lab only) and re-run the finding
+        run: |
+          sh finding/lab/condition.sh
+          sh finding/reproduce.sh
+      - name: Upload the re-run's raw output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: finding-rerun
+          path: finding/rerun-*/
+          if-no-files-found: ignore
