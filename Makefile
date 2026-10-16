@@ -105,7 +105,7 @@ backup-init:     ## Create the restic repository at BACKUP_REPO, once, by hand (
 restore-drill:   ## Boot every router's latest backup on throwaway routers, and restore one stanza on its own
 	BACKUP_REPO="$(BACKUP_REPO)" BACKUP_PASSWORD="$(BACKUP_PASSWORD)" $(PY) -m pytest -v tests/live/test_restore.py --junitxml=results/restore-drill.xml
 
-power-drill:     ## Power-cycle the whole lab and check it comes back by itself from startup config
+power-drill:     ## Power-cycle the whole lab: it comes back by itself from startup config, and r2's evidence is still in the store
 	POWER_CYCLE="$(POWER_CYCLE)" $(PY) -m pytest -v tests/live/test_power_event.py --junitxml=results/power-drill.xml
 
 control-status:  ## Fail if any control's latest test is red or older than its period (reads CI runs with gh)

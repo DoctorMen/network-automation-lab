@@ -553,7 +553,7 @@ controls:
       collector a line naming any router (RISK-33), and the exporters have no TLS (RISK-31).
 
   - id: loss-microburst
-    claim: "A burst that the averages hide is traced to its queue. 3000 datagrams that leave h2 in under a second (about 10 ms here) overflow the bulk class of h2's HTB: QueueDrops pages for h2 eth1 within its stated bound, the queue's drop count is exactly what was sent and never arrived, and `tc -s class` names the bulk class. Meanwhile h2's 5-minute average stays under 5% of its link, its interface drop counter stays at 0, and the NOC's web check and ping never fail"
+    claim: "A burst that the averages hide is traced to its queue. 3000 datagrams that leave h2 in under a second (about 10 ms here) overflow the bulk class of h2's HTB: QueueDrops pages for h2 eth1 within its stated bound, the queue's drop count is exactly what was sent and never arrived, and `tc -s class` names the bulk class. h2 eth1's byte counter counts only what left the queue. Meanwhile h2's 5-minute average stays under 5% of its link, its interface drop counter stays at 0, and the NOC's web check and ping never fail"
     test:
       - tests/live/observe/test_loss.py::test_a_microburst_the_average_hides_is_traced_to_its_queue
       - tests/test_monitoring.py::test_queue_drop_rule_for_every_node_with_a_node_exporter
@@ -588,28 +588,30 @@ controls:
       The notes are checked for presence and type, not for truth: what each one says about direction or wraps comes from kernel and exporter documentation, and is tested live only where a counts entry names a proven_by test.
 
   - id: loss-known-bytes
-    claim: "A known byte count matches the NOC's counters. 2000 datagrams of 8000 bytes from h1 to the carrier's address show up in r1's receive and r2's transmit counters, as Prometheus stored them, within 5% of the bytes on the wire (0.002% here), while r2's node_exporter restarts in the middle with no reset in the series and no page. Every interface in the lab is a veth pair, so that is the only interface type tested"
+    claim: "A known byte count matches the NOC's counters. 4000 datagrams of 100 bytes from h1 to the carrier's address show up in r1's receive and r2's transmit counters, as Prometheus stored them, within 5% of the bytes on the wire, and within 1%, so each frame is counted with its 14-byte Ethernet header (9.9% of these frames) and without a checksum (+0.03% here). r2's node_exporter restarts in the middle with no reset in the series and no page. Every interface in the lab is a veth pair, so that is the only interface type tested"
     test:
       - tests/live/observe/test_loss.py::test_a_known_byte_count_matches_the_counters_across_an_exporter_restart
     period: P31D
     threat: >-
       A graph that is off by a header, a direction or a missing multiplier sends a capacity or loss decision the wrong way, and an agent restart shows as a spike.
     fails_when: >-
-      veth is the only interface type in the lab: no physical port, LAG, sub-interface or NIC offload is tested. The counters are node_exporter's reading of the kernel, not SNMP. Background traffic on the two interfaces (BGP keepalives, a few probes) is inside the 5%.
+      veth is the only interface type in the lab: no physical port, LAG, sub-interface or NIC offload is tested. The counters are node_exporter's reading of the kernel, not SNMP, and node_exporter is the agent that restarts. Background traffic on the two interfaces (BGP keepalives, a few probes) is inside the 1%.
 
   - id: loss-counter-reset
-    claim: "A queue counter that starts again at zero is flagged, not paged: after h2's HTB is replaced, resets() flags the fall, rate() over it stays at 0, and QueueDrops stays quiet past its bound. A 32-bit wrap is the same fall; no test drives one"
+    claim: "A queue counter that starts again at zero is flagged, not paged: after h2's HTB is replaced, resets() flags the fall, rate() over it stays at 0, and QueueDrops stays quiet past its bound. A 32-bit wrap shows no spike: the rendered QueueDrops rule, run by promtool over a drop counter that wraps at 2^32 after 14 drops, shows 13 at most, never a jump of about 4.29e9, and clears once the wrap leaves its window"
     test:
       - tests/live/observe/test_loss.py::test_a_reset_queue_counter_is_flagged_and_pages_nobody
+      - tests/live/observe/test_loss.py::test_a_32_bit_wrap_of_the_queue_counter_shows_no_spike
     period: P31D
     threat: >-
       A counter reset or a wrap shows as a cliff or a spike and pages the shift for traffic that never happened.
     fails_when: >-
-      resets() flags the fall when someone asks; no rule pages on it. A 32-bit wrap needs four billion drops and is not driven; increase() reads it as a reset and loses at most one scrape interval's drops.
+      resets() flags the fall when someone asks; no rule pages on it. The wrap is a made-up series run through promtool, Prometheus' own rule tester in the pinned image, against the real rule: no queue here drops four billion packets. increase() reads a wrap as a reset and loses the drops between the last scrape before it and the wrap.
 
   - id: loss-flight-recorder
-    claim: "A link failure leaves evidence of the moment. With r3's port to h2 down for one second, the flight recorder on both ends sends a complete state dump (interfaces and their counters, queues, filters, and r3's OSPF, BFD and routes) to the central store within 13 s, taken while the port was still down. `make evidence` copies every node's dump and its own log off the box before a planned reset, and every dump is in the central store too, with no BGP password in any of it"
+    claim: "A link failure leaves evidence of the moment. With r3's port to h2 down for one second, the flight recorder on both ends sends a complete state dump (interfaces and their counters, queues, filters, and r3's OSPF, BFD and routes) to the central store within 13 s, taken while the port was still down. A watcher that is killed is started again within 8 s, with a line in the store that says so. `make evidence` copies every node's dump and its own log off the box before a planned reset, and every dump is in the central store too, with no BGP password in any of it"
     test:
+      - tests/live/observe/test_evidence.py::test_a_stopped_flight_recorder_is_armed_again
       - tests/live/observe/test_evidence.py::test_a_flap_leaves_a_state_dump_in_the_central_store
       - tests/live/observe/test_evidence.py::test_evidence_before_a_reset_is_kept_off_the_box
       - tests/test_monitoring.py::test_flight_recorder_is_armed_on_a_link_failure_and_only_reads
@@ -617,7 +619,7 @@ controls:
     threat: >-
       A transient fault is gone by the time anyone looks, and the reboot that fixes it erases the box's own log.
     fails_when: >-
-      The recorder dumps state, not packets. It sends over clear UDP syslog (RISK-33), so a dump sent while the node's path to the NOC is still down is lost; it waits 3 s, which covers a short flap only. At most one dump every 30 s per node. A dump fills about a third of a box's own small log.
+      The recorder dumps state, not packets. It sends over clear UDP syslog (RISK-33), so a dump sent while the node's path to the NOC is still down is lost; it waits 3 s, which covers a short flap only. At most one dump every 30 s per node. A dump fills about a third of a box's own small log. Nothing watches the loop that starts a stopped watcher again: if that loop alone is killed, the node's heartbeat goes on and nothing notices until the next observe run's flap test.
 
   - id: loss-evidence-after-reset
     claim: "After a power cut of the whole lab, the NOC included, the evidence is still there: r2's flight-recorder dump from a link failure just before the cut, and every line r2's own log held from its last five minutes, are in the central store, while r2 has lost its own copy. The store was restarted shortly before the cut, as after an earlier one, and the cut came after its first checkpoint since. A weekly job is set up to run it"
@@ -628,7 +630,7 @@ controls:
     threat: >-
       The power cut that resets a node resets the central store too, so the evidence of what led up to it is lost with both.
     fails_when: >-
-      One copy, on the lab host's disk (RISK-34), in a folder any local user can write (RISK-45). A single node can't be hard-reset on its own here, so the drill cuts the whole lab. The weekly job has not run on GitHub yet; here the cut was the sandbox's whole-lab redeploy. Lines still in flight at the moment of the cut are not checked: the drill waits until r2's lines are in the store before it cuts. A second cut within about a minute of a restart of the store loses what it took in since (V-027, RISK-46). Lines r2 writes at boot before its route to the NOC is up never leave it (RISK-33).
+      One copy, on the lab host's disk (RISK-34), in a folder any local user can write (RISK-45). A single node can't be hard-reset on its own here, so the drill cuts the whole lab. The weekly job has not run on GitHub yet; here the cut was the sandbox's whole-lab redeploy. The drill runs only in drills.yml (the lab job skips it), so control-status has no result for this control until that job has run on main. Lines still in flight at the moment of the cut are not checked: the drill waits until r2's lines are in the store before it cuts. A second cut within about a minute of a restart of the store can lose lines it took in since: 4 of r2's last 111 and 15 of its last 120 in two drill runs without the wait for the checkpoint (V-027, RISK-46). Lines r2 writes at boot before its route to the NOC is up never leave it (RISK-33).
 
   - id: verdict-log
     claim: "Every odd behaviour in the log has one verdict (my config, normal behaviour, platform bug or lab artifact), the version it was seen on, and a fix or workaround. None may stay unclassified past 5 working days"
@@ -908,13 +910,15 @@ controls:
       - tests/test_scope.py::test_every_device_has_a_scope_decision
       - tests/test_scope.py::test_register_the_topology_contradicts_is_refused
       - tests/test_scope.py::test_segmentation_probes_every_out_of_scope_device
+      - tests/live/observe/test_loss.py::test_the_servers_exporter_answers_the_noc_and_nobody_out_of_scope
     period: P31D
     threat: >-
       The payments segment's scope quietly growing: a server added to LAN-B with no decision, a filter
       called out of scope, or an out-of-scope system that can reach a service it shouldn't.
     fails_when: >-
       It is a toy: no card data, no assessor (acceptance is open, decision 0013). It probes the services
-      the inventory lists over TCP, and echo pings. h1's ping exception is wider than its reason (fw1's
+      the inventory lists over TCP, and echo pings. h2's node_exporter port is a sidecar's, so only the full
+      lab's observe job probes it. h1's ping exception is wider than its reason (fw1's
       allow-icmp passes every ICMP type), and whether LAN-A's reach (h2:80 and pings) makes it
       connected-to is an assessor's call nobody has made. Outbound from LAN-B is not restricted (PCI
       DSS 1.3.2 not met). The clause wording was checked against a secondary source, not the PCI SSC
