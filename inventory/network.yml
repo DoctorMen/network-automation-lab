@@ -256,7 +256,7 @@ logging:
   # runs drift and apply every five minutes, at about twice the busiest source's pace (V-030). On the
   # merged wave 2 lab one drift and one apply sent r2 25 KB of syslog and 15 KB of command records, about
   # 7.3 and 4.3 MB a day at that pace; each command record also reaches the store as syslog, since
-  # syslogd forwards the box's copy. In the review of the merged rules (commit ff727a8) r2's translation
+  # syslogd forwards the box's copy. In the review committed in ff727a8 r2's translation
   # log ran at 1962941 bytes a day, 94% of the 2 MiB it had then: h1's ping of the carrier every 10 s
   # writes a translation line each.
   budget:

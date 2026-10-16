@@ -1,10 +1,10 @@
 # Written by `make fp-review` (netlab/detections.py, decision 0027). Do not edit by hand.
 reviewed: 2026-10-16
-started: '2026-10-16T16:26:35Z'
+started: '2026-10-16T19:32:32Z'
 minutes: 30
 settle: 120
 environment: sandbox
-commit: bbf3a69
+commit: cc0df47
 workload:
 - every 30 s, a user on h1 loads h2's page
 - every 10 s, h1 pings h2
@@ -90,7 +90,7 @@ detections:
     pages: 0
   LogIngestOverBudget:
     objects: 10
-    rules: d3309dd38d31
+    rules: 9af8fa81d72a
     pages: 0
   JobMissed:
     objects: 4
@@ -107,44 +107,44 @@ detections:
 pages: []
 ingest:
   r1/syslog:
-    bytes: 104128
-    per_day: 5006483
+    bytes: 104407
+    per_day: 5019888
     budget: 16777216
   r2/syslog:
-    bytes: 152796
-    per_day: 7346455
+    bytes: 153214
+    per_day: 7366541
     budget: 16777216
   r3/syslog:
-    bytes: 114003
-    per_day: 5481274
+    bytes: 114282
+    per_day: 5494702
     budget: 16777216
   fw1/syslog:
-    bytes: 11327
-    per_day: 544585
+    bytes: 11356
+    per_day: 546009
     budget: 16777216
   h2/syslog:
-    bytes: 1472
-    per_day: 70757
+    bytes: 1476
+    per_day: 70954
     budget: 16777216
   h2/http:
-    bytes: 5508
-    per_day: 264832
+    bytes: 5462
+    per_day: 262627
     budget: 524288
   r2/nat:
-    bytes: 40826
-    per_day: 1962941
-    budget: 2097152
+    bytes: 40942
+    per_day: 1968520
+    budget: 4194304
   r1/accounting:
-    bytes: 52785
-    per_day: 2537898
+    bytes: 52918
+    per_day: 2544311
     budget: 8388608
   r2/accounting:
-    bytes: 89172
-    per_day: 4287413
+    bytes: 89409
+    per_day: 4298810
     budget: 8388608
   r3/accounting:
-    bytes: 52813
-    per_day: 2539245
+    bytes: 52918
+    per_day: 2544311
     budget: 8388608
 cut:
   h2/http:
