@@ -31,7 +31,7 @@ failure_modes:
     mitigation: Watchdog always fires and is mailed every 10 s, the gaps measured live; its arrival at the mailbox, not its sending, is the signal, and AlertPathSilent pages over the webhook
     test: tests/live/observe/test_deadman.py::test_a_broken_mail_path_pages_on_the_second_channel
   - mode: AlertPathSilent pages at every NOC start, because Prometheus sends Watchdog before Alertmanager answers, that send is dropped, and it resends only a minute later
-    mitigation: AlertPathSilent counts from a minute after the NOC's start (Prometheus' resend delay); a fresh deploy left the pager empty (2026-10-16, lab na10)
+    mitigation: AlertPathSilent counts from a minute after the NOC's start (Prometheus' resend delay); a fresh deploy left the pager empty (V-023)
     test: tests/test_jobs.py::test_the_alert_path_is_not_due_before_the_first_resend
   - mode: an outside check that can't be reached fails a job whose work is done, and CI then skips saving the backup it just verified
     mitigation: A failed ping only warns; the outside check alerts by itself when no ping reaches it
