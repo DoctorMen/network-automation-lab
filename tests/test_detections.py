@@ -6,6 +6,8 @@ import subprocess
 import time
 from datetime import date, timedelta
 
+import pytest
+
 from netlab import detections, monitoring
 from netlab.inventory import load
 from netlab.detections import TABLE, check, fingerprint, load_all, rows, rules_by_detection
@@ -153,3 +155,65 @@ def test_a_source_over_its_budget_during_the_review_fails():
     source = next(iter(review["ingest"]))
     review["ingest"][source]["per_day"] = review["ingest"][source]["budget"] + 1
     assert any(p.startswith(f"{source} sent") for p in problems(review=review))
+
+
+class Clock:
+    """The review's clock in the tests below: each reading is a second after the last, and a sleep returns at once."""
+    def __init__(self):
+        self.now = time.time()
+
+    def time(self):
+        self.now += 1
+        return self.now
+
+    def sleep(self, seconds):
+        pass
+
+
+class FakeNoc(detections.Noc):
+    """A NOC with these alerts and nothing else: no series, no line in the store, no page at the pager."""
+    def __init__(self, alerts):
+        super().__init__("test")
+        self.now = alerts
+
+    def get(self, port, path, **params):
+        if path == "/api/v1/alerts":
+            return {"data": {"alerts": self.now}}
+        if path in ("/api/v1/query", "/loki/api/v1/query_range"):
+            return {"data": {"result": []}}
+        return []  # the pager (the webhook sink) has received nothing
+
+
+def review_on(alerts, monkeypatch, tmp_path):
+    """make fp-review's review, at once: a workload with no steps, on a NOC with these alerts."""
+    monkeypatch.setattr(detections, "Noc", lambda lab, host: FakeNoc(alerts))
+    monkeypatch.setattr(detections, "workload", lambda inv, lab="": [])
+    monkeypatch.setattr(detections, "time", Clock())
+    monkeypatch.setattr(detections, "NOTIFICATIONS", tmp_path / "notifications.json")
+    return detections.review(inv, "test", REVIEW["minutes"], "test")
+
+
+WATCHDOG = {"labels": {"alertname": "Watchdog"}, "state": "firing"}
+
+
+def test_the_review_starts_while_the_watchdog_fires(monkeypatch, tmp_path):
+    """Watchdog always fires, and Alertmanager sends it only to the mailbox, never to the pager (decision 0022), so it
+    is no reason for the review to wait or to refuse to start."""
+    assert review_on([WATCHDOG], monkeypatch, tmp_path)["pages"] == []
+
+
+def test_the_review_does_not_start_while_another_alert_is_pending(monkeypatch, tmp_path):
+    """Any other alert, pending or firing, could page during the review and be counted as false: the review waits for
+    it, then refuses to start and names it."""
+    pending = {"labels": {"alertname": "BGPSessionDown", "node": "r2"}, "state": "pending"}
+    with pytest.raises(SystemExit, match="BGPSessionDown"):
+        review_on([WATCHDOG, pending], monkeypatch, tmp_path)
+
+
+def test_the_review_measures_every_source_the_store_keeps(monkeypatch, tmp_path):
+    """The review is NOT-5's measured day for every source with a budget, so each router's command records are in its
+    ingest too, though they have no heartbeat and so are not among the log sources SourceSilent watches."""
+    mon = monitoring.expected(inv)
+    assert len(mon["ingest"]) > len(mon["sources"])
+    got = review_on([WATCHDOG], monkeypatch, tmp_path)["ingest"]
+    assert sorted(got) == sorted(f"{s['node']}/{s['source']}" for s in mon["ingest"])

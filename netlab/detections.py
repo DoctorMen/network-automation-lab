@@ -364,14 +364,17 @@ def run_steps(steps: list[tuple], start: float, end: float) -> dict:
 
 def review(inv: Inventory, lab: str, minutes: int, environment: str) -> dict:
     """Run the workload for `minutes` and count what the pager got: one entry per detection, with the
-    fingerprint of the rules it ran on, plus each log source's ingest and the lines cut at the source over
-    the workload's window. Pages are counted until settle() seconds after the workload ends."""
+    fingerprint of the rules it ran on, plus the ingest of every source the store keeps (each router's command
+    records too) and the lines cut at the source over the workload's window. Pages are counted until settle()
+    seconds after the workload ends."""
     noc, mon = Noc(lab, monitoring.host(inv)), monitoring.expected(inv)
+    # Start on a quiet NOC, or a page from before would count. Watchdog is no reason to wait: the alert path's
+    # heartbeat always fires, and Alertmanager sends it only to the mailbox, never to the pager (decision 0022).
     deadline = time.time() + 300
-    while noc.alerts(None) and time.time() < deadline:
-        time.sleep(5)  # start on a quiet NOC, or a page from before would count
-    if noc.alerts(None):
-        raise SystemExit(f"the NOC is not quiet, so a review would count this: {[a['labels'] for a in noc.alerts(None)]}")
+    while noc.firing(None) and time.time() < deadline:
+        time.sleep(5)
+    if noc.firing(None):
+        raise SystemExit(f"the NOC is not quiet, so a review would count this: {[a['labels'] for a in noc.firing(None)]}")
     # What the review runs on: the commit as it starts, since the workload runs the worktree's own make targets.
     commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
     dirty = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
@@ -407,7 +410,7 @@ def review(inv: Inventory, lab: str, minutes: int, environment: str) -> dict:
                    "at": datetime.fromtimestamp(p["received"], timezone.utc).strftime("%H:%M:%SZ")} for p in pages],
         "ingest": {f"{s['node']}/{s['source']}": {"bytes": round(sent.get((s["node"], s["source"]), 0)),
                                                   "per_day": round(sent.get((s["node"], s["source"]), 0) * 86400 / window),
-                                                  "budget": s["budget"]} for s in mon["sources"]},
+                                                  "budget": s["budget"]} for s in mon["ingest"]},
         "cut": cut,
     }
 
