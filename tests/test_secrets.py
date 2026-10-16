@@ -282,15 +282,22 @@ def exposed(task):
 
 def secret_leaks(folder):
     """(leaks, tasks with a secret on stdin) for the playbooks in folder: each play, block or task that
-    puts a secret-store lookup, or a variable built from one, where /proc shows it."""
+    puts a secret-store lookup, or a variable built from one, where /proc shows it. A variable counts when
+    group_vars/, a play's vars_files, or a play's, block's or task's vars or set_fact defines it; a task's
+    registered result and host_vars/ are not followed."""
     files = sorted(folder.glob("*.yml")) + sorted((folder / "tasks").glob("*.yml"))
     plays = {path: yaml.safe_load(path.read_text()) for path in files}
     defined = {}
     for path in sorted((folder / "group_vars").glob("*.yml")):
         defined.update(yaml.safe_load(path.read_text()) or {})
-    for items in plays.values():
-        for level in levels(items):  # plays', blocks' and tasks' vars
+    for path, items in plays.items():
+        for level in levels(items):  # plays', blocks' and tasks' vars, set_fact's facts, plays' vars_files
             defined.update(level.get("vars") or {})
+            for module, params in level.items():
+                if module.split(".")[-1] == "set_fact" and isinstance(params, dict):
+                    defined.update(params)
+            for name in level.get("vars_files") or []:
+                defined.update(yaml.safe_load((path.parent / name).read_text()) or {})
     # secrets_dir is the store; anything whose value reads from it, directly or through another such
     # variable (password_tags), carries a secret too.
     names = {"secrets_dir"}
@@ -310,7 +317,7 @@ def secret_leaks(folder):
 
 
 def test_secrets_reach_a_router_only_on_stdin():
-    """No play, block or task puts a secret-store lookup, or a variable built from one, in cmd, argv, free-form arguments, args or environment, where /proc shows it; stdin is the one way in."""
+    """No play, block or task puts a secret-store lookup, or a variable built from one (in group_vars, vars_files, vars or set_fact), in cmd, argv, free-form arguments, args or environment, where /proc shows it; stdin is the one way in."""
     leaks, on_stdin = secret_leaks(ANSIBLE)
     assert not leaks, f"a secret reaches a command line or an environment: {leaks}"
     assert on_stdin, "no task reads the secret store any more, so this check sees nothing"
@@ -333,6 +340,25 @@ def test_a_secret_in_a_play_or_block_environment_is_found(tmp_path):
         "ansible/deploy.yml: Echo it (_raw_params)",
         f"ansible/deploy.yml: {plays[0]['name']} (environment)",
     ]
+
+
+def test_a_secret_put_in_a_fact_or_a_vars_file_is_found(tmp_path):
+    """A lookup kept in a set_fact, or in a file a play loads with vars_files, and then used on a command line: both are named."""
+    copy = tmp_path / "ansible"
+    shutil.copytree(ANSIBLE, copy)
+    path = copy / "deploy.yml"
+    plays = yaml.safe_load(path.read_text())
+    lookup = "{{ lookup('file', secrets_dir ~ '/bgp-r2-isp') }}"
+    (copy / "vars").mkdir()
+    (copy / "vars" / "secret.yml").write_text(yaml.safe_dump({"pw_from_file": lookup}))
+    plays[0]["vars_files"] = ["vars/secret.yml"]
+    block = next(t for t in plays[0]["tasks"] if "block" in t)
+    block["block"] += [{"name": "Read it", "ansible.builtin.set_fact": {"pw_fact": lookup}},
+                       {"name": "Echo the fact", "ansible.builtin.command": "echo {{ pw_fact }}"},
+                       {"name": "Echo the file's", "ansible.builtin.shell": {"cmd": "echo {{ pw_from_file }}"}}]
+    path.write_text(yaml.safe_dump(plays, sort_keys=False))
+    assert sorted(secret_leaks(copy)[0]) == ["ansible/deploy.yml: Echo the fact (_raw_params)",
+                                             "ansible/deploy.yml: Echo the file's (cmd)"]
 
 
 def test_every_running_config_read_goes_through_the_redacting_vtysh():

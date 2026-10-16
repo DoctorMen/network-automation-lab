@@ -274,8 +274,10 @@ controls:
       Sampling can miss a process shorter than its interval: /proc on the runner, the routers' command
       lines included, about 40 times a second, but the routers' environments and Ansible temp files
       only about twice a second. With the password moved onto vtysh's command line, the live test went
-      red in 9 runs of 10 (5 of 6 in review, then 4 of 4). The offline test catches that change every time, but only in ansible/: it reads the
-      playbooks, not what a tool they call does with its input. In CI, other users' /proc environ is
+      red in 9 runs of 10 (5 of 6 in review, then 4 of 4). The offline test catches that change every time, but only in ansible/, and
+      only for a lookup or a variable built from one in group_vars, vars_files, vars or set_fact: a
+      registered result and host_vars are not followed. It reads the playbooks, not what a tool they
+      call does with its input. In CI, other users' /proc environ is
       closed to the test; each router's own processes are read with docker exec instead. The secret
       store itself is a plaintext 0600 file (RISK-8). It checks this password only; a new kind of
       secret needs its own check.
