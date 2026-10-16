@@ -261,7 +261,7 @@ controls:
       the carrier itself can still announce anything (RISK-1).
 
   - id: no-plaintext-secret
-    claim: "While `make apply` puts back a hand change and `make drift` runs, no command line, environment, frr-reload log (the routing daemons write no log here, V-005), container log, playbook output, or file in `build/` or `backups/` holds that password in clear, and the session never drops"
+    claim: "While `make apply` puts back a hand change and `make drift` runs, no command line, environment, frr-reload log (the routing daemons keep no log file, and their lines reach the container log only while they start, V-005), container log, playbook output, or file in `build/` or `backups/` holds that password in clear, and the session never drops"
     test:
       - tests/live/test_secrets.py::test_no_secret_in_env_argv_logs_or_files
       # Deterministic: it reads the playbooks, so it can't miss a short-lived process.
@@ -406,7 +406,7 @@ controls:
       tries, so a hop that never answers is skipped and its segment merged with the next.
 
   - id: finding-bundle
-    claim: "`make finding` sends the carrier a bundle they can re-run: every command's raw output, an ICMP capture on our hand-off port, FRR support bundles, versions, clocks and RFC citations, and no BGP password. Its `reproduce.sh`, run from a copy with only sh and docker, names the same segment and owner, and says it did not reproduce once the loss is gone. A CI job re-runs it on a runner with no checkout; it has passed once, in a pull request's run (38834167787), and not yet on main"
+    claim: "`make finding` sends the carrier a bundle they can re-run: every command's raw output, an ICMP capture on our hand-off port, FRR support bundles, versions, clocks and RFC citations, and no BGP password. Its `reproduce.sh`, run from a copy with only sh and docker, names the same segment and owner, and says it did not reproduce once the loss is gone. A CI job re-runs it on a runner with no checkout; it first passed on GitHub in run 38831606745 (a pull-request run)"
     test: tests/live/test_finding.py::test_carrier_finding_reproduces_from_the_bundle_alone
     period: P31D
     threat: >-
@@ -415,8 +415,8 @@ controls:
     fails_when: >-
       The re-run happens in a lab copy where the fault is recreated by lab/condition.sh; on the real
       network the carrier would run the same commands against the live fault. A clean CI runner
-      stands in for someone outside the team; no outsider has re-run one yet. The CI job has run once,
-      in pull request run 38834167787, where it passed; it has not yet run on main or nightly. The capture has
+      stands in for someone outside the team; no outsider has re-run one yet. The CI job first passed
+      on GitHub in pull-request run 38831606745. The capture has
       userspace timestamps (about 1 ms) and is taken at our end only, so no one-way claim is made.
 
   - id: finding-verify
@@ -680,7 +680,7 @@ controls:
       It checks that the section says something, not that it is true or complete.
 
   - id: wan-filter
-    claim: "From the internet side only the published web port (h2:80) answers. A scan of every campus address on 27 TCP management ports (SSH, telnet, HTTP(S), BGP, NETCONF, every FRR vty), from the ISP's peer address and from another internet address, finds nothing else open. r2's filter also admits BGP from the peer's address, but the session's MD5 key makes r2 ignore the scanner's keyless SYN, so the test allows that port without requiring it. The same scan from inside finds h2's port 22 and r2's BGP answering, so the closure is r2's edge filter"
+    claim: "From the internet side nothing answers but the published web port (h2:80), and from the ISP's peer address r2's BGP port may answer too. A scan of every campus address on 27 TCP management ports (SSH, telnet, HTTP(S), BGP, NETCONF, every FRR vty), from the ISP's peer address and from another internet address, finds h2:80 open and nothing else, except that from the peer's address, which r2's filter admits to BGP, the test also allows r2's BGP port without requiring it. The same scan from inside finds h2's port 22 and r2's BGP answering, so the closure is r2's edge filter"
     test: tests/live/test_edge.py::test_wan_scan_finds_only_published_ports
     period: P31D
     threat: >-
@@ -689,7 +689,9 @@ controls:
       from 203.0.113.1.
     fails_when: >-
       TCP only: UDP (SNMP, BFD) is not scanned, and a filtered UDP port can't be told from an open one
-      by a connect scan. 27 ports, not all 65535. It scans from the lab's one ISP. IPv6 is not filtered
+      by a connect scan. 27 ports, not all 65535. From the peer's address r2's BGP port passes whether
+      or not it answers, so the test would still pass if r2 answered a SYN without the session's MD5
+      key. It scans from the lab's one ISP. IPv6 is not filtered
       or scanned: this sandbox has none, but under real containerlab the links may get link-local
       addresses and bgpd may then listen on [::]:179 for the directly attached ISP (decision 0012).
       The published port is open to the whole internet by design, so a hole in h2's web server is not
@@ -830,9 +832,9 @@ controls:
     fails_when: >-
       It looks for a restic repository (its config file), not for which disk holds it: a repository
       created by hand on the local disk passes. CI fails until the repository is created once, by
-      hand (drills.yml, input init_backup_repo). The CI side has not run on GitHub yet: that a cache
-      miss fails the restore step (fail-on-cache-miss, in ci.yml and drills.yml) is from the
-      actions/cache documentation, not from a run.
+      hand (drills.yml, input init_backup_repo). That a cache miss fails the restore step
+      (fail-on-cache-miss, in ci.yml and drills.yml) comes from the actions/cache documentation, since
+      pull-request runs skip that step.
 
   - id: backup-no-skip
     claim: "A capture missing a router is not backed up without it: the job names the router and sends nothing"
@@ -857,8 +859,8 @@ controls:
       router forms adjacencies. Its image, daemons file and sysctls come from build/, not from the
       backup. A backup missing a line still boots cleanly; that is caught when it is captured
       (capture-complete) and by the sha256 check at the destination (backup-at-destination). The
-      weekly job in drills.yml has not run on GitHub yet: every drill so far ran here, against a
-      scratch repository, not the CI destination in the Actions cache.
+      drills behind this entry ran in the development sandbox against a scratch repository;
+      drills.yml drills against the CI destination in the Actions cache.
 
   - id: single-item-restore
     claim: "One item comes back on its own: r2's `router bgp` stanza, from one `restic dump` of one file, pasted into a throwaway router that booted empty, in 2.3 to 2.4 s here against a stated limit of 5 minutes. No full restore, and the live lab is not touched"
@@ -891,9 +893,9 @@ controls:
       colder start than a real power blip. Every node restarts at once; one node coming back while its
       neighbours stay up is not drilled (`docker restart` loses the node's links, decision 0015,
       RISK-27). Nothing runs `make apply` by itself after a real power cut, so until someone does, the
-      BGP session stays down against a real carrier, and in the lab it came back with no MD5 (RISK-28). The
-      weekly job has not run on GitHub yet, where the cut is `containerlab deploy --reconfigure`;
-      in the development sandbox it was the stand-in script's whole-lab redeploy (LAB_PARITY.md).
+      BGP session stays down against a real carrier, and in the lab it came back with no MD5 (RISK-28). In
+      drills.yml on GitHub the cut is `containerlab deploy --reconfigure`; in the development sandbox it
+      was the stand-in script's whole-lab redeploy (LAB_PARITY.md).
 
   - id: runbooks
     claim: "Runbooks for link failure, BGP down, config drift, restoring a router from backup, a power event, carrier loss and a DDoS blackhole at the ISP each name an owner, a coordinator, who updates stakeholders, a review date and their hosts. The check fails on a missing field, a review older than 180 days, or a host that isn't in the inventory or in the runbook's own host list"
@@ -925,6 +927,6 @@ controls:
     fails_when: >-
       It runs in the scheduled workflow it checks: if GitHub stops scheduling, the check stops too and
       says nothing (RISK-25); the next push to main runs it again. Artifacts are kept 90 days, the longest period. It doesn't run on pull requests.
-      The CI job has not run on GitHub yet, and fetching earlier runs' artifacts with gh is proven
-      only with a fake gh (the network the sandbox runs on blocks GitHub artifact downloads).
+      Pull-request runs skip the job, so its first run on GitHub is on main. Fetching earlier runs'
+      artifacts with gh is proven only with a fake gh, on a network that blocks GitHub artifact downloads.
       It trusts that each named test proves its claim (control-register).

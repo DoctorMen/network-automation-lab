@@ -62,4 +62,4 @@ reproduce.sh is plain sh. CI's `reproduce` job downloads the bundle on a runner 
 
 ## Consequences
 
-The CI job runs in its own job after the lab job. It was estimated at 2 to 3 minutes; its one run on GitHub so far, in pull request run 38834167787, passed in 59 s. The bundle's lab copy has no BGP password, so the re-run's r2-isp session runs without TCP MD5; ICMP probes don't depend on it. The clean runner is a stand-in: PRV-3's Pass needs a person outside the team to re-run a bundle cold, and that is recorded only when it happens.
+The CI job runs in its own job after the lab job. It was estimated at 2 to 3 minutes; its first three runs on GitHub, pull-request runs 38831606745, 38834167787 and 38837283633, passed in 110, 59 and 112 s. The bundle's lab copy has no BGP password, so the re-run's r2-isp session runs without TCP MD5; ICMP probes don't depend on it. The clean runner is a stand-in: PRV-3's Pass needs a person outside the team to re-run a bundle cold, and that is recorded only when it happens.
