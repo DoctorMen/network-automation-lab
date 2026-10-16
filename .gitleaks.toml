@@ -34,9 +34,10 @@ description = "This file, containerlab's own lab CA key, and the redacted form o
 # containerlab v0.68.0 writes a new root CA and its key to clab-<lab>/.tls/ca/ on every deploy
 # (clab/clab.go: Deploy runs certificateAuthoritySetup), and CI scans build/ while the lab is up.
 # No node is issued a certificate from it, `make destroy` (--cleanup) deletes it, clab-*/ and
-# build/ are git-ignored, and no artifact uploads build/. Only that one file is exempt: any other
-# key in build/, a node's key under .tls/ included, still fails (tests/test_secrets.py).
-paths = ['''(^|/)\.gitleaks\.toml$''', '''(^|/)clab-[^/]+/\.tls/ca/ca\.key$''']
+# build/ are git-ignored, and no artifact uploads build/. Only this lab's file is exempt, by its
+# exact path: another lab's CA key, a node's key under .tls/, or the same file anywhere else
+# still fails (tests/test_secrets.py).
+paths = ['''(^|/)\.gitleaks\.toml$''', '''(^|/)build/clab-netauto/\.tls/ca/ca\.key$''']
 # Backups replace each password with its sha256 tag. Without this, the default generic-api-key
 # rule flags the tag (it reads `password sha256:` as an assignment).
 regexTarget = "line"
