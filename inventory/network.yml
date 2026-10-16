@@ -170,6 +170,8 @@ monitoring:
   # Seconds Alertmanager holds a new alert before its first page, so a cause found in the same seconds
   # (a router or link down) is there to hold it back (decision 0021).
   group_wait: 5
+  # Seconds between Alertmanager's looks at each group of alerts; it sends only on one of them.
+  group_interval: 5
   # Pinned images; each has a selection record in docs/selections/.
   images:
     prometheus: prom/prometheus:v2.53.0
@@ -209,8 +211,8 @@ monitoring:
     - { name: restore-drill, every: 604800, grace: 7200 }
     - { name: power-drill, every: 604800, grace: 7200 }
   # The alert path's own heartbeat (NOT-4): Watchdog always fires and goes out by mail every `every`
-  # seconds to the NOC's mailbox (Mailpit). AlertPathSilent pages over the webhook, the second channel,
-  # once no mail has arrived for silent_after seconds.
+  # seconds (a whole number of group_interval) to the NOC's mailbox (Mailpit). AlertPathSilent pages over
+  # the webhook, the second channel, once no mail has arrived for silent_after seconds.
   alert_path: { every: 10, silent_after: 30 }
 
 logging:

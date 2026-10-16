@@ -39,6 +39,10 @@ WAIT = {"TargetDown": 15, "BGPSessionDown": 10, "OSPFNeighborDown": 10, "BFDPeer
         "NodeDown": 10, "LinkDown": 10, "CauseSeen": 0, "JobMissed": 0, "AlertPathSilent": 0, "Watchdog": 0}
 # Seconds InterfaceFlapped looks back over the carrier-change counter: six scrapes.
 FLAP_WINDOW = 30
+# Seconds Prometheus waits before it sends a firing alert to Alertmanager again (its --rules.alert.resend-delay,
+# left at the default). An alert sent before Alertmanager answers, at the NOC's start, is dropped and arrives
+# this much later.
+RESEND_DELAY = 60
 # Seconds between evaluations of the cause markers (their own rule group), so a cause reaches Alertmanager
 # well inside group_wait of what depends on it.
 CAUSE_EVERY = 1
@@ -441,10 +445,12 @@ def alert_rules(inv: Inventory) -> list[dict]:
 
 # --- Dead-man's switch: jobs and the alert path itself (OROS NOT-4, decision 0022) -------------------------
 
-def since_start(expr: str) -> str:
-    """expr, or the NOC's start time when nothing has arrived since it started (the pushgateway starts with
-    it): `time() - since_start(last)` then grows from the start, so something that never ran pages too."""
-    return f"({expr} or on() max(process_start_time_seconds{selector(job='pushgateway')}))"
+def since_start(expr: str, after: int = 0) -> str:
+    """expr, or the NOC's start time (plus `after` seconds) when nothing has arrived since it started (the
+    pushgateway starts with it): `time() - since_start(last)` then grows from the start, so something that
+    never ran pages too."""
+    start = f"max(process_start_time_seconds{selector(job='pushgateway')})"
+    return f"({expr} or on() {f'({start} + {after})' if after else start})"
 
 
 def deadman_rules(inv: Inventory, logs: str) -> list[dict]:
@@ -464,10 +470,12 @@ def deadman_rules(inv: Inventory, logs: str) -> list[dict]:
     path, mail = mon["alert_path"], f"log_last_seen_seconds{selector(node=host(inv), source='mail')}"
     out.append(rule(inv, "Watchdog", "vector(1)", {}, f"always firing: the alert path's heartbeat, mailed every {path['every']} s",
                     f"time() - {mail}", "(Watchdog itself always fires: vector(1))", f"under {path['every']} s since the last mail"))
-    out.append(rule(inv, "AlertPathSilent", f"time() - {since_start(f'max({mail})')} > {path['silent_after']}",
+    # At the NOC's start Prometheus can send Watchdog before Alertmanager answers. That send is dropped, and
+    # it sends again only RESEND_DELAY later, so the first mail is not due before then.
+    out.append(rule(inv, "AlertPathSilent", f"time() - {since_start(f'max({mail})', RESEND_DELAY)} > {path['silent_after']}",
                     {"channel": "mail", "deps": f"/{logs}/"},
                     f"no alert mail has reached the NOC's mailbox for over {path['silent_after']} s: the mail path is broken",
-                    f"time() - {mail}", f"> {path['silent_after']}, or no mail since the NOC started",
+                    f"time() - {mail}", f"> {path['silent_after']}, or no mail in the {RESEND_DELAY + path['silent_after']} s since the NOC started",
                     f"under {path['every']} s"))
     return out
 

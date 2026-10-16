@@ -610,14 +610,15 @@ controls:
   - id: alert-deadman
     claim: "Each unattended job (drift, backup, restore drill, power drill) reports its success as its last step, and a job whose last success is older than its window pages. The alert path proves itself: a heartbeat alert is mailed every 10 s, and when mail stops arriving AlertPathSilent pages on the webhook, the second channel"
     test:
-      - tests/live/observe/test_deadman.py::test_a_job_that_never_starts_pages
+      - tests/live/observe/test_deadman.py::test_a_job_whose_last_success_is_a_window_old_pages
       - tests/live/observe/test_deadman.py::test_a_broken_mail_path_pages_on_the_second_channel
       - tests/test_jobs.py::test_every_job_reports_success_as_its_last_step
       - tests/test_jobs.py::test_every_window_matches_the_jobs_schedule
       - tests/test_jobs.py::test_a_job_that_never_reported_pages_from_the_nocs_start
       - tests/test_jobs.py::test_the_heartbeat_goes_by_mail_and_its_silence_pages_on_the_webhook
       - tests/test_jobs.py::test_success_without_a_noc_warns_and_still_pings_the_heartbeat
-      - tests/test_jobs.py::test_a_failed_heartbeat_fails_the_step
+      - tests/test_jobs.py::test_a_failed_heartbeat_warns_and_the_job_still_passes
+      - tests/test_jobs.py::test_the_alert_path_is_not_due_before_the_first_resend
       - tests/test_jobs.py::test_only_a_listed_job_can_report
       - tests/test_jobs.py::test_only_a_scheduled_run_that_passed_pings_the_outside_check
     period: P31D

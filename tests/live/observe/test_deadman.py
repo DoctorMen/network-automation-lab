@@ -62,8 +62,9 @@ def deadman(node, mon, noc):
     return out
 
 
-def test_a_job_that_never_starts_pages(deadman, mon):
-    """make drift's own last line reports its success; with that success a window old, JobMissed pages."""
+def test_a_job_whose_last_success_is_a_window_old_pages(deadman, mon):
+    """make drift's own last line reports its success; with that success a window old, JobMissed pages.
+    No success at all since the NOC started counts from its start, checked offline only."""
     d = deadman
     assert d["drift"][0] == 0, f"make drift failed: {d['drift'][1]}"
     assert d["reported"], "make drift's success never reached the NOC"
@@ -77,7 +78,10 @@ def test_a_broken_mail_path_pages_on_the_second_channel(deadman, mon):
     """With SMTP refused, no mail arrives while the mailbox still answers, and AlertPathSilent reaches the
     webhook pager within its bound; once mail flows again it resolves."""
     d, path = deadman, mon["alert_path"]
-    assert any("Watchdog" in m["Subject"] for m in d["mail_before"]), "no Watchdog mail before the block"
+    beats = sorted(created(m) for m in d["mail_before"] if "Watchdog" in m["Subject"])[-5:]
+    assert len(beats) == 5, f"only {len(beats)} Watchdog mails before the block"
+    gaps = [round(b - a, 1) for a, b in zip(beats, beats[1:])]
+    assert all(abs(g - path["every"]) <= 2 for g in gaps), f"Watchdog mailed every {gaps} s, not every {path['every']} s"
     assert d["mail_during"] == [], f"mail arrived through a refused SMTP port: {[m['Subject'] for m in d['mail_during']]}"
     assert d["silent"], "a broken mail path did not page on the webhook"
     assert d["silent"]["received"] - d["blocked"] <= path["silent_after"] + mon["alert_within"]["AlertPathSilent"]

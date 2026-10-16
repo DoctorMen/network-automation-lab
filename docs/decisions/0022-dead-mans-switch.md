@@ -20,7 +20,7 @@ stake: The nightly backup stops for a month and nobody hears of it until a resto
 failure_modes:
   - mode: a job that never starts raises nothing
     mitigation: Each job pushes its last success as make's last line; JobMissed pages when it is older than every plus grace, or when none has arrived since the NOC started
-    test: tests/live/observe/test_deadman.py::test_a_job_that_never_starts_pages
+    test: tests/live/observe/test_deadman.py::test_a_job_whose_last_success_is_a_window_old_pages
   - mode: a job reports success after a step failed
     mitigation: make runs the success line only when every line before it succeeded
     test: tests/test_jobs.py::test_every_job_reports_success_as_its_last_step

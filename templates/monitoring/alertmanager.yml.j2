@@ -9,18 +9,22 @@ route:
   # Held this long before its first page, so a cause seen in the same seconds is there to hold it back
   # (decision 0021). The cause markers are evaluated every second; what they cover fires 10 s or more after.
   group_wait: {{ mon.group_wait }}s
-  group_interval: 5s
+  # Alertmanager looks at each group again this often, and sends only on one of these flushes.
+  group_interval: {{ mon.group_interval }}s
   repeat_interval: 1h
   routes:
     # A cause marker only holds back what depends on it; the cause's own page is NodeDown, LinkDown or TargetDown.
     - matchers: ['alertname="CauseSeen"']
       receiver: nowhere
     # The alert path's heartbeat: mailed again every {{ mon.alert_path.every }} s, and AlertPathSilent pages over the webhook when
-    # the mail stops arriving (NOT-4).
+    # the mail stops arriving (NOT-4). A firing group is mailed again on the first flush after repeat_interval has
+    # passed since its last mail, so repeat_interval is one second past the flush before: the mail goes out on the
+    # flush {{ mon.alert_path.every }} s after the last one even if that one took a few seconds to send. A repeat_interval of {{ mon.alert_path.every }} s would
+    # wait for the flush after, {{ mon.alert_path.every + mon.group_interval }} s.
     - matchers: ['alertname="Watchdog"']
       receiver: mail
       group_wait: 0s
-      repeat_interval: {{ mon.alert_path.every }}s
+      repeat_interval: {{ mon.alert_path.every - mon.group_interval + 1 }}s
 # One page per cause (OROS DEC-5, decision 0021). Each alert's deps label lists the causes it can't be seen
 # without, from the inventory's graph (netlab/monitoring.py Dependencies). While a cause fires (its page, or
 # its marker, which keeps firing for a while after it recovers), every alert that lists it is held back.

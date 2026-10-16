@@ -59,7 +59,11 @@ def test_the_heartbeat_goes_by_mail_and_its_silence_pages_on_the_webhook(tmp_pat
     receivers = {r["name"]: r for r in am["receivers"]}
     watchdog = next(r for r in am["route"]["routes"] if r["matchers"] == ['alertname="Watchdog"'])
     assert watchdog["receiver"] == "mail" and "webhook_configs" not in receivers["mail"]
-    assert watchdog["repeat_interval"] == f"{inv.monitoring['alert_path']['every']}s"
+    # Alertmanager mails again on the first flush (every group_interval) after repeat_interval has passed, so
+    # the mail goes every `every` s only with repeat_interval between the flush before it and `every`.
+    every, flush = inv.monitoring["alert_path"]["every"], int(am["route"]["group_interval"].removesuffix("s"))
+    repeat = int(watchdog["repeat_interval"].removesuffix("s"))
+    assert every % flush == 0 and every - flush < repeat < every, (every, flush, repeat)
     # AlertPathSilent takes the default route: the webhook sink.
     assert not any("AlertPathSilent" in str(r["matchers"]) for r in am["route"]["routes"])
     assert am["route"]["receiver"] == "sink" and receivers["sink"]["webhook_configs"]
@@ -98,11 +102,25 @@ def test_success_without_a_noc_warns_and_still_pings_the_heartbeat(heartbeat, ca
     assert heartbeat == ["/key/drift"]
 
 
-def test_a_failed_heartbeat_fails_the_step(monkeypatch, capsys):
+def test_a_failed_heartbeat_warns_and_the_job_still_passes(monkeypatch, capsys):
+    """The job's work is done (make backup has verified its snapshot): an outside check that can't be reached
+    pages by itself when the ping is late, and failing here would only make CI skip saving that backup."""
     monkeypatch.setenv("HEARTBEAT_URL", "http://127.0.0.1:9/check-key-123")  # discard port: nothing listens
-    assert observe.success(inv, "no-such-lab", "drift") == 1
+    assert observe.success(inv, "no-such-lab", "drift") == 0
     out = capsys.readouterr()
+    assert "heartbeat ping failed" in out.err
     assert "check-key-123" not in out.err + out.out, "the URL holds the check's key; never print it"
+
+
+def test_the_alert_path_is_not_due_before_the_first_resend():
+    """At the NOC's start Prometheus may send Watchdog before Alertmanager answers, and sends it again a
+    resend delay later: AlertPathSilent counts from then, so a deploy or a power cut doesn't page."""
+    path = next(r for r in monitoring.alert_rules(inv) if r["alert"] == "AlertPathSilent")
+    assert path["expr"] == ('time() - (max(log_last_seen_seconds{node="noc",source="mail"}) or on() '
+                            f'(max(process_start_time_seconds{{job="pushgateway"}}) + {monitoring.RESEND_DELAY})) '
+                            f'> {inv.monitoring["alert_path"]["silent_after"]}')
+    prometheus = monitoring.sidecars(inv)[f"{monitoring.host(inv)}-prometheus"]["cmd"]
+    assert "--rules.alert.resend-delay" not in prometheus and monitoring.RESEND_DELAY >= 60, "Prometheus' default is 1m"
 
 
 def test_only_a_listed_job_can_report():
