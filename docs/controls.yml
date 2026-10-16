@@ -10,9 +10,10 @@
 #   fails_when  how it stops working, or what it never covered
 #
 # Schedule: .github/workflows/ci.yml runs every test nightly (cron 23 4 * * *), on every push to
-# main and on every pull request. It keeps results/offline.xml, results/review.xml and
-# results/live.xml (JUnit, with a timestamp) as run artifacts for 90 days; .github/workflows/drills.yml
-# runs the restore and power drills weekly and keeps theirs the same way. The control-status job in
+# main and on every pull request. It keeps results/offline.xml and results/review.xml (JUnit, with a
+# timestamp) as run artifacts for 90 days, and results/live.xml too when the lab job's secret scan
+# passed; when that scan failed, the control-status job fails, naming ACC-4.
+# .github/workflows/drills.yml runs the restore and power drills weekly and keeps theirs the same way. The control-status job in
 # ci.yml reads them all. The four tests that compare a record's date with today (in verdict-log,
 # outside-levers, risk-register and runbooks) run in ci.yml's review job, which the lab job doesn't
 # wait for, so a review falling due turns that job red without stopping the live tests or the backup.

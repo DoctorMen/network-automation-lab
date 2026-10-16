@@ -30,7 +30,8 @@ are scoped to the PR, so main could never restore them.
 
 Until these four runs have happened in this order on `main`, the lab job's backup step and the
 control-status job are red. Wait for each run to finish before starting the next: each one restores
-the cache the one before saved. Each can be started from the Actions tab (Run workflow, branch
+the cache the one before saved. Before step 1, also wait for the merge's own push run to finish: two
+runs that overlap can restore the same repository, and then one of their snapshots is lost. Each can be started from the Actions tab (Run workflow, branch
 `main`), with `gh`, or with the REST API (`POST /repos/OWNER/NAME/actions/workflows/<file>/dispatches`).
 
 1. **Create the repository.** Drills with `init_backup_repo` ticked:
@@ -56,8 +57,8 @@ the cache the one before saved. Each can be started from the Actions tab (Run wo
 
 After a lost cache, do the same four steps. If a broken `restic-` cache is still listed, delete it
 first (Actions > Caches, or `gh cache delete <key>`), or step 1 refuses. The snapshots in the lost
-repository are gone; each CI run's `results-and-backups` artifact still holds that night's
-`backups/` for 90 days.
+repository are gone; each CI run whose secret scan passed still holds that night's `backups/` in its
+`results-and-backups` artifact for 90 days.
 
 ## What `make backup` checks
 

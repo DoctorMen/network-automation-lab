@@ -1,5 +1,6 @@
 """The CI workflows' wiring: which job waits for which, so a review that falls due never stops the lab job;
-that a backup saved to the cache is checked there; and that nothing the secret scan flags is published."""
+that a backup saved to the cache is checked there, and a re-run restores the newest one; that only what the
+secret scan passed is published; and that control-status fails when it withheld this run's live results."""
 import os
 import re
 import subprocess
@@ -71,6 +72,35 @@ def test_every_cache_save_is_looked_up_afterwards():
     assert saves == 2
 
 
+def in_attempt(key: str, attempt: int) -> str:
+    """A cache key as one attempt of run 200 writes or looks it up."""
+    key = key.replace("${{ github.run_id }}", "200").replace("${{ github.run_attempt }}", str(attempt))
+    assert "${{" not in key, f"{key}: an expression this test doesn't know"
+    return key
+
+
+def test_a_rerun_restores_the_newest_repository_not_its_own_earlier_save():
+    """actions/cache tries a restore's key as a prefix before its restore-keys, so a key that is a prefix
+    of what an earlier attempt of the same run saved brings that older repository back instead of the
+    newest, and every snapshot saved since drops out. No restore key may be one."""
+    restores = 0
+    for workflow in ("ci.yml", "drills.yml"):
+        steps = steps_of(workflow)
+        saved = [s["with"]["key"] for s in steps if s.get("uses", "").startswith("actions/cache/save@")]
+        for step in steps:
+            if not step.get("uses", "").startswith("actions/cache/restore@"):
+                continue
+            restores += 1
+            for attempt in range(2, 12):
+                earlier = {in_attempt(k, a) for k in saved for a in range(1, attempt)}
+                key = in_attempt(step["with"]["key"], attempt)
+                hits = sorted(k for k in earlier if k.startswith(key))
+                assert not hits, f"{workflow}: {step['name']}: attempt {attempt}'s key {key} finds an earlier attempt's {hits}"
+    assert restores == 5
+    backup = next(s for s in JOBS["lab"]["steps"] if s.get("id") == "backup-repo")
+    assert backup["with"]["restore-keys"] == "restic-", "the backup must restore the newest repository, whichever run saved it"
+
+
 def scan_step(tmp_path, *fake_tools):
     """Run the lab job's secret scan step, under the shell flags GitHub uses, in a folder holding this
     run's password in its own file. `make` (so gitleaks) is a no-op here; fake_tools are (name, script)."""
@@ -103,14 +133,30 @@ def test_password_grep_passes_only_when_grep_found_nothing(tmp_path):
 
 
 def test_uploads_wait_for_the_secret_scan_and_the_measurement():
-    """Results, backups and the finding bundle are published only when the secret scan didn't fail, and sizing data only after this run measured."""
+    """Results, backups and the finding bundle are published only when the secret scan passed (not when it failed, was skipped or was cancelled), and sizing data only after this run measured."""
     steps = JOBS["lab"]["steps"]
     scan = next(i for i, s in enumerate(steps) if s.get("id") == "secret-scan")
     uploads = [(i, s) for i, s in enumerate(steps) if s.get("uses", "").startswith("actions/upload-artifact@")]
     scanned = [(i, s) for i, s in uploads if re.search(r"\b(results|backups)/", s["with"]["path"])]
     assert len(scanned) == 2
     for i, s in scanned:
-        assert i > scan and "steps.secret-scan.outcome != 'failure'" in s["if"], f"{s['name']} is published after a failed secret scan"
+        assert i > scan and s["if"] == "${{ always() && steps.secret-scan.outcome == 'success' }}", \
+            f"{s['name']} is published when the secret scan did not pass"
     sizing = next(s for _, s in uploads if "docs/sizing" in s["with"]["path"])
     assert any(s.get("id") == "measure" for s in steps) and "steps.measure.outcome == 'success'" in sizing["if"], \
         "a skipped measurement would upload the committed reading as this run's"
+
+
+def test_control_status_fails_when_this_runs_secret_scan_failed():
+    """A failed scan withholds this run's live results, so control-status would read an earlier run's in
+    their place and could be green although this run's live tests failed. It fails instead, naming ACC-4."""
+    assert JOBS["lab"]["outputs"]["secret_scan"] == "${{ steps.secret-scan.outcome }}"
+    assert "lab" in waits_for("control-status")
+    steps = JOBS["control-status"]["steps"]
+    check = next(i for i, s in enumerate(steps) if "make control-status" in s.get("run", ""))
+    fail = next(i for i, s in enumerate(steps) if "needs.lab.outputs.secret_scan" in s.get("if", ""))
+    assert fail > check, "the scan's failure must not stop the check from printing every control"
+    assert steps[fail]["if"] == "${{ !cancelled() && needs.lab.outputs.secret_scan == 'failure' }}"
+    run = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", steps[fail]["run"]],
+                         capture_output=True, text=True)
+    assert run.returncode != 0 and "ACC-4" in run.stdout and "secret scan failed" in run.stdout, run.stdout
