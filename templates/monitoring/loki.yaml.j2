@@ -28,6 +28,13 @@ schema_config:
       index:
         prefix: index_
         period: 24h
+# The write-ahead log under /loki/wal replays what was not yet flushed after a crash (decision 0025). A replay
+# starts each stream's count of lines again, so the lines taken in after it survive the next crash only once a
+# checkpoint has been written since (V-027). Loki's default is a checkpoint every 5 minutes, written over 4.5 of
+# them; every 30 s narrows that window to about a minute after each restart.
+ingester:
+  wal:
+    checkpoint_duration: 30s
 # History is kept here, not on the boxes: each node keeps {{ logs.on_box.size_kb }} KB plus {{ logs.on_box.rotated }} rotated file.
 limits_config:
   retention_period: {{ logs.retention }}h

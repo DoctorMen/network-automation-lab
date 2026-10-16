@@ -715,6 +715,29 @@
   presented_on: null
   presented_evidence: null
 
+- id: RISK-46
+  kind: accepted-risk
+  title: lines the central store takes in during the minute after it restarts are lost if it crashes again in that minute
+  detectors: [store-checkpoint-window]
+  likelihood: 1
+  impact: 2
+  reasoning: >-
+    Loki 3.1.1 starts each stream's count of lines again after it replays its write-ahead log, and the next
+    replay drops what was counted since as duplicates until a new checkpoint is written (V-027). Loki
+    checkpoints every 30 s here, so its first checkpoint after a start is done about a minute later (57 s
+    in one run here). A second power cut inside that minute loses every line the store took in since the
+    first, the flight-recorder dumps included; the nodes' own copies went with the same cuts. Two cuts a
+    minute apart are a failing supply or a breaker being tried, the case where the evidence matters most.
+    The fix is a Loki release that keeps the counts across a replay, or a store that writes each line
+    through before it answers.
+  compensating_control: tests/live/test_power_event.py::test_evidence_outlives_a_power_cut
+  compensates: it shows lines survive a cut once the first checkpoint after a restart is written, not inside the minute before it
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
 - id: RISK-35
   kind: accepted-risk
   title: h1, a user's machine, sends no logs

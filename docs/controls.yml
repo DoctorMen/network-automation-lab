@@ -620,7 +620,7 @@ controls:
       The recorder dumps state, not packets. It sends over clear UDP syslog (RISK-33), so a dump sent while the node's path to the NOC is still down is lost; it waits 3 s, which covers a short flap only. At most one dump every 30 s per node. A dump fills about a third of a box's own small log.
 
   - id: loss-evidence-after-reset
-    claim: "After a power cut of the whole lab, the NOC included, the evidence is still there: r2's flight-recorder dump from a link failure just before the cut, and every line r2's own log held from its last five minutes, are in the central store, while r2 has lost its own copy. A weekly job is set up to run it"
+    claim: "After a power cut of the whole lab, the NOC included, the evidence is still there: r2's flight-recorder dump from a link failure just before the cut, and every line r2's own log held from its last five minutes, are in the central store, while r2 has lost its own copy. The store was restarted shortly before the cut, as after an earlier one, and the cut came after its first checkpoint since. A weekly job is set up to run it"
     test:
       - tests/live/test_power_event.py::test_evidence_outlives_a_power_cut
       - tests/test_monitoring.py::test_the_central_store_keeps_its_data_on_the_lab_host
@@ -628,7 +628,7 @@ controls:
     threat: >-
       The power cut that resets a node resets the central store too, so the evidence of what led up to it is lost with both.
     fails_when: >-
-      One copy, on the lab host's disk (RISK-34), in a folder any local user can write (RISK-45). A single node can't be hard-reset on its own here, so the drill cuts the whole lab. The weekly job has not run on GitHub yet; here the cut was the sandbox's whole-lab redeploy. Lines still in flight at the moment of the cut are not checked: the drill waits until r2's lines are in the store before it cuts.
+      One copy, on the lab host's disk (RISK-34), in a folder any local user can write (RISK-45). A single node can't be hard-reset on its own here, so the drill cuts the whole lab. The weekly job has not run on GitHub yet; here the cut was the sandbox's whole-lab redeploy. Lines still in flight at the moment of the cut are not checked: the drill waits until r2's lines are in the store before it cuts. A second cut within about a minute of a restart of the store loses what it took in since (V-027, RISK-46). Lines r2 writes at boot before its route to the NOC is up never leave it (RISK-33).
 
   - id: verdict-log
     claim: "Every odd behaviour in the log has one verdict (my config, normal behaviour, platform bug or lab artifact), the version it was seen on, and a fix or workaround. None may stay unclassified past 5 working days"

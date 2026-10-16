@@ -105,6 +105,8 @@ DETECTORS = {
     # The flight recorder and the store that outlives a reset (decision 0025).
     "store-world-writable": Detector("repo", "netlab/monitoring.py", r"\.chmod\(0o777\)", None,
                                      "the central log store's folder writable by every user on the lab host"),
+    "store-checkpoint-window": Detector("build", "noc/loki.yaml", r"^\s+checkpoint_duration: ", None,
+                                        "the central log store checkpointed on a timer, so lines since a restart wait for it"),
 }
 
 

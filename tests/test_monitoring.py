@@ -229,7 +229,8 @@ def test_servers_node_exporter_reads_only_its_interfaces_and_queues(tmp_path):
 
 def test_the_central_store_keeps_its_data_on_the_lab_host(tmp_path):
     """FND-2 (decision 0025): Loki's /loki is a folder of build/ on the lab host, so a redeploy or power cut of noc
-    doesn't empty it. Render creates it writable for Loki's own user and never empties it."""
+    doesn't empty it. Render creates it writable for Loki's own user and never empties it, and Loki checkpoints its
+    write-ahead log there every 30 s."""
     render_all(inv, tmp_path)
     noc = monitoring.host(inv)
     nodes = yaml.safe_load((tmp_path / "topology.clab.yml").read_text())["topology"]["nodes"]
@@ -239,6 +240,11 @@ def test_the_central_store_keeps_its_data_on_the_lab_host(tmp_path):
     (store / "chunk").write_text("kept")
     render_all(inv, tmp_path)
     assert (store / "chunk").read_text() == "kept", "a render emptied the store"
+    # A replay starts each stream's count again, so lines taken in after a restart survive the next crash only once a
+    # checkpoint is written (V-027): every 30 s, not Loki's default 5 minutes.
+    loki = yaml.safe_load((tmp_path / noc / "loki.yaml").read_text())
+    assert loki["ingester"]["wal"]["checkpoint_duration"] == "30s"
+    assert "dir" not in loki["ingester"]["wal"], "the write-ahead log must stay under /loki, the folder on the lab host"
 
 
 def test_flight_recorder_is_armed_on_a_link_failure_and_only_reads(tmp_path):

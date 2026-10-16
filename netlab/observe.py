@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
@@ -91,6 +92,13 @@ class Noc:
             if not every or len(page) < limit:
                 return out
             start_ns = page[-1][0] + 1
+
+    def metric(self, port: int, name: str) -> float | None:
+        """An unlabelled metric from a service's own /metrics page, such as Loki's, which nothing scrapes."""
+        out = subprocess.run(["docker", "exec", self.container, "wget", "-qO-", f"http://127.0.0.1:{port}/metrics"],
+                             capture_output=True, text=True, timeout=30).stdout
+        hit = re.search(rf"^{re.escape(name)} (\S+)$", out, re.M)
+        return float(hit[1]) if hit else None
 
     def ready(self) -> bool:
         try:

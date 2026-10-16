@@ -20,6 +20,7 @@ sources:
   - https://man7.org/linux/man-pages/man8/ip-monitor.8.html (ip monitor link prints each link change as it happens)
   - https://grafana.com/docs/loki/v3.1.x/operations/storage/wal/ (the write-ahead log replays unflushed lines after a crash)
   - https://www.busybox.net/downloads/BusyBox.html (logger reads lines from stdin; syslogd -R forwards each)
+  - https://github.com/grafana/loki/blob/v3.1.1/pkg/ingester/recovery.go (after a replay, every stream's count of lines starts again)
 stake: A link flaps at 3 a.m., a router is rebooted to fix it, and nothing is left to say why it flapped
 failure_modes:
   - mode: a link fails and nothing records the node's state at that moment
@@ -40,6 +41,12 @@ failure_modes:
   - mode: the power cut that resets the node resets the store too
     mitigation: Loki's /loki is build/noc/loki on the lab host, so a redeploy of noc finds it, and the write-ahead log replays what was not yet flushed
     test: tests/live/test_power_event.py::test_evidence_outlives_a_power_cut
+  - mode: the power goes twice, and the second cut loses what the store took in after the first
+    mitigation: Loki 3.1.1 drops at its next replay every line it took in since its last replay, until it writes a checkpoint (V-027). It checkpoints every 30 s here instead of every 5 minutes, and the drill restarts the store first and cuts only after that checkpoint, 57 s after the restart in one run here
+    test: tests/live/test_power_event.py::test_evidence_outlives_a_power_cut
+  - mode: the second cut comes before that first checkpoint
+    mitigation: Accepted. The lines the store took in between the two cuts are lost
+    test: none (accepted risk RISK-46 in docs/risks.yml)
   - mode: the lab host's disk is lost
     mitigation: Accepted. There is one copy, on the lab host's disk, and nothing backs it up
     test: none (accepted risk RISK-34 in docs/risks.yml)
@@ -56,9 +63,9 @@ Since decision 0019 every log source sends each syslog line to the NOC as it is 
 
 - agent.sh, already the last exec step of every log source, also runs the flight recorder. `ip monitor link` reports each link change; on NO-CARRIER, LOWERLAYERDOWN or `state DOWN` it dumps state into a file at once and sends it 3 s later with `logger -t flightrec`, at most once every 30 s. Each line carries the dump's id, and the last says how many lines there were. Lines are cut at 200 characters, below busybox syslogd's own limit.
 - `sh /monitoring/agent.sh dump WHY` takes the same dump on demand. `make evidence` runs it on every source (or `NODE=`), copies each node's own log, writes results/evidence/<UTC time>/<node>.txt and checks every dump reached the store. `make logs NODE= MINUTES=` reads a node's lines back from the store.
-- Loki's /loki is bound from build/noc/loki on the lab host, which render creates and never empties.
-- The power-event drill gets a second test: r2's link to r3 fails for a second, the dump and r2's last five minutes of its own log are confirmed in the store, the whole lab is cut, and afterwards all of it is still in the store while r2's own copy is gone.
+- Loki's /loki is bound from build/noc/loki on the lab host, which render creates and never empties. Loki checkpoints its write-ahead log every 30 s, because a replay starts each stream's count again and the lines since are only safe from the next crash once a checkpoint is written (V-027).
+- The power-event drill gets a second test: the store is killed and started, as after an earlier cut; r2's link to r3 fails for a second; the dump and r2's last five minutes of its own log are confirmed in the store; once the store has written its first checkpoint since the restart, the whole lab is cut, and afterwards all of it is still in the store while r2's own copy is gone. If r2 booted within those five minutes, the lines it wrote before its route to the NOC was up never left it (RISK-33), so the count starts at its first line the store has.
 
 ## Consequences
 
-A router's dump is about 85 lines, about 11 KB, which is a third of the 32 KB a box keeps of its own log, so a triggered dump pushes older lines off the box sooner; the store has them. The dump travels over the same clear UDP syslog as every other line (RISK-33), so a dump sent while the node's path to the NOC is down is lost; the 3 s delay covers a short flap, not a long outage. The store now outlives a redeploy but is still one copy (RISK-34), in a world-writable folder (RISK-45). The drill runs in the weekly drills workflow, not on every push, because it redeploys the whole lab.
+A router's dump is about 85 lines, about 11 KB, which is a third of the 32 KB a box keeps of its own log, so a triggered dump pushes older lines off the box sooner; the store has them. The dump travels over the same clear UDP syslog as every other line (RISK-33), so a dump sent while the node's path to the NOC is down is lost; the 3 s delay covers a short flap, not a long outage. The store now outlives a redeploy but is still one copy (RISK-34), in a world-writable folder (RISK-45), and a second cut within about a minute of the first loses what came in between (RISK-46). The drill runs in the weekly drills workflow, not on every push, because it redeploys the whole lab.

@@ -11,7 +11,9 @@ import uuid
 from datetime import datetime, timezone
 
 import pytest
+import yaml
 
+from netlab.monitoring import PORTS
 from netlab.observe import Noc
 
 from .conftest import ROOT, wait_for
@@ -99,9 +101,10 @@ FACILITY = r"(?:kern|user|mail|daemon|auth|syslog|lpr|news|uucp|cron|authpriv|ft
 
 def message(line: str) -> str | None:
     """'HH:MM:SS tag: text' of a syslog line, as the box keeps it ('Oct 16 02:05:39 r2 user.notice tag: text') or
-    as the collector got it ('<13>Oct 16 02:05:39 tag: text'), so the two copies of one line compare equal."""
-    m = re.match(rf"(?:<\d+>)?\w{{3}} +\d+ (\d\d:\d\d:\d\d) (?:\S+ {FACILITY} )?(.*)$", line.strip())
-    return f"{m[1]} {m[2].strip()}" if m else None
+    as the collector got it ('<13>Oct 16 02:05:39 tag: text'), so the two copies of one line compare equal. Each run
+    of whitespace counts as one space: the box writes a message's own newlines as spaces, and the collector keeps them."""
+    m = re.match(rf"(?:<\d+>)?\w{{3}} +\d+ (\d\d:\d\d:\d\d) (?:\S+ {FACILITY} )?(.*)$", " ".join(line.split()))
+    return f"{m[1]} {m[2]}" if m else None
 
 
 def age(key: str, now: float) -> int:
@@ -111,14 +114,32 @@ def age(key: str, now: float) -> int:
 
 
 def test_evidence_outlives_a_power_cut(node, expected, lab_name):
-    """OROS FND-2 (decision 0025): a link on r2 fails, its flight recorder sends a state dump, and then the power goes,
+    """OROS FND-2 (decision 0025): the central store restarts, as after an earlier cut. A link on r2 fails, its flight
+    recorder sends a state dump, the store writes its first checkpoint since the restart, and then the power goes,
     the NOC's included. Afterwards the central store still has the dump, complete, and every line r2's own log held
-    from its last five minutes, while r2 itself has lost them. Then the lab is put back as the other drill does."""
+    from its last five minutes (from its first line the store got, if r2 booted in them), while r2 itself has lost them.
+    Then the lab is put back as the other drill does."""
     mon = expected["monitoring"]
     if subprocess.run(["docker", "inspect", f"clab-{lab_name}-{mon['sidecars'][0]}"], capture_output=True).returncode:
         pytest.skip("the NOC is not running: this drill needs the full lab (make deploy)")
     noc, r2 = Noc(lab_name, mon["host"]), node("r2")
+    store = next(f"clab-{lab_name}-{s}" for s in mon["sidecars"] if s.endswith("-loki"))
+    every = int(yaml.safe_load((ROOT / "build" / mon["host"] / "loki.yaml").read_text())["ingester"]["wal"]["checkpoint_duration"].rstrip("s"))
+    # Loki checkpoints every `every` seconds and spreads the writing over 90% of that, so its first checkpoint after a
+    # start is done within twice that; 15 s more for a slow disk.
+    bound = 2 * every + 15
+
+    def checkpointed():
+        return (noc.metric(PORTS["loki"], "loki_ingester_checkpoint_duration_seconds_count") or 0) >= 1
     assert wait_for(noc.ready, timeout=60), "Loki is not ready before the drill"
+    # The store restarts first, as after an earlier cut. A replay starts each stream's count again, so what the store
+    # takes in after it survives the next cut only once a checkpoint is written (V-027). What it holds now is already
+    # in one, so the restart loses none of it.
+    assert wait_for(checkpointed, timeout=bound, interval=2), f"Loki wrote no checkpoint within {bound} s of its start"
+    restarted = time.time()
+    for step in ("kill", "start"):
+        subprocess.run(["docker", step, store], check=True, capture_output=True, timeout=60)
+    assert wait_for(noc.ready, timeout=60), "Loki did not come back after its restart"
     mark = f"FND2-{uuid.uuid4().hex[:12]}"
     r2.run("logger", "-t", "netlab-drill", mark)
     since = time.time()
@@ -128,15 +149,27 @@ def test_evidence_outlives_a_power_cut(node, expected, lab_name):
                     timeout=mon["flightrec"]["delay"] + 15, interval=1)
     assert dump, "r2's flight recorder sent no dump"
     dump_id = dump[0][2].split("flightrec: ", 1)[1].split()[0]
-    # What r2's own log holds from its last five minutes, once every line of it has reached the store.
+    # What r2's own log holds from its last five minutes, oldest first, once every line of it has reached the store.
     now = time.time()
-    recent = {k for k in map(message, r2.run("sh", "-c", "cat /var/log/messages*").stdout.splitlines()) if k and age(k, now) <= 300}
-    assert any(mark in k for k in recent) and any(dump_id in k for k in recent), "r2's own log lacks the marker or the dump"
+    box = [k for k in map(message, r2.run("sh", "-c", "cat /var/log/messages.0 /var/log/messages 2>/dev/null; true").stdout.splitlines())
+           if k and age(k, now) <= 300]
 
     def stored(start, end=None):
         return noc.logs('{node="r2",source="syslog"}', start, end, every=True)
-    assert wait_for(lambda: not recent - {message(l) for _, _, l in stored(now - 400)}, timeout=30, interval=2), \
-        "r2's last lines never reached the central store"
+
+    def unsent():
+        """r2's recent lines the store doesn't have. If r2 booted in the window, the lines it wrote before its route to
+        the NOC was up never left it (RISK-33: UDP, no queue), so the count starts at the first one the store has."""
+        held = {message(l) for _, _, l in stored(now - 400)}
+        first = next((i for i, k in enumerate(box) if k in held), 0) if box and "syslogd started" in box[0] else 0
+        return set(box[first:]) - held, box[:first]
+    assert wait_for(lambda: not unsent()[0], timeout=30, interval=2), \
+        f"{len(unsent()[0])} of r2's last lines never reached the central store: {sorted(unsent()[0])[:3]}"
+    lost_at_boot = unsent()[1]
+    recent = set(box[len(lost_at_boot):])
+    assert any(mark in k for k in recent) and any(dump_id in k for k in recent), "r2's own log lacks the marker or the dump"
+    assert wait_for(checkpointed, timeout=bound, interval=2), f"Loki wrote no checkpoint within {bound} s of its restart"
+    checkpoint_after = round(time.time() - restarted, 1)
     cut = time.time()
     subprocess.run(shlex.split(POWER_CYCLE), cwd=ROOT, check=True, capture_output=True, timeout=600)
     try:
@@ -154,6 +187,8 @@ def test_evidence_outlives_a_power_cut(node, expected, lab_name):
         (ROOT / "results" / "evidence-drill.json").write_text(json.dumps({
             "date": datetime.now(timezone.utc).isoformat(), "power_cycle": POWER_CYCLE, "dump": dump_id, "dump_lines": len(ours),
             "r2_lines_from_its_last_5_minutes": len(recent), "of_them_in_the_store_after_the_cut": len(recent) - len(missing),
+            "r2_lines_written_at_boot_before_its_route_to_the_noc": len(lost_at_boot),
+            "seconds_from_store_restart_to_its_first_checkpoint": checkpoint_after,
             "seconds_from_cut_to_store_answering": back}, indent=2) + "\n")
     finally:
         # Put back as the other drill does: the BGP password, routing, and every scrape answering.

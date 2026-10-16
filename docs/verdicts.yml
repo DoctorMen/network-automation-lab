@@ -189,3 +189,15 @@
     - "2026-10-16, lab na11, /proc/net/snmp on h2 around one burst: OutDatagrams +1113, SndbufErrors +1887; `tc -s qdisc` on h2 counted 1887 dropped; r3 received 1113"
     - "A datagram the sender's own queue drops makes the kernel return ENOBUFS internally; without IP_RECVERR the socket hides it from send() and counts it under SndbufErrors instead of OutDatagrams (udp(7))"
   workaround: the test counts what was sent with its own sender and what arrived with a receiver, never the sender's OutDatagrams; monitoring/coverage.yml says what OutDatagrams counts
+
+- id: V-027
+  opened: 2026-10-16
+  version: grafana/loki:3.1.1 (single binary, filesystem store, write-ahead log under /loki/wal)
+  symptom: lines the central store had answered with before a crash were gone after the next one, when the store had restarted a few minutes before
+  verdict: platform-bug
+  evidence:
+    - "2026-10-16, lab na11, Loki checkpointing every 5 minutes (its default): a line logged on r2 and found in the store at 03:16:05 was gone after Loki was killed and started; every line since Loki's previous start at 03:12 was gone with it, and loki_ingester_wal_duplicate_entries_total rose while loki_ingester_wal_recovered_entries_total stayed at 4354"
+    - "2026-10-16, lab na11, checkpointing every 30 s: a line logged 2 s after Loki started was gone after the next kill; a line logged after its first checkpoint (about 57 s after the start) was still there after the next kill"
+    - "Loki 3.1.1 source: after a successful replay, ingesterRecoverer.Close() calls resetCounter() on every stream (pkg/ingester/recovery.go), and stream.Push drops a replayed record whose counter is not above the stream's (pkg/ingester/stream.go). The next replay starts from the last checkpoint's counters, so the records written since the reset are dropped as duplicates until a new checkpoint replaces that one. The first checkpoint comes one checkpoint_duration after the start and is written over 90% of another (pkg/ingester/checkpoint.go)"
+    - "Whether a later Loki release fixes it is not checked here"
+  workaround: Loki checkpoints every 30 s (templates/monitoring/loki.yaml.j2), so the window is about a minute after each restart; the power drill restarts the store first and cuts only after its first checkpoint (tests/live/test_power_event.py::test_evidence_outlives_a_power_cut). What is left is RISK-46
