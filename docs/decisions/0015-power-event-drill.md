@@ -40,7 +40,8 @@ FRR can't be restarted inside its container without the container exiting.
 ## Decision
 
 The power event is the whole lab redeployed: `containerlab deploy --reconfigure` in CI (`make
-power-drill`, `POWER_CYCLE` in the Makefile), `labctl.sh cycle` with this sandbox's Containerlab stand-in.
+power-drill`, `POWER_CYCLE` in the Makefile), and on the development sandbox, where Containerlab can't run,
+a stand-in script kept outside this repo that redeploys every node ([LAB_PARITY.md](../LAB_PARITY.md)).
 `tests/live/test_power_event.py` makes a hand change on r2 that is never saved, cuts the power, waits
 for every OSPF adjacency, BFD peer and BGP session the inventory expects, then checks the change is
 gone. It runs `make apply`, because the BGP password is in no startup config ([decision

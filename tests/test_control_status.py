@@ -4,10 +4,6 @@ import os
 import stat
 import sys
 from datetime import datetime, timedelta, timezone
-from fnmatch import fnmatch
-from pathlib import Path
-
-import yaml
 
 from netlab import control_status
 
@@ -66,12 +62,14 @@ def test_skips_are_not_evidence(tmp_path):
 
 
 def fake_gh(tmp_path, runs, monkeypatch):
-    """A `gh` on PATH that lists `runs` ({id: (created, {test: outcome})}) for ci.yml and 'downloads'
-    each run's JUnit file. It logs every call, so a test can see which runs were fetched."""
+    """A `gh` on PATH that lists `runs` ({id: (created, {test: outcome}[, event])}, a nightly run unless
+    an event is given) for ci.yml and 'downloads' each run's JUnit file. It logs every call, so a test can
+    see which runs were fetched."""
     artifacts = tmp_path / "artifacts"
-    for rid, (when, cases) in runs.items():
+    for rid, (when, cases, *_) in runs.items():
         junit(artifacts / rid / "results-and-backups" / "live.xml", when, cases)
-    listing = [{"databaseId": int(rid), "createdAt": when.isoformat().replace("+00:00", "Z")} for rid, (when, _) in runs.items()]
+    listing = [{"databaseId": int(rid), "createdAt": when.isoformat().replace("+00:00", "Z"), "event": (event or ["schedule"])[0]}
+               for rid, (when, _, *event) in runs.items()]
     bindir = tmp_path / "bin"
     bindir.mkdir()
     script = bindir / "gh"
@@ -103,14 +101,16 @@ def test_fetch_reads_newest_runs_first_and_stops_when_every_test_has_a_result(tm
     assert control_status.check(REGISTER, control_status.collect(evidence), NOW)[1] == []
 
 
-def test_control_status_waits_for_every_job_whose_results_it_reads():
-    """ci.yml's control-status job needs every job that uploads an artifact its pattern downloads (the NOC's
-    observe job included), and no two jobs upload under one name, which would make a run's upload fail."""
-    ci = yaml.safe_load((Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml").read_text())["jobs"]
-    uploads = [(job, step["with"]["name"]) for job, spec in ci.items() for step in spec["steps"]
-               if step.get("uses", "").startswith("actions/upload-artifact@")]
-    names = [name for _, name in uploads]
-    assert len(names) == len(set(names)), f"artifact names used twice: {sorted({n for n in names if names.count(n) > 1})}"
-    readers = {job for job, name in uploads if fnmatch(name, control_status.ARTIFACTS)}
-    assert {"offline", "lab", "observe"} <= readers
-    assert readers <= set(ci["control-status"]["needs"]), f"control-status doesn't wait for {sorted(readers - set(ci['control-status']['needs']))}"
+def test_fetch_never_reads_a_pull_request_run_from_a_branch_named_main(tmp_path, monkeypatch):
+    """A fork's pull request from its own branch main is listed under --branch main; its green run is
+    never downloaded, so main's older red result stands."""
+    fake_gh(tmp_path, {
+        "3": (NOW - timedelta(days=1), {OSPF: "passed", DRILL: "passed"}, "pull_request"),
+        "2": (NOW - timedelta(days=5), {OSPF: "failed", DRILL: "passed"}, "push"),
+    }, monkeypatch)
+    evidence = tmp_path / "evidence"
+    control_status.fetch("o/r", evidence, {OSPF, DRILL}, since=NOW - timedelta(days=90))
+    downloads = [line.split()[2] for line in (tmp_path / "calls.log").read_text().splitlines() if line.startswith("run download")]
+    assert downloads == ["2"]
+    assert control_status.check(REGISTER, control_status.collect(evidence), NOW)[1] == [
+        f"ospf-adjacencies: {OSPF} latest result failed at {NOW - timedelta(days=5):%Y-%m-%d %H:%M}Z"]

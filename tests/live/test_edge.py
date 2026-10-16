@@ -64,7 +64,7 @@ def rp_filter_drops(node):
 
 
 def test_wan_scan_finds_only_published_ports(node, expected):
-    """From the internet side only the published web port and BGP from the peer's address answer; inside, the closed ports do answer."""
+    """From the internet side only the published web port answers (BGP from the peer's address is let through, and may answer); inside, the closed ports do answer."""
     wan = expected["wan_filter"]["r2"]
     targets = [[a, p] for addrs in expected["addresses"].values() for a in addrs for p in MANAGEMENT_PORTS]
     published = {f"{p['address']}:{p['port']}" for p in wan["published"]}

@@ -41,7 +41,7 @@ and so skips what a real power cut does. `<lab>` below is the `name:` in `build/
    `docker exec clab-<lab>-r1 vtysh -c "show ip ospf neighbor" -c "show bfd peers brief"`
    (two `Full`, two `up` each), and the same on `clab-<lab>-r2` and `clab-<lab>-r3`.
    On r2, `docker exec clab-<lab>-r2 vtysh -c "show bgp summary"`: 198.51.100.1 shows a prefix count.
-   OSPF needs about 10 to 20 s after the nodes start (measured 19.6 s for the whole drill here).
+   OSPF needs about 10 to 20 s after the nodes start (routing was back 10.8 to 20.2 s after the cut over four drills here).
 4. **The firewall loaded its policy.** `docker exec clab-<lab>-fw1 iptables -vnL FORWARD`: policy
    `DROP`, five rules and `default-drop`. If the chain is empty with policy `ACCEPT`, the start
    script didn't run: `docker exec clab-<lab>-fw1 sh /firewall.sh`.
@@ -55,7 +55,7 @@ and so skips what a real power cut does. `<lab>` below is the `name:` in `build/
    source has sent its next heartbeat (up to 60 s): every scrape answers and every log source is
    heard from. Expect pages from the restart itself (SourceSilent, TargetDown) that resolve by
    themselves. Prometheus and the central log store start empty in the lab, because their data is
-   inside their containers ([RISK-34](../risks.yml)), so the NOC's history from before the cut is gone.
+   inside their containers ([RISK-35](../risks.yml)), so the NOC's history from before the cut is gone.
 
 ## Done when
 

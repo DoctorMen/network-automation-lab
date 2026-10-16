@@ -18,7 +18,7 @@ alternatives:
   - name: no purchase, plain Linux static routes
     why_not: Free and already in every image, but no OSPF, BGP or BFD, so the failover, BFD and carrier drills could not exist
 no_purchase: Linux static routes (`ip route`) cost nothing and need no new software, and they are what the hosts use. They can't reroute around a failure, which is the thing the lab exists to test.
-staffing: "k alone. vtysh reads like Cisco IOS, so existing skills carry over: nothing to hire, retask or buy. Help, if needed, is FRR's public issue tracker and mailing list, free."
+staffing: "One person, the repository owner. vtysh reads like Cisco IOS, so existing skills carry over: nothing to hire, retask or buy. Help, if needed, is FRR's public issue tracker and mailing list, free."
 vendor_domains: [frrouting.org, github.com/frrouting]
 independent_sources:
   - "tests/live/test_failover.py::test_silent_failure_reroutes_fast (our measurement on this image: BFD reroutes a silent link failure in about 0.9 s, against 35.6 to 39.7 s for OSPF alone)"

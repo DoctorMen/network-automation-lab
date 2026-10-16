@@ -18,7 +18,7 @@ alternatives:
   - name: no purchase, the boxes' own logs
     why_not: Free, and each node already keeps one (busybox syslogd), but 16 KB plus one rotated file is gone in minutes, and it dies with the box
 no_purchase: "The do-nothing option is each box's own busybox syslogd file, which rotates away within minutes and goes with the box. Loki is free (AGPLv3, run unmodified), so the choice costs only RAM."
-staffing: "k alone. The config is rendered from the inventory; queries are LogQL, the same strings the tests use. Help: Grafana's public community forum and issue tracker, free."
+staffing: "One person, the repository owner. The config is rendered from the inventory; queries are LogQL, the same strings the tests use. Help: Grafana's public community forum and issue tracker, free."
 vendor_domains: [grafana.com, github.com/grafana]
 independent_sources:
   - "tests/live/observe/test_central_store.py::test_history_outlasts_on_box_rotation (our measurement: a line r1's rotated on-box log has already lost is still found)"
@@ -37,4 +37,4 @@ Loki on noc, fed only by the collector (Vector), with each stream labelled by no
 
 ## Consequences
 
-Its store is the noc container's own filesystem: it outlasts the boxes' rotation but not a redeploy of the lab, and there is one copy (accepted as RISK-34 in docs/risks.yml). AGPLv3 matters only if Loki is changed and offered to others; the lab runs it unmodified. Loki answers on 127.0.0.1 only, so searching it means a shell on noc.
+Its store is the noc container's own filesystem: it outlasts the boxes' rotation but not a redeploy of the lab, and there is one copy (accepted as RISK-35 in docs/risks.yml). AGPLv3 matters only if Loki is changed and offered to others; the lab runs it unmodified. Loki answers on 127.0.0.1 only, so searching it means a shell on noc.

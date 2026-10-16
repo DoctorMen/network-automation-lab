@@ -2,7 +2,7 @@
 from startup config by itself. It redeploys every node, so it runs with `make power-drill` (weekly in
 .github/workflows/drills.yml, on the full lab) and is skipped in a plain `make live`. On the full lab the
 NOC must come back too: its sidecars share their nodes' network namespaces, so each is started again
-after its node, and the NOC starts with no history (RISK-34)."""
+after its node, and the NOC starts with no history (RISK-35)."""
 import json
 import os
 import shlex

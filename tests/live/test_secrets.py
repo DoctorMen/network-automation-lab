@@ -124,7 +124,7 @@ def playbook(name):
 
 
 def test_no_secret_in_env_argv_logs_or_files(node, expected):
-    """While `make apply` puts back a hand change on r2 and `make drift` runs, no command line, environment, FRR log, container log, playbook output, build/ or backups/ file holds a BGP password in clear; the session stays up."""
+    """While `make apply` puts back a hand change on r2 and `make drift` runs, no command line, environment, routing daemons' syslog file, frr-reload log, container log, playbook output, build/ or backups/ file holds a BGP password in clear; the session stays up."""
     ends = sessions(expected)
     values = [secret(name) for name in {e["secret"] for e in ends}]
     routers = sorted({e["router"] for e in ends})

@@ -90,6 +90,17 @@ def test_a_capture_holding_a_password_is_never_sent(tmp_path, monkeypatch):
     with pytest.raises(backup.BackupError) as unchecked:
         backup.run(inv, "lab", repo, password, capture, secrets_dir=store)
     assert unchecked.value.problems == [f"no secret {name} in {store}, so the capture can't be checked for it; nothing was sent"]
+    # The redacting vtysh's tag in place of the password passes the check: restic is reached.
+    class Sent(Exception):
+        pass
+    def sent(*args, **kwargs):
+        raise Sent
+    monkeypatch.setattr(backup, "restic", sent)
+    tag = f" neighbor 198.51.100.1 password sha256:{backup.sha256(SECRET.encode())}\n".encode()
+    (tmp_path / "tagged").mkdir()
+    repo, password, capture, store = fake_capture(tmp_path / "tagged", inv, tag)
+    with pytest.raises(Sent):
+        backup.run(inv, "lab", repo, password, capture, secrets_dir=store)
 
 
 def test_a_secret_at_the_destination_is_named(tmp_path, monkeypatch):

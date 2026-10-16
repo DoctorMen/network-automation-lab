@@ -2,6 +2,7 @@
 from datetime import date
 from pathlib import Path
 
+import pytest
 import yaml
 
 from netlab.records import lint
@@ -20,6 +21,7 @@ def log_with(tmp_path, **changes):
     return path
 
 
+@pytest.mark.review
 def test_verdict_log_lints_clean():
     """docs/verdicts.yml: every entry has a known verdict, a version, evidence and a fix or workaround."""
     assert lint(VERDICTS) == []

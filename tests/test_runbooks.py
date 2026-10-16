@@ -3,6 +3,8 @@ import shutil
 from datetime import timedelta
 from pathlib import Path
 
+import pytest
+
 from netlab import runbooks
 from netlab.inventory import load
 
@@ -26,6 +28,7 @@ def folder_with(tmp_path, name, old, new):
     return copy
 
 
+@pytest.mark.review
 def test_runbooks_lint_clean():
     """Every shipped runbook has all its front matter, a review date under 180 days old and only inventory hosts."""
     assert runbooks.lint(FOLDER, DEVICES) == []

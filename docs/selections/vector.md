@@ -18,7 +18,7 @@ alternatives:
   - name: no purchase, busybox syslogd -R straight to a file on noc
     why_not: Free and already in every image, but no per-source arrival metric, so a silent source is noticed only when someone looks
 no_purchase: "busybox syslogd already forwards (-R) and is what every node sends with; the do-nothing collector is a file on noc with no arrival metric. Vector is free (MPL 2.0)."
-staffing: "k alone. Both configs are rendered from the inventory (templates/monitoring/); the remap is a few lines of VRL. Help: the project's public issue tracker and discussions, free."
+staffing: "One person, the repository owner. Both configs are rendered from the inventory (templates/monitoring/); the remap is a few lines of VRL. Help: the project's public issue tracker and discussions, free."
 vendor_domains: [vector.dev, datadoghq.com, github.com/vectordotdev]
 independent_sources:
   - "tests/live/observe/test_arrival.py::test_blocked_source_raises_source_silent_and_comes_back_without_a_restart (our measurement: with r1's syslog dropped on the way, the collector's last-seen time pages within twice the heartbeat while r1's own counter says it is sending)"
@@ -36,4 +36,4 @@ One Vector on noc receives every syslog line (UDP 514) and every forwarder's (TC
 
 ## Consequences
 
-The collector's last-seen time is the arrival proof, so it must not be the sender's: Vector stamps it on arrival. Its own Prometheus endpoint keeps a series for a day after its last line (flush_period_secs), so a silent source's age keeps growing instead of the series vanishing. Syslog stays UDP from busybox, with no queue or authentication (accepted as RISK-33 in docs/risks.yml); the forwarder to collector link is plain TCP (RISK-31).
+The collector's last-seen time is the arrival proof, so it must not be the sender's: Vector stamps it on arrival. Its own Prometheus endpoint keeps a series for a day after its last line (flush_period_secs), so a silent source's age keeps growing instead of the series vanishing. Syslog stays UDP from busybox, with no queue or authentication (accepted as RISK-34 in docs/risks.yml); the forwarder to collector link is plain TCP (RISK-32).

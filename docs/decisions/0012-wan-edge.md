@@ -91,7 +91,9 @@ needs an attacked host the internet can reach.
 ## Consequences
 
 - From the isp node, a scan of every campus address on 27 TCP management ports finds only h2:80
-  open, plus 198.51.100.0:179 from the peer's address; from 203.0.113.1, only h2:80. UDP is not
+  open, from the peer's address and from 203.0.113.1 alike. When this decision was made,
+  198.51.100.0:179 also answered from the peer's address; since decision 0016 put a TCP MD5 key on
+  the session, r2 ignores the scanner's keyless SYN, although the filter still admits it. UDP is not
   scanned (nothing in the lab speaks SNMP).
 - conntrack now runs on r2. It tracks every flow through r2, the campus links included.
 - A BGP session that came up before edge.sh ran: if the ISP opened it, the BGP rule (no `--syn`)

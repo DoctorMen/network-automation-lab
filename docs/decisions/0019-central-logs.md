@@ -45,13 +45,13 @@ failure_modes:
     test: tests/live/observe/test_central_store.py::test_no_secret_in_the_central_store
   - mode: lines are lost or forged on the way (UDP, no authentication, no queue)
     mitigation: Accepted. A lost stream pages as SourceSilent; single lost lines and forged ones are not detected
-    test: none (accepted risk RISK-33 in docs/risks.yml)
+    test: none (accepted risk RISK-34 in docs/risks.yml)
   - mode: the store itself is lost (one copy, inside the noc container)
     mitigation: Accepted. A redeploy starts it empty; nothing backs it up
-    test: none (accepted risk RISK-34 in docs/risks.yml)
+    test: none (accepted risk RISK-35 in docs/risks.yml)
   - mode: a user's machine sends nothing
     mitigation: Accepted. h1 sends no logs; fw1's are the only view of LAN-A
-    test: none (accepted risk RISK-35 in docs/risks.yml)
+    test: none (accepted risk RISK-36 in docs/risks.yml)
 ---
 
 ## Context
@@ -68,4 +68,4 @@ V-005: FRR's daemons run with -d and stdout on /dev/null, so `log stdout` went n
 
 ## Consequences
 
-Every node's syslog crosses the campus in clear UDP (RISK-33): a dead link loses the lines behind it, which page as silent but are not recovered. The store is one copy and goes with a redeploy (RISK-34); 720 h is also short of PCI DSS 10.5.1's 12 months, which matters only if the toy scope were real (decision 0013). Lines are kept exactly as sent, with busybox's local time and no hostname; Loki's own timestamp is the arrival time. NOT-5's volume budget, NOT-6's coverage table, FND-2's flight recorder and change attribution build on this store later.
+Every node's syslog crosses the campus in clear UDP (RISK-34): a dead link loses the lines behind it, which page as silent but are not recovered. The store is one copy and goes with a redeploy (RISK-35); 720 h is also short of PCI DSS 10.5.1's 12 months, which matters only if the toy scope were real (decision 0013). Lines are kept exactly as sent, with busybox's local time and no hostname; Loki's own timestamp is the arrival time. NOT-5's volume budget, NOT-6's coverage table, FND-2's flight recorder and change attribution build on this store later.

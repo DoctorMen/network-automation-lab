@@ -125,8 +125,8 @@ rtbh:
 
 # Egress queueing on h2's server-LAN port, rendered as tc commands in the topology's exec steps.
 # HTB caps the port at a fixed rate, standing in for a link that can't be upgraded, and gives web
-# replies (source port 80) a class of their own ahead of everything else. A bulk copy from h2, like
-# the nightly backup, then yields to users instead of queueing in front of them. Decision 0011.
+# replies (source port 80) a class of their own ahead of everything else. A bulk copy from h2, such
+# as a large download, then yields to users instead of queueing in front of them. Decision 0011.
 qos:
   h2:
     interface: eth1

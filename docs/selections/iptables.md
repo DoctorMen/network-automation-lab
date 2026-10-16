@@ -16,7 +16,7 @@ alternatives:
   - name: do nothing (no firewall)
     why_not: LAN-A would be open to the server LAN and the internet stand-in, and the firewall drills would have nothing to test
 no_purchase: iptables is already in the image, so the choice costs nothing; doing without a firewall is the only cheaper option, and the alternatives above say why not.
-staffing: k alone; iptables rules are the most widely documented Linux firewall syntax.
+staffing: one person, the repository owner; iptables rules are the most widely documented Linux firewall syntax.
 vendor_domains: [netfilter.org]
 independent_sources:
   - "tests/live/test_controls.py::test_unsolicited_inbound_ack_is_dropped (our test: the rendered rules drop a forged mid-stream packet)"

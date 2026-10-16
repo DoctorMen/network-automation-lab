@@ -5,7 +5,7 @@ title: Ansible to apply config and check drift
 date: 2026-10-15
 status: accepted
 decider: DoctorMen
-constraint: "Routers are reached only through docker exec (no management network, decision 0007), so no agent and no SSH; apply only the difference, with a dry run; keep secrets off command lines and out of logs (decision 0016); k reads and reviews YAML"
+constraint: "Routers are reached only through docker exec (no management network, decision 0007), so no agent and no SSH; apply only the difference, with a dry run; keep secrets off command lines and out of logs (decision 0016); the repository owner reads and reviews YAML"
 choice: Ansible (ansible>=10, with the community.docker connection), playbooks in ansible/
 uses: [ansible]
 alternatives:
@@ -18,7 +18,7 @@ alternatives:
   - name: do nothing (change routers by hand with vtysh)
     why_not: That is the drift the drift check exists to catch
 no_purchase: Plain Python in netlab, with no new dependency. It is the fallback if Ansible's footprint ever outweighs what its modules save.
-staffing: k alone; Ansible is free and widely known, so a second person could pick it up without training.
+staffing: one person, the repository owner; Ansible is free and widely known, so a second person could pick it up without training.
 vendor_domains: [ansible.com, redhat.com, github.com/ansible]
 independent_sources:
   - "tests/live/test_collection.py::test_unsaved_change_is_flagged (our check: drift.yml catches a hand change on a router)"

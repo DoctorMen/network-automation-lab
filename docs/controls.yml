@@ -10,10 +10,13 @@
 #   fails_when  how it stops working, or what it never covered
 #
 # Schedule: .github/workflows/ci.yml runs every test nightly (cron 23 4 * * *), on every push to
-# main and on every pull request. It keeps results/live.xml, results/observe.xml (the NOC's tests, in
-# the observe job) and results/offline.xml (JUnit, with a timestamp) as run artifacts for 90 days;
-# .github/workflows/drills.yml runs the restore and power drills weekly and keeps theirs the same
-# way. The control-status job in ci.yml reads them all.
+# main and on every pull request. It keeps results/offline.xml, results/review.xml, results/live.xml
+# and results/observe.xml (the NOC's tests, in the observe job) (JUnit, with a timestamp) as run
+# artifacts for 90 days; .github/workflows/drills.yml runs the restore and power drills weekly and
+# keeps theirs the same way. The control-status job in ci.yml reads them all. The four tests that
+# compare a record's date with today (in verdict-log, outside-levers, risk-register and runbooks) run
+# in ci.yml's review job, which the lab job doesn't wait for, so a review falling due turns that job
+# red without stopping the live tests or the backup.
 # GitHub disables scheduled runs in a public repo after 60 days with no repository activity,
 # so a quiet repo can miss its period without any test going red.
 #
@@ -89,7 +92,7 @@ controls:
       r2's edge filter (wan-filter). UDP listeners (BFD) are not checked. The vtys have no password: anyone with
       `docker exec` on the host is root on every node, and that is the real management path. The exporters'
       addresses come from expected_state.json; they answer plain HTTP to anyone who reaches the loopback
-      (RISK-31), and frr_exporter holds the vty sockets (RISK-32).
+      (RISK-32), and frr_exporter holds the vty sockets (RISK-33).
 
   - id: users-reach-web-and-internet
     claim: "Users can reach the web server and the internet"
@@ -260,7 +263,7 @@ controls:
       the carrier itself can still announce anything (RISK-1).
 
   - id: no-plaintext-secret
-    claim: "While `make apply` puts back a hand change and `make drift` runs, no command line, environment, FRR log, container log, playbook output, or file in `build/` or `backups/` holds that password in clear, and the session never drops"
+    claim: "While `make apply` puts back a hand change and `make drift` runs, no command line, environment, routing daemons' log (the syslog file on each router, decision 0019), frr-reload log, container log, playbook output, or file in `build/` or `backups/` holds that password in clear, and the session never drops"
     test:
       - tests/live/test_secrets.py::test_no_secret_in_env_argv_logs_or_files
       # Deterministic: it reads the playbooks, so it can't miss a short-lived process.
@@ -270,16 +273,17 @@ controls:
       The password leaking where other people read it: a CI artifact, a log, another process's view
       of /proc, Ansible's temp files, or frr-reload.py's log.
     fails_when: >-
-      Sampling /proc about 40 times a second can miss a process shorter than that: with the password
-      moved onto vtysh's command line, the live test went red in 9 runs of 10 (5 of 6 in review, then
-      4 of 4). The offline test catches that change every time, but only in ansible/: it reads the
+      Sampling can miss a process shorter than its interval: /proc on the runner, the routers' command
+      lines included, about 40 times a second, but the routers' environments and Ansible temp files
+      only about twice a second. With the password moved onto vtysh's command line, the live test went
+      red in 9 runs of 10 (5 of 6 in review, then 4 of 4). The offline test catches that change every time, but only in ansible/: it reads the
       playbooks, not what a tool they call does with its input. In CI, other users' /proc environ is
       closed to the test; each router's own processes are read with docker exec instead. The secret
       store itself is a plaintext 0600 file (RISK-8). It checks this password only; a new kind of
       secret needs its own check.
 
   - id: rollback-keeps-password
-    claim: "A router with a BGP password that fails its health gate goes back to the config it ran before with the password untouched: the session never drops, and neither the saved fallback, FRR's log, a command line nor the playbook output holds the password. Every playbook task that reads or reloads a router's config does it through the redacting vtysh"
+    claim: "A router with a BGP password that fails its health gate, after a change that doesn't touch its BGP neighbor's address or AS numbers, goes back to the config it ran before with the password untouched: the session never drops, and neither the saved fallback, FRR's log, a command line nor the playbook output holds the password. Every playbook task that reads or reloads a router's config does it through the redacting vtysh"
     test:
       - tests/live/test_rollout.py::test_rollback_keeps_the_bgp_password_and_writes_it_nowhere
       # Deterministic: it reads every task in ansible/, the rescue's rollback included.
@@ -292,8 +296,12 @@ controls:
     fails_when: >-
       The live test rolls back r2 alone (--limit r2). A production batch rolling back r2, r3 and isp
       together with passwords set is not in the suite. A rollback leaves the password whatever the
-      password task last set, so a change that rotated it is not undone. The offline check reads the
-      commands as written in ansible/, not what a tool they call does.
+      password task last set, so a change that rotated it is not undone. A failed change to the
+      neighbor itself (its remote-as or address, or the local AS) is the exception: frr-reload.py
+      deletes and re-creates the neighbor, the fallback has no password line, and the session stays
+      down until the inventory is reverted and make apply runs (RISK-30, seen in the lab with a wrong
+      remote-as on r2). The offline check reads the commands as written in ansible/, not what a tool
+      they call does.
 
   - id: secret-never-rendered
     claim: "The password is never rendered: `build/` names only the secret's file, the store is 0600 and never overwritten, and backups and drift output show a sha256 tag in its place"
@@ -398,7 +406,7 @@ controls:
       tries, so a hop that never answers is skipped and its segment merged with the next.
 
   - id: finding-bundle
-    claim: "`make finding` sends the carrier a bundle they can re-run: every command's raw output, an ICMP capture on our hand-off port, FRR support bundles, versions, clocks and RFC citations, and no BGP password. Its `reproduce.sh`, run from a copy with only sh and docker, names the same segment and owner, and says it did not reproduce once the loss is gone. CI re-runs it on a clean runner"
+    claim: "`make finding` sends the carrier a bundle they can re-run: every command's raw output, an ICMP capture on our hand-off port, FRR support bundles, versions, clocks and RFC citations, and no BGP password. Its `reproduce.sh`, run from a copy with only sh and docker, names the same segment and owner, and says it did not reproduce once the loss is gone. A CI job re-runs it on a runner with no checkout; it has passed once, in a pull request's run (38834167787), and not yet on main"
     test: tests/live/test_finding.py::test_carrier_finding_reproduces_from_the_bundle_alone
     period: P31D
     threat: >-
@@ -407,7 +415,8 @@ controls:
     fails_when: >-
       The re-run happens in a lab copy where the fault is recreated by lab/condition.sh; on the real
       network the carrier would run the same commands against the live fault. A clean CI runner
-      stands in for someone outside the team; no outsider has re-run one yet. The capture has
+      stands in for someone outside the team; no outsider has re-run one yet. The CI job has run once,
+      in pull request run 38834167787, where it passed; it has not yet run on main or nightly. The capture has
       userspace timestamps (about 1 ms) and is taken at our end only, so no one-way claim is made.
 
   - id: finding-verify
@@ -457,7 +466,7 @@ controls:
       "down" (0) alone.
     fails_when: >-
       The NOC sees the routers over the campus links it watches, so a dead link behind r2 blinds it to
-      what is behind (RISK-30): each object pages on its own, and one page per cause is a later build
+      what is behind (RISK-31): each object pages on its own, and one page per cause is a later build
       (OROS DEC-5). The pager is a webhook sink on noc, not a person. Only the first BGP session and the
       first OSPF adjacency are broken live; the rest have the same generated rule. isp, the carrier's, is
       watched only from r2's side. A 5 s scrape and evaluation suit CI; a real NOC would run longer.
@@ -514,7 +523,7 @@ controls:
       A router, firewall or server that stopped logging, found during the incident that needed its logs;
       a sender's own counters saying all is well while nothing arrives.
     fails_when: >-
-      Syslog is UDP with no queue or authentication (RISK-33): a whole stream lost pages, but a single
+      Syslog is UDP with no queue or authentication (RISK-34): a whole stream lost pages, but a single
       lost line or a forged one is not detected. h2's app log's bound is stated (its silent_after plus
       evaluation), not twice its 5 s gap, because that would page on one late scrape. Only r1's export is
       blocked live; the others have the same generated rule.
@@ -532,8 +541,8 @@ controls:
       The line that explains an incident rotated off the box hours ago, or never left the daemon (V-005);
       an app nobody may change logging only to its own host.
     fails_when: >-
-      The store is one copy inside noc's container and a redeploy starts it empty (RISK-34). h1, a user's
-      machine, sends nothing (RISK-35), and isp, the carrier's, logs only on its own box. Lines keep
+      The store is one copy inside noc's container and a redeploy starts it empty (RISK-35). h1, a user's
+      machine, sends nothing (RISK-36), and isp, the carrier's, logs only on its own box. Lines keep
       busybox's local time and no hostname; the source is named by its address.
 
   - id: noc-platform
@@ -551,7 +560,7 @@ controls:
     fails_when: >-
       The digest is checked against what Docker reports for the pulled image, so it trusts the local
       daemon. Answering only on two ports is not authentication: anyone on the campus can send the
-      collector a line naming any router (RISK-33), and the exporters have no TLS (RISK-31).
+      collector a line naming any router (RISK-34), and the exporters have no TLS (RISK-32).
 
   - id: verdict-log
     claim: "Every odd behaviour in the log has one verdict (my config, normal behaviour, platform bug or lab artifact), the version it was seen on, and a fix or workaround. None may stay unclassified past 5 working days"
@@ -564,7 +573,8 @@ controls:
       on it, or a platform bug is worked around forever without anyone knowing.
     fails_when: >-
       It lints what is written. An odd behaviour nobody logs is never checked, and the verdict
-      itself is only as right as its evidence.
+      itself is only as right as its evidence. The 5-day limit is checked in CI's review job, which
+      the lab job doesn't wait for, so an overdue entry turns only that job red.
 
   - id: decision-records
     claim: "Every design decision has a record naming the constraint, the alternatives (doing nothing included), an outside source, the stake and who decides"
@@ -597,11 +607,11 @@ controls:
       plus the tools listed in netlab/records.py (Containerlab, Ansible, iptables, Docker, GitHub
       Actions). The Python libraries (pytest, Jinja2, PyYAML, pre-commit) and GitHub's own actions
       have no record of their own, and an image behind a registry port (localhost:5000/app:1) is not
-      detected. Until the lab runs a tool, its record may cite tests that arrive with it: restic's
-      cite the backup tests, which aren't in this tree until the backup change merges.
+      detected. Until the lab runs a tool, its record may cite tests that arrive with it
+      (test_a_record_may_cite_tests_that_arrive_with_its_tool).
 
   - id: risk-register
-    claim: "Every risky config line of a kind `make risks` scans for (no eBGP inbound policy, OSPF without authentication, privileged nodes, any ICMP type through fw1, an out-of-support base OS and more) is covered by a risk register entry with likelihood, impact, reasoning, a compensating test, an owner and a review date. An entry whose line is gone is flagged to close, and a decision record that accepts a risk must name its entry. None has been presented to management yet"
+    claim: "Every risky config line of a kind `make risks` scans for (no eBGP inbound policy, OSPF without authentication, privileged nodes, any ICMP type through fw1, an out-of-support base OS and more) is covered by a risk register entry with likelihood, impact, reasoning, a compensating test or why there is none, an owner and a review date. An entry whose line is gone is flagged to close, and a decision record that accepts a risk must name its entry. None has been presented to management yet"
     test:
       - tests/test_risks.py::test_every_risky_config_line_has_a_risk_record
       - tests/test_risks.py::test_a_deleted_risk_names_its_config_line
@@ -614,9 +624,10 @@ controls:
     threat: Shortcuts nobody decided on, and accepted risks that outlive the reason they were accepted.
     fails_when: >-
       It knows only the risky line kinds in netlab/risks.py; a new kind of shortcut needs a new
-      detector, and a gap with no config line (RISK-9, RISK-10, RISK-12, RISK-20) is tied to nothing. RISK-15's
+      detector, and a gap with no config line (RISK-9, RISK-10, RISK-12, RISK-20, RISK-27) is tied to nothing. RISK-15's
       detector reads the hosts' lines in the topology, so collecting the hosts won't flag it stale by
-      itself. Every review_by is 2027-01-15, so the whole register goes red on 2027-01-16 by design.
+      itself. Every review_by is 2027-01-15, so CI's review job goes red on 2027-01-16 by design; the
+      lab job doesn't wait for it.
       It can record who an entry was shown to, but not prove the meeting happened.
 
   - id: sizing
@@ -693,7 +704,8 @@ controls:
       The gate sees only what netlab.health checks: OSPF, BGP and host-to-host ping. A change that
       breaks a route, a firewall path or a service while those still pass goes through, and so does
       a fault that shows after the 10 s vetting delay. Production batches are rolled back as a whole
-      only if every router fails its gate together (checked by hand in the lab once, not by a test). If
+      only if every router fails its gate together (checked by hand in the lab once, not by a test, and
+      before decision 0016 made the save and the rollback go through the redacting vtysh). If
       one router fails an earlier step (the apply or the compare), only it rolls back, and the rest of its
       batch keeps the change (decision 0010, an accepted risk). The rollback restores the running
       config, not build/, so a restart boots the bad intent; make drift reports it. The rollout only
@@ -780,7 +792,7 @@ controls:
       It checks that the section says something, not that it is true or complete.
 
   - id: wan-filter
-    claim: "From the internet side only the published web port (h2:80) answers, plus BGP from the ISP's own peer address. A scan of every campus address on 27 TCP management ports (SSH, telnet, HTTP(S), BGP, NETCONF, every FRR vty), from the peer address and from another internet address, finds nothing else open, and the same scan from inside finds h2's port 22 and r2's BGP answering, so the closure is r2's edge filter"
+    claim: "From the internet side only the published web port (h2:80) answers. A scan of every campus address on 27 TCP management ports (SSH, telnet, HTTP(S), BGP, NETCONF, every FRR vty), from the ISP's peer address and from another internet address, finds nothing else open. r2's filter also admits BGP from the peer's address, but the session's MD5 key makes r2 ignore the scanner's keyless SYN, so the test allows that port without requiring it. The same scan from inside finds h2's port 22 and r2's BGP answering, so the closure is r2's edge filter"
     test: tests/live/test_edge.py::test_wan_scan_finds_only_published_ports
     period: P31D
     threat: >-
@@ -881,9 +893,11 @@ controls:
       wrong evidence and losing a day.
     fails_when: >-
       It checks that each entry is filled in and was re-dated within 90 days, not that the contact
-      answers. The ISP contact is a lab stand-in; the others are public channels (RDAP abuse contacts,
-      ICANN's registrar duties, IC3) checked by reading their published pages on 2026-10-15, not by
-      contacting anyone. No payment processor or scrubbing vendor is listed: the lab has neither.
+      answers. The ISP contact is a lab stand-in; the others are public channels, checked on 2026-10-15
+      without contacting anyone: ICANN's registrar duties and IC3 by reading their published pages, and
+      RIPE NCC's abuse-contact policy (ripe-705) behind the RDAP abuse contacts only from search results.
+      No hosting provider, payment processor or scrubbing vendor is listed, and the sheet says why.
+      The 90-day check runs in CI's review job, which the lab job doesn't wait for.
 
   - id: backup-at-destination
     claim: "A backup is judged where it lands. `make backup` sends every router's config and the firewall's and edge routers' rules, as `make drift` captured them, to a restic repository, then reads the snapshot back from there: one file per config and ruleset, each with the capture's sha256, and `restic check --read-data` clean. Data rotted at the destination fails the job, although `restic backup` itself exits 0"
@@ -978,7 +992,7 @@ controls:
       activity), neither runs and nothing alerts. That needs a check from outside GitHub (RISK-25).
 
   - id: power-event-drill
-    claim: "After a whole-lab power cycle every node comes back by itself from its startup config: an unsaved change on r2 is gone and OSPF, BFD and BGP are up; once `make apply` has set the BGP password again (it is in no startup config), h1 reaches the web server through fw1 and nothing has drifted. Routing was back 19.6 s after the cut here. A weekly job is set up to run it"
+    claim: "After a whole-lab power cycle every node comes back by itself from its startup config: an unsaved change on r2 is gone and OSPF, BFD and BGP are up; once `make apply` has set the BGP password again (it is in no startup config), h1 reaches the web server through fw1 and nothing has drifted. Routing was back 10.8 to 20.2 s after the cut over four runs here. A weekly job is set up to run it"
     test: tests/live/test_power_event.py::test_power_event_recovers_from_startup_config
     period: P31D
     threat: >-
@@ -991,7 +1005,7 @@ controls:
       RISK-27). Nothing runs `make apply` by itself after a real power cut, so until someone does, the
       BGP session stays down against a real carrier, and in the lab it came back with no MD5 (RISK-28). The
       weekly job has not run on GitHub yet, where the cut is `containerlab deploy --reconfigure`;
-      here it was the sandbox's whole-lab redeploy.
+      in the development sandbox it was the stand-in script's whole-lab redeploy (LAB_PARITY.md).
 
   - id: runbooks
     claim: "Runbooks for link failure, BGP down, config drift, restoring a router from backup, a power event, carrier loss and a DDoS blackhole at the ISP each name an owner, a coordinator, who updates stakeholders, a review date and their hosts. The check fails on a missing field, a review older than 180 days, or a host that isn't in the inventory or in the runbook's own host list"
@@ -1007,7 +1021,8 @@ controls:
     fails_when: >-
       It checks the front matter and the device names, not that the steps work; only someone running
       the runbook finds that out, and docs/runbooks/dry-runs.yml has no run yet. Devices are found in
-      clab-<lab>-X names, --limit and SRC=, so a device named only in prose is not checked.
+      clab-<lab>-X names, --limit and SRC=, so a device named only in prose is not checked. The
+      180-day check runs in CI's review job, which the lab job doesn't wait for.
 
   - id: control-status
     claim: "Every control in the register has its latest test green and inside its period. `make control-status` reads the dated JUnit results of this run and earlier runs on `main`, newest first, and fails naming any control whose latest result is red, missing or too old. A CI job is set up to run it on `main`"
@@ -1023,5 +1038,5 @@ controls:
       It runs in the scheduled workflow it checks: if GitHub stops scheduling, the check stops too and
       says nothing (RISK-25); the next push to main runs it again. Artifacts are kept 90 days, the longest period. It doesn't run on pull requests.
       The CI job has not run on GitHub yet, and fetching earlier runs' artifacts with gh is proven
-      only with a fake gh (the proxy here blocks artifact downloads).
+      only with a fake gh (the network the sandbox runs on blocks GitHub artifact downloads).
       It trusts that each named test proves its claim (control-register).

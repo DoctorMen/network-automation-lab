@@ -93,6 +93,9 @@ DETECTORS = {
                                          "the backup repository's password is kept in the same Actions cache as the repository"),
     "password-runtime-only": Detector("repo", "ansible/deploy.yml", r"^\s*cmd: vtysh -f /dev/stdin$", None,
                                       "a BGP password set in the running config only, so a restart or power cut loses it"),
+    "rollback-without-password": Detector("repo", "ansible/deploy.yml", r"frr-reload\.py .*--reload \{\{ fallback \}\}", None,
+                                          "the rollback reloads a fallback with no password lines, so a BGP neighbor "
+                                          "the failed change deleted comes back without its password"),
     # The NOC (decision 0018) and the central log store (0019).
     "exporter-plain-http": Detector("build", "topology.clab.yml", r"--web\.listen-address=(?!127\.0\.0\.1:)", r"--web\.config\.file",
                                     "an exporter answering plain HTTP beyond its own host, with no TLS or password"),
@@ -223,9 +226,11 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         render_all(load(ROOT / "inventory" / "network.yml"), tmp)
         problems = check(entries, Path(tmp), today=date.today())
-        print(summary(entries, scan(Path(tmp))))
+        hits = scan(Path(tmp))
     for p in problems:
         print(f"PROBLEM: {p}", file=sys.stderr)
+    # The summary reads every entry's scores and dates, so an incomplete entry would crash it and hide the problems.
+    print(summary(entries, hits) if not lint(entries) else "No summary until every entry is complete (PROBLEM lines above).")
     return 1 if problems else 0
 
 
