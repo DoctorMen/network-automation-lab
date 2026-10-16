@@ -1,9 +1,10 @@
 # Written by `make fp-review` (netlab/detections.py, decision 0027). Do not edit by hand.
 reviewed: 2026-10-16
-started: '2026-10-16T05:18:28Z'
+started: '2026-10-16T10:28:44Z'
 minutes: 30
+settle: 120
 environment: sandbox
-commit: f82f429
+commit: b4771ab
 workload:
 - every 30 s, a user on h1 loads h2's page
 - every 10 s, h1 pings h2
@@ -78,29 +79,29 @@ detections:
 pages: []
 ingest:
   r1/syslog:
-    bytes: 51428
-    per_day: 2429426
+    bytes: 51338
+    per_day: 2468345
     budget: 8388608
   r2/syslog:
-    bytes: 63484
-    per_day: 2998908
+    bytes: 63378
+    per_day: 3047200
     budget: 8388608
   r3/syslog:
-    bytes: 61049
-    per_day: 2883866
+    bytes: 60948
+    per_day: 2930380
     budget: 8388608
   fw1/syslog:
-    bytes: 11133
-    per_day: 525927
+    bytes: 11087
+    per_day: 533081
     budget: 8388608
   h2/syslog:
-    bytes: 1509
-    per_day: 71298
+    bytes: 1472
+    per_day: 70757
     budget: 8388608
   h2/http:
-    bytes: 5483
-    per_day: 259011
+    bytes: 5447
+    per_day: 261895
     budget: 524288
 cut:
   h2/http:
-    web-check: 372
+    web-check: 360

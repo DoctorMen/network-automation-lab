@@ -710,7 +710,7 @@
 
 - id: RISK-55
   kind: accepted-risk
-  title: h2's forwarder cuts every successful GET / from the NOC's address, not only the NOC's own check
+  title: h2's forwarder cuts every GET / from the NOC's address answered 200, not only the NOC's own check, and a check that fails on content too
   detectors: [log-cut-at-source]
   likelihood: 2
   impact: 2
@@ -718,12 +718,16 @@
     The cut (decision 0026) matches a line by its client address (the collector's, 10.30.30.10), its
     request line (GET / HTTP/1.1) and a 200 status, because that is all an access line says. So an
     operator on noc loading h2's page, or anything else on noc making that same request, is cut with the
-    check and reaches the store only as a count. A request from any other address, any other page, any
-    other status, and the check itself failing are all forwarded as written. Anyone able to run commands
-    on noc already holds the NOC's store and rules. The fix is a check the app can tell apart (a header
-    it logs), which needs a change to the app NOT-7 says we may not make.
+    check and reaches the store only as a count. A check that fails on content (WebContentWrong) still
+    answers 200, so its lines are cut too: the page fires, but the store shows those checks only as
+    counts. A request from any other address, any other page and any other status are forwarded as
+    written. Anyone able to run commands on noc already holds the NOC's store and rules. The check could
+    be told apart with no change to the app: http.server answers GET /?netlab-check with the same page
+    and logs the query string, so a marked check URL would let the cut take only the check. That is not
+    done, because the check would then no longer ask for exactly what a user asks for, and a real app
+    can answer a marked URL differently (a cache, a router, a redirect).
   compensating_control: tests/live/observe/test_volume.py::test_noisy_kind_cut_at_the_source_while_wanted_lines_arrive
-  compensates: only that one kind is cut, every cut line is counted in the store, and a failed request from the NOC arrives as written
+  compensates: only that one kind is cut, every cut line is counted in the store, a failed request (404) from the NOC arrives as written, and a check that fails on content still pages
   owner: DoctorMen
   review_by: 2027-01-15
   presented_to: pending
@@ -780,8 +784,12 @@
     user's page loads and pings, and the operator's drift, apply, verify, testevent and locate every five
     minutes, on a lab with nothing broken. A real campus has other normal work (maintenance windows,
     a carrier that flaps, many users at once, a reboot window that runs out), and slower patterns than
-    30 minutes. So a figure of 0 is 0 pages over that workload, not a rate for a real network. The review
-    can't tell a real fault in its window from a false page, so a figure can only overstate.
+    30 minutes. So a figure of 0 is 0 pages over that workload, not a rate for a real network. Two
+    detections look back further than the review, PendingRebootOverdue (a reboot pending over 1 h) and
+    LogIngestOverBudget (a day's bytes), so their 0 measures nothing; their cells say so, and
+    LogIngestOverBudget's figure is the review's per-day ingest table. The review can't tell a real fault
+    in its window from a false page, so a figure can overstate, and a page the workload caused that
+    arrives more than its 120 s wait after the workload ends would be missed.
   compensating_control: tests/test_detections.py::test_table_has_a_full_row_for_every_deployed_rule_and_a_current_review
   compensates: the workload is stated in docs/detections.md, every figure is from the current 92-day cycle and from the rules that run now
   owner: DoctorMen

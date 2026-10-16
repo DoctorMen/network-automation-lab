@@ -41,7 +41,7 @@ failure_modes:
     mitigation: monitoring/detections.yml states a 92-day cycle; make test fails the day after it runs out
     test: tests/test_detections.py::test_a_review_older_than_its_cycle_fails
   - mode: a figure was measured on rules that have since changed
-    mitigation: The review records a fingerprint of each detection's expressions and waits; a changed rule makes its figure stale and make test fails
+    mitigation: The review records a fingerprint of each detection's expressions and waits; a changed rule makes its figure stale and make test fails, a change of `for` alone included (tests/test_detections.py::test_a_change_of_wait_alone_stales_a_figure)
     test: tests/test_detections.py::test_a_review_of_other_rules_fails
   - mode: a review shorter than the stated workload is passed off as one
     mitigation: The review records how long it ran; under the stated 30 minutes fails
@@ -49,6 +49,18 @@ failure_modes:
   - mode: a review counts as benign although part of its workload failed, so the normal work never ran
     mitigation: Each step's runs and failures are recorded; one failure fails make test
     test: tests/test_detections.py::test_a_review_with_a_failed_step_fails
+  - mode: a step that times out or raises is not counted as failed, and its loop stops, so the rest of that step never runs
+    mitigation: A step that raises counts as failed and runs again at its next time; make test fails a review whose step ran fewer times than the workload's minutes and period give (every 5 min for 30 min is 6)
+    test: tests/test_detections.py::test_a_step_that_raises_counts_as_failed_and_runs_on
+  - mode: a page the workload's last minutes caused arrives after the count
+    mitigation: The review counts pages until the slowest one it could cause can arrive, 120 s after the workload (SourceSilent's bound for syslog, twice the heartbeat; OSPF's 40 s dead interval plus its alert's bound is 67 s), and records that wait; make test fails a review that waited less than the rules give now
+    test: tests/test_detections.py::test_a_review_that_stopped_counting_before_its_slowest_page_fails
+  - mode: a detection that looks back further than the review shows 0 as if it had been measured
+    mitigation: Its cell says it looks back further than the review (PendingRebootOverdue 1 h, LogIngestOverBudget 1 d) and what stands for its figure, and make test fails if its entry says nothing
+    test: tests/test_detections.py::test_a_detection_that_looks_back_longer_than_the_review_says_so
+  - mode: a review run on uncommitted changes, so no commit holds what it measured
+    mitigation: The review records the commit it starts on, marked when the tree has uncommitted changes; make test fails a marked review
+    test: tests/test_detections.py::test_a_review_on_a_tree_with_uncommitted_changes_fails
   - mode: a source spends more than its budget on a normal day
     mitigation: The review is also NOT-5's measured day; a source whose pace there is over its budget fails make test (decision 0026)
     test: tests/test_detections.py::test_a_source_over_its_budget_during_the_review_fails
@@ -64,9 +76,10 @@ The NOC runs nine kinds of alert rule, rendered from the inventory into build/no
 ## Decision
 
 - `make detections` (netlab/detections.py) writes docs/detections.md, one row per alert: what it detects and its blind spots from monitoring/detections.yml; the metrics it reads, their collector and where that sits, from the rules and monitoring/coverage.yml; the objects it watches from the rules' own labels; its false positives from monitoring/fp-review.yml. The file also lists the threats no detection here sees.
-- `make fp-review`, on a full lab with nothing broken, runs a stated benign workload for 30 minutes: a user loading h2's page every 30 s and pinging h2 and the carrier every 10 s, and the operator's make drift, make apply, make verify, make testevent and make locate every five minutes. Every page the NOC's pager receives in that window, and in the longest alert bound after it, is a false positive. It writes each detection's pages with a fingerprint of the rules they were counted on, each step's runs and failures, each log source's bytes as a day against its budget, and the lines cut at the source.
+- `make fp-review`, on a full lab with nothing broken, runs a stated benign workload for 30 minutes: a user loading h2's page every 30 s and pinging h2 and the carrier every 10 s, and the operator's make drift, make apply, make verify, make testevent and make locate every five minutes. Every page the NOC's pager receives in that window, and in the 120 s after it that the slowest page could take, is a false positive. It writes each detection's pages with a fingerprint of the rules they were counted on, each step's runs and failures (a step that raises counts as failed), the wait it counted for, each log source's bytes over the workload as a day against its budget, and the lines cut at the source, and it keeps every notification the pager received in results/fp-review-notifications.json.
+- .github/workflows/fp-review.yml runs `make fp-review` on a GitHub runner monthly and by hand, and uploads the review, the table and those notifications. It commits nothing: a person reads the artifact and commits the review.
 - tests/test_detections.py fails make test on a deployed rule with no row, a blank cell, a committed table that is not what the files give now, a review older than 92 days, shorter than stated, with a failed step, run on other rules, or with a source over its budget. tests/live/observe/test_detections.py compares the table with the rules the running NOC has loaded.
 
 ## Consequences
 
-Any change to a rule's expression or wait, including another build adding an alert, fails make test until someone runs make fp-review again, which takes a lab for about 31 minutes. A page from a real fault during the review is counted as false, so a figure can only overstate. The workload is this lab's normal work, stated in the table; a campus with other normal work (maintenance windows, a carrier that flaps) needs its own (RISK-58). Blind spots are written by hand, so a new rule needs its entry before make test passes, and its entry is only as good as whoever writes it.
+Any change to a rule's expression or wait, including another build adding an alert, fails make test until someone runs make fp-review again (about 33 minutes of a lab, or the fp-review workflow) and commits the result. A page from a real fault during the review is counted as false, so a figure can overstate; one the workload caused that arrives more than 120 s after it would be missed. PendingRebootOverdue and LogIngestOverBudget look back further than 30 minutes (1 h and 1 d), so the review can't show either paging falsely; their cells say so, and LogIngestOverBudget's real figure is the review's per-day ingest table. The review file is written by the review and checked by make test, but it is a committed file: the outside record is the workflow's artifact, once it has run on GitHub. The workload is this lab's normal work, stated in the table; a campus with other normal work (maintenance windows, a carrier that flaps) needs its own (RISK-58). Blind spots are written by hand, so a new rule needs its entry before make test passes, and its entry is only as good as whoever writes it.
