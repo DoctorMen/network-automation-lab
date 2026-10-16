@@ -78,3 +78,33 @@ def test_reads_are_told_from_writes():
     assert coverage.classify(["ip", "link", "set", "eth2", "down"]) == [("action", "ip link set")]
     assert coverage.classify(["sh", "-c", "iptables -S; iptables -t raw -S"]) == [("read", "iptables -S")] * 2
     assert coverage.classify(["sh", "-ec", "ls /lib/modules 2>/dev/null"]) == [("read", "ls /lib/modules")]
+
+
+def test_every_metric_says_what_it_counts():
+    """OROS DEC-2 (decision 0024): a collector's metric with no counts entry fails, and so does a counter that
+    doesn't say when it wraps or resets, or one whose proof names a test that doesn't exist."""
+    reads, odd = coverage.found()
+    cov = listed()
+    del cov["counts"]["node_qdisc_drops_total"]
+    cov["counts"]["node_network_receive_bytes_total"].pop("wraps")
+    cov["counts"]["node_network_transmit_bytes_total"]["proven_by"] = ["tests/live/observe/test_loss.py::test_nothing_here"]
+    problems = coverage.check(cov, reads, odd, inv)
+    assert "metric node_qdisc_drops_total says nothing under counts in monitoring/coverage.yml about what it counts" in problems
+    assert "counts: node_network_receive_bytes_total is a counter, and doesn't say when it wraps" in problems
+    assert ("counts: node_network_transmit_bytes_total is proven by tests/live/observe/test_loss.py::test_nothing_here, "
+            "which does not exist") in problems
+
+
+def test_a_rule_reading_a_counter_raw_fails(monkeypatch):
+    """A rule that compares a counter itself, not its increase(), would page on a reset or a 32-bit wrap as a fall
+    of the count; the lint names the rule and the counter."""
+    reads, odd = coverage.found()
+    real = coverage.monitoring.alert_rules
+
+    def raw(i):
+        return [{**r, "expr": 'node_qdisc_drops_total{node="h2"} > 0'}
+                if r["alert"] == "QueueDrops" else r for r in real(i)]
+    monkeypatch.setattr(coverage.monitoring, "alert_rules", raw)
+    problems = coverage.check(listed(), reads, odd, inv)
+    assert problems == ["alert QueueDrops reads the counter node_qdisc_drops_total outside increase, rate, irate, resets: "
+                        "a reset or a wrap would read as a fall"]

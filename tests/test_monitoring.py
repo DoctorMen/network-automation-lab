@@ -196,3 +196,62 @@ def test_noc_host_has_a_scope_decision():
     """The central log store holds the CDE's logs, so it is in scope (PCI DSS 10.3.3), not out of it."""
     assert monitoring.host(inv) in inv.raw["scope"]["systems"]
     assert monitoring.host(inv) not in inv.raw["scope"]["out_of_scope"]
+
+
+def test_queue_drop_rule_for_every_node_with_a_node_exporter():
+    """OROS FND-1 (decision 0023): one QueueDrops rule per router we own and per server, each reading the queue's
+    drop counter through increase(), so a burst between two scrapes still counts and a reset never pages."""
+    nodes = [*monitoring.exporter_routers(inv), *monitoring.servers(inv)]
+    assert "h2" in nodes and monitoring.host(inv) not in nodes
+    rules = rules_for("QueueDrops")
+    assert sorted(r["labels"]["node"] for r in rules) == sorted(nodes)
+    for r in rules:
+        assert r["expr"] == f'increase(node_qdisc_drops_total{{node="{r["labels"]["node"]}"}}[1m]) > 0', r["expr"]
+
+
+def test_servers_node_exporter_reads_only_its_interfaces_and_queues(tmp_path):
+    """h2's node_exporter listens on h2's own address (bound before the address is there) and runs only the
+    netdev and qdisc collectors; the routers' adds qdisc to what they ran."""
+    render_all(inv, tmp_path)
+    nodes = yaml.safe_load((tmp_path / "topology.clab.yml").read_text())["topology"]["nodes"]
+    for h in monitoring.servers(inv):
+        cmd = nodes[f"{h}-node-exporter"]["cmd"].split()
+        assert cmd == [f"--web.listen-address={inv.hosts[h]['address'].split('/')[0]}:{monitoring.PORTS['node']}",
+                       "--collector.disable-defaults", "--collector.netdev", "--collector.qdisc"]
+        assert nodes[h]["sysctls"]["net.ipv4.ip_nonlocal_bind"] == 1
+        assert "binds" not in nodes[f"{h}-node-exporter"], "a server's exporter needs nothing from its disk"
+    for r in monitoring.exporter_routers(inv):
+        assert "--collector.qdisc" in nodes[f"{r}-node-exporter"]["cmd"]
+    prom = yaml.safe_load((tmp_path / monitoring.host(inv) / "prometheus.yml").read_text())
+    node_job = next(j for j in prom["scrape_configs"] if j["job_name"] == "node")
+    assert sorted(sc["labels"]["node"] for sc in node_job["static_configs"]) == sorted(monitoring.exporter_nodes(inv))
+
+
+def test_the_central_store_keeps_its_data_on_the_lab_host(tmp_path):
+    """FND-2 (decision 0025): Loki's /loki is a folder of build/ on the lab host, so a redeploy or power cut of noc
+    doesn't empty it. Render creates it writable for Loki's own user and never empties it."""
+    render_all(inv, tmp_path)
+    noc = monitoring.host(inv)
+    nodes = yaml.safe_load((tmp_path / "topology.clab.yml").read_text())["topology"]["nodes"]
+    assert f"{noc}/loki:/loki" in nodes[f"{noc}-loki"]["binds"]
+    store = tmp_path / noc / "loki"
+    assert store.is_dir() and store.stat().st_mode & 0o777 == 0o777
+    (store / "chunk").write_text("kept")
+    render_all(inv, tmp_path)
+    assert (store / "chunk").read_text() == "kept", "a render emptied the store"
+
+
+def test_flight_recorder_is_armed_on_a_link_failure_and_only_reads(tmp_path):
+    """agent.sh dumps state when a link loses carrier or goes down, at most once per FLIGHTREC['every'] s, and
+    sends it after FLIGHTREC['delay'] s. The dump runs only reading commands and never the running config."""
+    render_all(inv, tmp_path)
+    agent = (tmp_path / "monitoring" / "agent.sh").read_text()
+    dump = agent[agent.index("dump() {"):agent.index('if [ "${1:-}" = dump ]')]
+    assert "ip monitor link" in agent and "*NO-CARRIER*|*\"state DOWN\"*|*LOWERLAYERDOWN*" in agent
+    assert f"-ge {monitoring.FLIGHTREC['every']} ]" in agent and f"sleep {monitoring.FLIGHTREC['delay']};" in agent
+    assert f"cut -c1-{monitoring.FLIGHTREC['width']}" in dump
+    commands = re.findall(r"^\s+run (.+)$", dump, re.M)
+    assert commands and all(c.split()[0] in ("ip", "tc", "iptables", "vtysh") for c in commands), commands
+    assert all(re.search(r"(^| )-c \"show ", c) for c in commands if c.startswith("vtysh")), "vtysh in the dump runs a command that isn't show"
+    assert "running-config" not in dump and "conf" not in dump.replace("config", "")
+    assert all(not re.search(r" -[ADIRFXNZP] ", c) for c in commands if c.startswith("iptables")), "the dump changes the firewall"
