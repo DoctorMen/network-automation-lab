@@ -12,3 +12,7 @@ ospfd_options="  -A 127.0.0.1"
 staticd_options="-A 127.0.0.1"
 # Without -A, bfdd's vty listens on 0.0.0.0:2617, reachable from every lab link.
 bfdd_options="   -A 127.0.0.1"
+# watchfrr restarts a daemon at most every 5 s, doubling for each restart in a row up to 60 s. Its defaults (60 s,
+# up to 600 s) kept a zebra that crashed twice as it started down for about 3 minutes (V-011). Each router's start
+# command passes these to watchfrr (topology.clab.yml.j2): the image's own start leaves them out.
+watchfrr_options="--min-restart-interval 5 --max-restart-interval 60"

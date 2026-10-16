@@ -9,14 +9,20 @@ topology:
     # `docker exec`, which needs no network.
     network-mode: none
   nodes:
+{% set watchfrr = ". /usr/lib/frr/frrcommon.sh && exec /usr/lib/frr/watchfrr $watchfrr_options $(daemon_list)" %}
 {% for name in inv.routers %}
     {{ name }}:
       kind: linux
+      # Starts watchfrr the way the image's own start script (docker-start) does, but with the daemons file's
+      # watchfrr_options, which that script leaves out (V-011). frrcommon.sh, which reads the daemons file, is a
+      # bash script. tini, the image's entrypoint, stays the container's first process.
 {% if name in mon.exporters %}
       # /var/run/frr is shared with this router's frr_exporter (decision 0018). Unlike /var/run on real
       # gear it survives a restart, and a stale pid file would point FRR's start script at whatever
       # process has that number now. So the router empties it, and gives it to FRR's user, first.
-      cmd: sh -c "chown frr:frr /var/run/frr && rm -f /var/run/frr/* && exec /usr/lib/frr/docker-start"
+      cmd: bash -c "chown frr:frr /var/run/frr && rm -f /var/run/frr/* && {{ watchfrr }}"
+{% else %}
+      cmd: bash -c "{{ watchfrr }}"
 {% endif %}
       sysctls:
         net.ipv4.ip_forward: 1

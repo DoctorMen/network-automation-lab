@@ -1,5 +1,6 @@
 """Rendered configs should say exactly what the inventory says."""
 import json
+import shlex
 from pathlib import Path
 
 import yaml
@@ -60,6 +61,24 @@ def test_daemons_match_protocols():
     # bfdd only serves OSPF here, so it runs exactly where ospfd does.
     assert "bfdd=yes" in render_router(inv, "r1")["daemons"]
     assert "bfdd=no" in render_router(inv, "isp")["daemons"]
+
+
+def test_every_router_restarts_a_crashed_daemon_within_seconds(tmp_path):
+    """V-011: FRR 8.4.1's zebra or bgpd crashes as it starts now and then, and with watchfrr's defaults (60 s, doubling
+    up to 600 s) isp's zebra was still down when make apply's 120 s wait ran out. Every router's daemons file sets
+    watchfrr's restart interval to 5 s, doubling up to 60 s, and every router's start command runs watchfrr with
+    $watchfrr_options, which the image's own start (docker-start) leaves out. tini, the image's entrypoint, stays."""
+    render_all(inv, tmp_path)
+    nodes = yaml.safe_load((tmp_path / "topology.clab.yml").read_text())["topology"]["nodes"]
+    watchfrr = ". /usr/lib/frr/frrcommon.sh && exec /usr/lib/frr/watchfrr $watchfrr_options $(daemon_list)"
+    for router in inv.routers:
+        daemons = (tmp_path / router / "daemons").read_text().splitlines()
+        assert 'watchfrr_options="--min-restart-interval 5 --max-restart-interval 60"' in daemons, router
+        start = shlex.split(nodes[router].get("cmd", ""))
+        assert start[:2] == ["bash", "-c"] and len(start) == 3 and "entrypoint" not in nodes[router], (router, start)
+        # A router with exporters empties FRR's run folder, which it shares with them, first (decision 0018).
+        first = "chown frr:frr /var/run/frr && rm -f /var/run/frr/* && " if router in monitoring.exporter_routers(inv) else ""
+        assert start[2] == first + watchfrr, (router, start[2])
 
 
 def test_firewall_default_drop_and_rule_order():

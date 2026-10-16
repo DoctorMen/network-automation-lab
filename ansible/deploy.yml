@@ -42,8 +42,12 @@
     # router's daemons file starts must answer first (`show daemons` lists the ones vtysh reaches),
     # and FRR's start script (watchfrr.sh, which ends with `vtysh -b`, the config load) must be done.
     # Up to 120 s: zebra or bgpd sometimes crashes as it starts (on GitHub all four routers' zebra
-    # once), and watchfrr starts it again, with its config, only after its minimum restart
-    # interval (60 s) (V-011). netlab/restore.py waits for a throwaway router the same way.
+    # once), and watchfrr starts it again, with its config, after its restart interval: 5 s, doubling
+    # for each restart in a row up to 60 s, as each router's daemons file sets it (V-011). On a throwaway
+    # router zebra answered again 10.2, 10.6 and 20.1 s after three crashes in a row. With watchfrr's
+    # defaults it took 65.2 s, then 120.6 s: two crashes outlast this wait, and isp's zebra, which
+    # crashed twice, was still down at its end in CI run 38972784804.
+    # netlab/restore.py waits for a throwaway router the same way.
     # First, so the health baseline below is taken with the routers answering.
     - name: Wait until every routing daemon answers and FRR has loaded its config (bgpd included)
       ansible.builtin.command:
