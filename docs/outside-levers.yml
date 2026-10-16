@@ -12,8 +12,10 @@
 # tests/test_levers.py fails when an entry has no contact or evidence list, or was checked more than
 # cycle_days ago, so the sheet goes red in CI instead of going stale quietly.
 # Not listed: a payment processor (the toy payments segment takes no payments; a real one adds its
-# acquirer's fraud desk) and a scrubbing or CDN vendor (no contract; the blackhole below is the
-# on-demand lever, with no always-on fee).
+# acquirer's fraud desk), a scrubbing or CDN vendor (no contract; the blackhole below is the
+# on-demand lever, with no always-on fee), and a lookalike site's hosting provider as an entry of its
+# own (its abuse desk is the RDAP abuse contact of the site's address, found as in the probing entry,
+# and the registrar can suspend the name whoever hosts it).
 cycle_days: 90
 
 levers:

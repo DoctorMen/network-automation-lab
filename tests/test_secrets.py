@@ -254,6 +254,16 @@ def tasks(items):
             yield item
 
 
+def levels(items):
+    """Every play, block and task in a list of plays or tasks, each before what it holds. Ansible hands a
+    play's or a block's environment and vars down to every task in it, so each level counts."""
+    for item in items or []:
+        yield item
+        for k in ("tasks", "pre_tasks", "post_tasks", "handlers", "block", "rescue", "always"):
+            if k in item:
+                yield from levels(item[k])
+
+
 def exposed(task):
     """(where, value) for each part of a task that becomes a command line or an environment, and stdin."""
     found = [("environment", task.get("environment"))]
@@ -270,16 +280,17 @@ def exposed(task):
     return found, stdin
 
 
-def test_secrets_reach_a_router_only_on_stdin():
-    """No playbook task puts a secret-store lookup, or a variable built from one, in cmd, argv, free-form arguments, args or environment, where /proc shows it; stdin is the one way in."""
-    files = sorted(ANSIBLE.glob("*.yml")) + sorted((ANSIBLE / "tasks").glob("*.yml"))
+def secret_leaks(folder):
+    """(leaks, tasks with a secret on stdin) for the playbooks in folder: each play, block or task that
+    puts a secret-store lookup, or a variable built from one, where /proc shows it."""
+    files = sorted(folder.glob("*.yml")) + sorted((folder / "tasks").glob("*.yml"))
     plays = {path: yaml.safe_load(path.read_text()) for path in files}
     defined = {}
-    for path in sorted((ANSIBLE / "group_vars").glob("*.yml")):
+    for path in sorted((folder / "group_vars").glob("*.yml")):
         defined.update(yaml.safe_load(path.read_text()) or {})
     for items in plays.values():
-        for task in [*items, *tasks(items)]:  # plays' vars and tasks' vars
-            defined.update(task.get("vars") or {})
+        for level in levels(items):  # plays', blocks' and tasks' vars
+            defined.update(level.get("vars") or {})
     # secrets_dir is the store; anything whose value reads from it, directly or through another such
     # variable (password_tags), carries a secret too.
     names = {"secrets_dir"}
@@ -289,18 +300,43 @@ def test_secrets_reach_a_router_only_on_stdin():
 
     leaks, on_stdin = [], []
     for path, items in plays.items():
-        for task in tasks(items):
-            found, stdin = exposed(task)
-            leaks += [f"{path.relative_to(ROOT)}: {task.get('name', 'unnamed task')} ({where})"
+        for level in levels(items):
+            found, stdin = exposed(level)
+            leaks += [f"{path.relative_to(folder.parent)}: {level.get('name', 'unnamed')} ({where})"
                       for where, value in found if value and secret.search(str(value))]
             if stdin and secret.search(str(stdin)):
-                on_stdin.append(task.get("name"))
+                on_stdin.append(level.get("name"))
+    return leaks, on_stdin
+
+
+def test_secrets_reach_a_router_only_on_stdin():
+    """No play, block or task puts a secret-store lookup, or a variable built from one, in cmd, argv, free-form arguments, args or environment, where /proc shows it; stdin is the one way in."""
+    leaks, on_stdin = secret_leaks(ANSIBLE)
     assert not leaks, f"a secret reaches a command line or an environment: {leaks}"
     assert on_stdin, "no task reads the secret store any more, so this check sees nothing"
 
 
+def test_a_secret_in_a_play_or_block_environment_is_found(tmp_path):
+    """A lookup in a play's or a block's environment reaches every task in it, and a block var built from one can be used on a command line: all three are named."""
+    copy = tmp_path / "ansible"
+    shutil.copytree(ANSIBLE, copy)
+    path = copy / "deploy.yml"
+    plays = yaml.safe_load(path.read_text())
+    lookup = "{{ lookup('file', secrets_dir ~ '/bgp-r2-isp') }}"
+    plays[0]["environment"] = {"PLAY_PW": lookup}
+    block = next(t for t in plays[0]["tasks"] if "block" in t)
+    block.update(environment={"BLOCK_PW": lookup}, vars={"pw_in_block": lookup})
+    block["block"].append({"name": "Echo it", "ansible.builtin.command": "echo {{ pw_in_block }}"})
+    path.write_text(yaml.safe_dump(plays, sort_keys=False))
+    assert sorted(secret_leaks(copy)[0]) == [
+        f"ansible/deploy.yml: {block['name']} (environment)",
+        "ansible/deploy.yml: Echo it (_raw_params)",
+        f"ansible/deploy.yml: {plays[0]['name']} (environment)",
+    ]
+
+
 def test_every_running_config_read_goes_through_the_redacting_vtysh():
-    """Every task that reads a router's running config (a plan, a backup, the rollout's fallback) or reloads one uses the redacting vtysh, and a reload or a fallback saved on the router leaves the password lines out, so a rollback neither deletes nor sets a password."""
+    """Every task that reads a router's running config (a plan, a backup, the rollout's fallback) or reloads one uses the redacting vtysh, and a reload or a fallback saved on the router leaves the password lines out, so a rollback neither deletes nor sets a password (unless the change deleted the neighbor, RISK-30)."""
     problems = []
     for path in sorted(ANSIBLE.glob("*.yml")) + sorted((ANSIBLE / "tasks").glob("*.yml")):
         for task in tasks(yaml.safe_load(path.read_text())):
@@ -318,3 +354,26 @@ def test_every_running_config_read_goes_through_the_redacting_vtysh():
                 elif "show running-config" in line and ">" in line and not drop:
                     problems.append(f"{name}: saves the running config on the router with its password lines")
     assert not problems, problems
+
+
+def test_a_failed_password_command_never_prints_the_password(tmp_path):
+    """When setting a BGP password fails (docker exec exits 1 here), pytest's report names the failed
+    command, but neither the terminal output nor the JUnit file holds the password: the repo's pytest.ini
+    keeps tracebacks short, and the long style would print the helper's arguments."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "docker").write_text("#!/bin/sh\ncat >/dev/null\nexit 1\n")
+    (bindir / "docker").chmod(0o755)
+    case = tmp_path / "test_case.py"
+    case.write_text("import os\nfrom tests.live.conftest import Node\nfrom tests.live.test_secrets import set_password\n\n\n"
+                    "def test_set():\n    end = {'router': 'isp', 'asn': 65100, 'neighbor': '198.51.100.0'}\n"
+                    "    set_password(lambda name: Node('lab', name), end, os.environ['THE_PASSWORD'])\n")
+    password = token_hex(16)
+    run = subprocess.run([sys.executable, "-m", "pytest", "-c", str(ROOT / "pytest.ini"), "--rootdir", str(tmp_path),
+                          "-p", "no:cacheprovider", str(case), f"--junitxml={tmp_path / 'case.xml'}"],
+                         cwd=tmp_path, capture_output=True, text=True, timeout=120,
+                         env={**os.environ, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+                              "PYTHONPATH": str(ROOT), "THE_PASSWORD": password})
+    assert run.returncode == 1 and "CalledProcessError" in run.stdout, run.stdout[-2000:]
+    assert password not in run.stdout + run.stderr, "the password is in pytest's terminal output"
+    assert password not in (tmp_path / "case.xml").read_text(), "the password is in the JUnit file CI uploads"

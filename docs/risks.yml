@@ -6,8 +6,9 @@
 # and a link to the record (a PR review, an issue, meeting notes). netlab can't make that true, only list
 # what is still pending.
 # Every review_by is 2027-01-15 on purpose: the register is reviewed as a whole, so on 2027-01-16
-# `make test`, `make risks` and the nightly CI all go red together, until each entry has been looked at
-# again and given its next date.
+# `make review`, `make risks` and CI's review job all go red together, until each entry has been looked
+# at again and given its next date. The lab job doesn't wait for the review job, so the live tests and
+# the backup keep running meanwhile.
 
 - id: RISK-1
   kind: accepted-risk
@@ -23,8 +24,7 @@
     internet, and LAN-A to LAN-B traffic while the r1-r3 link is down, which runs through r2. Likelihood
     is low because one carrier peer sends one /24. isp has the same line; it is the carrier stand-in's
     config, not ours. The fix is an inbound prefix-list on r2 allowing the carrier's /24 and a default.
-  compensating_control: tests/live/test_secrets.py::test_bgp_session_uses_its_secret_and_a_wrong_one_drops_it
-  compensates: TCP MD5 means only the carrier's own router can send r2 routes; a spoofed peer can't
+  compensating_control: none (nothing limits what the real carrier sends. A leak or an upstream hijack arrives over the authenticated session, so MD5, tests/live/test_secrets.py::test_bgp_session_uses_its_secret_and_a_wrong_one_drops_it, stops only a spoofed peer. Accepted on likelihood, one peer sending one /24)
   owner: DoctorMen
   review_by: 2027-01-15
   presented_to: pending
@@ -577,6 +577,32 @@
   compensates: >-
     the repository can only ever hold the redacted capture: `make backup` refuses a capture holding a
     lab secret in clear before restic runs, and searches every file it reads back from the snapshot
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-30
+  kind: accepted-risk
+  title: the rollback of a failed change to a BGP neighbor itself brings the neighbor back without its password
+  detectors: [rollback-without-password]
+  likelihood: 2
+  impact: 4
+  reasoning: >-
+    The fallback is saved with its password lines dropped, so no password is on the router's disk and a
+    rollback leaves a password as it is (decision 0016). A change to the neighbor itself (its remote-as
+    or address, or the local AS) is different: frr-reload.py deletes the neighbor, password and all, and
+    re-creates it, and the rollback then re-creates the old one from a fallback that has no password
+    line. Against a carrier that keeps its key, the session stays down until the inventory is reverted
+    and `make apply` runs. Seen in the lab on 2026-10-16: a wrong remote-as on r2 failed the gate, the
+    rollback put the right remote-as back with no MD5, and the session stayed in Connect until make
+    apply. Setting the passwords again in the rescue would cover a new remote-as, but not a renumbered
+    neighbor, whose old address has no secret in the new inventory.
+  compensating_control: tests/live/test_secrets.py::test_bgp_session_uses_its_secret_and_a_wrong_one_drops_it
+  compensates: >-
+    the rollout stops and names the router and the BGP session it lost, and the live suite fails on any
+    session end without a password the next time it runs on that lab
   owner: DoctorMen
   review_by: 2027-01-15
   presented_to: pending

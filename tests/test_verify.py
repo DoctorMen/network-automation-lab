@@ -1,5 +1,7 @@
 """netlab.verify's rules, offline: the newest kernel by version, not by spelling, and a replaced or missing daemon is caught."""
-from netlab.verify import daemons_status, kernel_status, tc_classes
+import pytest
+
+from netlab.verify import chosen, daemons_status, kernel_status, tc_classes
 
 DAEMONS = "zebra=yes\nbgpd=no\nospfd=yes\nstaticd=yes\nvtysh_enable=yes\n"
 RUNNING = ["/sbin/tini", "/usr/lib/frr/watchfrr", "/usr/lib/frr/zebra", "/usr/lib/frr/ospfd", "/usr/lib/frr/staticd"]
@@ -29,3 +31,12 @@ def test_tc_class_counters_are_parsed():
         "1:10": {"rate": "15mbit", "ceil": "20mbit", "bytes": 58960, "packets": 240, "queued": 0},
         "1:20": {"rate": "5mbit", "ceil": "20mbit", "bytes": 30210430, "packets": 3187, "queued": 4},
     }
+
+
+def test_no_node_named_means_every_node(capsys):
+    """Plain `make verify` names no node and checks them all (Python 3.11 refused that when the names were argparse choices); an unknown node is refused by name."""
+    assert chosen([], ["r1", "h2"]) == ["r1", "h2"]
+    assert chosen(["h2"], ["r1", "h2"]) == ["h2"]
+    with pytest.raises(SystemExit):
+        chosen(["r9"], ["r1", "h2"])
+    assert "not a router or a host with QoS: r9" in capsys.readouterr().err

@@ -15,7 +15,7 @@ alternatives:
     why_not: Built around a GUI and a server or VM to run it on; neither fits a headless 20-minute CI job, and EVE-NG's Pro edition is paid
   - name: do nothing (render and unit-test the configs only)
     why_not: No routing protocol would ever run, so none of the live drills (failover, BFD, carrier loss, drift) could prove anything
-no_purchase: Docker alone, plus our own script to create the veth links. The lab already does exactly that where Containerlab won't start (a kernel with no /proc/modules, such as the sandbox these records were written in); it works, but then we own the link plumbing.
+no_purchase: Docker alone, plus our own script to create the veth links. A stand-in script kept outside this repo already does exactly that where Containerlab won't start (a kernel with no /proc/modules, such as the development sandbox in LAB_PARITY.md); it works, but then we own the link plumbing.
 staffing: k alone; nothing to hire or buy. The topology file is generated, so there is little to learn beyond `deploy` and `destroy`.
 vendor_domains: [containerlab.dev, github.com/srl-labs, netdevops.me]
 independent_sources:

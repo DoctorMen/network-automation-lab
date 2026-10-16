@@ -49,10 +49,21 @@ jobs:
           exit 1
       - name: Create it, with a random password stored beside it (see docs/decisions/0014)
         run: make backup-init BACKUP_REPO="$RUNNER_TEMP/backup/repo" BACKUP_PASSWORD="$RUNNER_TEMP/backup/password"
-      - uses: actions/cache/save@v4
+      - name: Keep it in the cache
+        id: keep-repo
+        uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/backup
-          key: restic-${{ github.run_id }}
+          key: restic-${{ github.run_id }}-${{ github.run_attempt }}
+      # actions/cache/save only warns when the upload fails, so look the new key up: a miss fails here.
+      - name: Check the repository reached the cache
+        if: ${{ steps.keep-repo.outcome == 'success' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/backup
+          key: restic-${{ github.run_id }}-${{ github.run_attempt }}
+          lookup-only: true
+          fail-on-cache-miss: true
 
   drills:
     name: Restore drill and power-event drill

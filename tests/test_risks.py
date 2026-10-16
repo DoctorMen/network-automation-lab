@@ -10,6 +10,7 @@ import yaml
 
 from netlab.inventory import load
 from netlab.render import render_all
+from netlab import risks
 from netlab.risks import DECISIONS, REGISTER, ROOT, SELECTIONS, check, summary, scan
 
 ENTRIES = yaml.safe_load(REGISTER.read_text())
@@ -26,6 +27,7 @@ def without(risk_id):
     return [e for e in ENTRIES if e["id"] != risk_id]
 
 
+@pytest.mark.review
 def test_every_risky_config_line_has_a_risk_record(build):
     """Each risky line in the rendered configs, the Ansible files and the inventory maps to a register entry, every entry is complete, and no review is overdue."""
     assert check(ENTRIES, build, today=date.today()) == []
@@ -106,3 +108,14 @@ def test_summary_lists_what_management_has_not_seen(build):
     text = summary(ENTRIES, scan(build))
     pending = [e["id"] for e in ENTRIES if e["presented_to"] == "pending"]
     assert f"Not yet presented to management: {', '.join(pending)}" in text
+
+
+def test_make_risks_names_an_incomplete_entry_instead_of_crashing(tmp_path, monkeypatch, capsys):
+    """An entry with no likelihood is reported as a PROBLEM line and `make risks` exits 1, with no traceback from the summary."""
+    bad = copy.deepcopy(ENTRIES)
+    del bad[0]["likelihood"]
+    register = tmp_path / "risks.yml"
+    register.write_text(yaml.safe_dump(bad))
+    monkeypatch.setattr(risks, "REGISTER", register)
+    assert risks.main() == 1
+    assert f"PROBLEM: {bad[0]['id']}: missing likelihood" in capsys.readouterr().err
