@@ -326,8 +326,8 @@ reads:
     status: gap
     fallback: make finding, on demand; every node reads the host's kernel clock
   # --- Secrets that must not be anywhere ---
-  - read: grep /var/log/frr /var/run/frr /tmp
-    value: no BGP password in FRR's logs or scratch files
+  - read: grep /var/log /var/run/frr /tmp
+    value: no BGP password in FRR's logs (syslog's file and frr-reload's) or scratch files
     status: derived
     logql: '{source="syslog"} |= "password"'
     how: router logs are in the central store too, so tests/live/observe/test_central_store.py searches every

@@ -150,8 +150,9 @@ def test_no_secret_in_env_argv_logs_or_files(node, expected):
     hits.update(files_holding(values, BUILD, ROOT / "backups"))
     for router in routers:
         container = node(router).container
-        # FRR's own logs and scratch files: frr-reload.log, its reload-*.txt, the staged configs.
-        out = subprocess.run(["docker", "exec", "-i", container, "sh", "-c", "grep -rlsF -f - /var/log/frr /var/run/frr /tmp"],
+        # FRR's own logs and scratch files: the daemons' syslog lines (/var/log/messages, which also holds
+        # each Ansible module's "Invoked with" line), frr-reload.log, its reload-*.txt, the staged configs.
+        out = subprocess.run(["docker", "exec", "-i", container, "sh", "-c", "grep -rlsF -f - /var/log /var/run/frr /tmp"],
                              input="\n".join(values), capture_output=True, text=True).stdout
         hits.update(f"{container}: {line}" for line in out.split())
         logs = subprocess.run(["docker", "logs", container], capture_output=True, text=True)
