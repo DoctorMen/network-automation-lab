@@ -6,7 +6,7 @@ LAB_ENV ?= local
 NOTE    ?=
 
 .PHONY: help validate render test deploy live drift apply locate measure destroy all
-.PHONY: secrets gitleaks finding risks deploy-network observe coverage testevent alerts ingest
+.PHONY: secrets gitleaks finding risks deploy-network observe coverage testevent alerts ingest detections fp-review
 
 help:            ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-15s %s\n", $$1, $$2}'
@@ -45,6 +45,12 @@ alerts:          ## What is firing now, and what the NOC's pager (the webhook si
 
 ingest:          ## Each log source's last 24 h at the collector against its daily budget; fails if one is over
 	$(PY) -m netlab.observe ingest
+
+detections:      ## Write docs/detections.md from the deployed rules; fails on a rule with no row, a blank cell, a stale review
+	$(PY) -m netlab.detections
+
+fp-review:       ## On a full lab: run the benign workload (30 min), count every page, write monitoring/fp-review.yml (LAB_ENV=...)
+	$(PY) -m netlab.detections review --env $(LAB_ENV)
 
 drift:           ## Back up routers and firewall, fail on drift or on a backup missing running config
 	cd ansible && ansible-playbook drift.yml

@@ -1,0 +1,106 @@
+# Written by `make fp-review` (netlab/detections.py, decision 0027). Do not edit by hand.
+reviewed: 2026-10-16
+started: '2026-10-16T05:04:24Z'
+minutes: 8
+environment: sandbox
+commit: 1995dac with uncommitted changes
+workload:
+- every 30 s, a user on h1 loads h2's page
+- every 10 s, h1 pings h2
+- every 10 s, h1 pings the carrier's 203.0.113.1
+- 'every 5 min, the operator runs make drift: a backup of every router and the firewall, compared with intent'
+- 'every 5 min, the operator runs make apply with nothing to change: the canary, its health gate, then the rest'
+- 'every 5 min, make verify: kernels, daemons and h2''s QoS classes in effect'
+- 'every 5 min, make testevent: a marked line from every log source'
+- every 5 min, make locate from h1 to 203.0.113.1
+steps:
+  every 30 s, a user on h1 loads h2's page:
+    runs: 16
+    failed: 0
+  every 10 s, h1 pings h2:
+    runs: 48
+    failed: 0
+  every 10 s, h1 pings the carrier's 203.0.113.1:
+    runs: 48
+    failed: 0
+  'every 5 min, the operator runs make drift: a backup of every router and the firewall, compared with intent':
+    runs: 2
+    failed: 0
+  'every 5 min, the operator runs make apply with nothing to change: the canary, its health gate, then the rest':
+    runs: 2
+    failed: 0
+  'every 5 min, make verify: kernels, daemons and h2''s QoS classes in effect':
+    runs: 2
+    failed: 0
+  'every 5 min, make testevent: a marked line from every log source':
+    runs: 1
+    failed: 0
+  every 5 min, make locate from h1 to 203.0.113.1:
+    runs: 1
+    failed: 0
+detections:
+  TargetDown:
+    objects: 1
+    rules: 0e20977b76cd
+    pages: 0
+  BGPSessionDown:
+    objects: 1
+    rules: 06709cb7fcd1
+    pages: 0
+  OSPFNeighborDown:
+    objects: 6
+    rules: ccdf62e2dc6e
+    pages: 0
+  BFDPeerDown:
+    objects: 6
+    rules: 764352c118ab
+    pages: 0
+  WebContentWrong:
+    objects: 1
+    rules: 5d98393134cc
+    pages: 0
+  InterfaceFlapped:
+    objects: 3
+    rules: eee3f1c2da7f
+    pages: 0
+  PendingRebootOverdue:
+    objects: 1
+    rules: 06c48a2978c1
+    pages: 0
+  SourceSilent:
+    objects: 6
+    rules: 184260fd8ee8
+    pages: 0
+  LogIngestOverBudget:
+    objects: 6
+    rules: 70b4668206db
+    pages: 0
+pages: []
+ingest:
+  r1/syslog:
+    bytes: 17069
+    per_day: 2897394
+    budget: 1048576
+  r2/syslog:
+    bytes: 21091
+    per_day: 3580040
+    budget: 1048576
+  r3/syslog:
+    bytes: 20274
+    per_day: 3441457
+    budget: 1048576
+  fw1/syslog:
+    bytes: 3562
+    per_day: 604629
+    budget: 1048576
+  h2/syslog:
+    bytes: 356
+    per_day: 60394
+    budget: 1048576
+  h2/http:
+    bytes: 1384
+    per_day: 234905
+    budget: 262144
+cut:
+  h2/http:
+    web-check: 96

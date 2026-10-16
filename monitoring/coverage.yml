@@ -53,7 +53,7 @@ collectors:
     metrics: [log_last_seen_seconds, log_lines_total, log_bytes_total]
   up:
     exporter: Prometheus itself
-    reads: whether each scrape above answered
+    reads: whether each scrape answered
     metrics: [up]
 
 # Programs that change a device and read nothing from it (the lint counts them as actions, not reads).
