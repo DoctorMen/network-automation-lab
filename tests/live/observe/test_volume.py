@@ -12,7 +12,9 @@ def test_noisy_kind_cut_at_the_source_while_wanted_lines_arrive(node, expected, 
     """The NOC's check, sent three count lines' worth more, is written to h2's log but never reaches the collector,
     and is counted in the forwarder's count lines; the same request from h1, and a failed one from the NOC, arrive as written."""
     app = mon["apps"][0]
-    host, kind = node(app["host"]), mon["cuts"][f"{app['host']}/{app['name']}"][0]
+    kinds = mon["cuts"].get(f"{app['host']}/{app['name']}")
+    assert kinds, f"{app['host']}'s {app['name']} log names no kind to cut, so there is no cut to prove"
+    host, kind = node(app["host"]), kinds[0]
     labels = f'{{node="{app["host"]}",source="{app["name"]}"}}'
     url = f"http://{expected['hosts'][app['host']]}:{app['port']}/"
     noise, users, marker = 3 * mon["cut_per_line"], 3, f"NOT5-{uuid.uuid4().hex[:12]}"
