@@ -202,3 +202,30 @@ def test_the_bundled_lab_carries_every_bind_and_no_hidden_file(tmp_path):
     assert not (dest / "r1" / "run" / "zserv.api").exists(), "a live socket's folder starts empty"
     hidden = [str(p.relative_to(dest)) for p in dest.rglob("*") if any(part.startswith(".") for part in p.relative_to(dest).parts)]
     assert not hidden, f"upload-artifact would leave these out: {hidden}"
+
+
+def test_the_labs_live_folders_are_left_out_of_the_sums(tmp_path):
+    """FRR's start command empties a router's bound run/ and h2 writes its app log into applog/, so on a re-run's
+    lab those folders differ from the bundle. SHA256SUMS leaves them out (reproduce.sh's check still passes after
+    both happen), while an edit to any other file under lab/ is still caught."""
+    bundle = make_bundle(tmp_path / "b")
+    topo = yaml.safe_load((bundle / "lab" / "topology.clab.yml").read_text())
+    topo["topology"]["nodes"]["r2"]["binds"] = ["r2/frr.conf:/etc/frr/frr.conf:ro", "r2/run:/var/run/frr", "../raw:/escape"]
+    topo["topology"]["nodes"]["h2"] = {"kind": "linux", "binds": ["h2/applog:/applog"]}
+    (bundle / "lab" / "topology.clab.yml").write_text(yaml.safe_dump(topo))
+    for d in ("r2/run", "h2/applog"):
+        (bundle / "lab" / d).mkdir(parents=True)
+        (bundle / "lab" / d / "EMPTY").write_text("starts empty\n")
+    (bundle / "lab" / "r2" / "frr.conf").write_text("hostname r2\n")
+    write_sums(bundle)
+    sums = (bundle / "SHA256SUMS").read_text()
+    assert "lab/r2/frr.conf" in sums and "raw/INDEX.txt" in sums, "a bind can't take a file outside lab/ out of the sums"
+    assert "lab/r2/run/" not in sums and "lab/h2/applog/" not in sums
+    (bundle / "lab" / "r2" / "run" / "EMPTY").unlink()            # rm -f /var/run/frr/* as the router starts
+    (bundle / "lab" / "h2" / "applog" / "web-80.log").write_text("GET /\n")
+    assert verify(bundle) == []
+    check = ["sha256sum", "-c", "--quiet", "SHA256SUMS"]
+    assert subprocess.run(check, cwd=bundle, capture_output=True).returncode == 0
+    (bundle / "lab" / "r2" / "frr.conf").write_text("hostname evil\n")
+    assert "lab/r2/frr.conf changed after SHA256SUMS was written" in verify(bundle)
+    assert subprocess.run(check, cwd=bundle, capture_output=True).returncode != 0
