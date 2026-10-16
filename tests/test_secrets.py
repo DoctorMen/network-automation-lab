@@ -158,6 +158,29 @@ def test_frr_password_rule_catches_what_default_rules_miss(tmp_path, docker):
     assert scan(tagged, config=True).returncode == 0, "the redacted backup is flagged, so every drift run would be red"
 
 
+def test_only_containerlabs_lab_ca_key_passes_the_build_scan(repo):
+    """containerlab writes a new root CA key to clab-<lab>/.tls/ca/ca.key on every deploy, and CI runs
+    `make gitleaks` over build/ while the lab is up. That one file passes; the same key anywhere else
+    in build/ fails, and the scan names the file and the rule without printing the key."""
+    pem = "-----{} RSA PRIVATE KEY-----"  # filled in below, so this file holds no key
+    body = [token_hex(32) for _ in range(12)]
+    key = "\n".join([pem.format("BEGIN"), *body, pem.format("END"), ""])
+    ca = repo / "build" / "clab-netauto" / ".tls" / "ca" / "ca.key"
+    ca.parent.mkdir(parents=True)
+    ca.write_text(key)
+    assert history_scan(repo).returncode == 0, "containerlab's lab CA key fails the scan, so every CI deploy is red"
+
+    for elsewhere in ("clab-netauto/.tls/r2/r2.key", "clab-netauto/.tls/ca/ca.key.bak", "configs/r2/ca.key"):
+        stray = repo / "build" / elsewhere
+        stray.parent.mkdir(parents=True, exist_ok=True)
+        stray.write_text(key)
+        scan = history_scan(repo)
+        stray.unlink()
+        assert scan.returncode != 0, f"a private key at build/{elsewhere} passed the scan"
+        assert "private-key" in scan.stdout and elsewhere in scan.stdout, "the scan failed without naming the rule and the file"
+        assert not any(line in scan.stdout for line in body), "the scan printed the key"
+
+
 def vtysh_redacted():
     spec = importlib.util.spec_from_file_location("vtysh_redacted", ROOT / "ansible" / "files" / "vtysh_redacted.py")
     module = importlib.util.module_from_spec(spec)

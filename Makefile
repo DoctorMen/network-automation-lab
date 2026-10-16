@@ -55,7 +55,7 @@ secrets:         ## Create any missing lab secret (BGP MD5 passwords) in NETLAB_
 GITLEAKS ?= docker run --rm -v "$(CURDIR)":/repo zricethezav/gitleaks:v8.21.2
 gitleaks:        ## Scan every commit, then backups/, results/ and build/ if present, for secrets (gitleaks)
 	$(GITLEAKS) git /repo --config /repo/.gitleaks.toml --redact --verbose --no-banner
-	for d in backups results build; do [ ! -d $$d ] || $(GITLEAKS) dir /repo/$$d --config /repo/.gitleaks.toml --redact --no-banner || exit 1; done
+	for d in backups results build; do [ ! -d $$d ] || $(GITLEAKS) dir /repo/$$d --config /repo/.gitleaks.toml --redact --verbose --no-banner || exit 1; done
 
 destroy:         ## Tear the lab down
 	$(CLAB) destroy -t $(TOPO) --cleanup
