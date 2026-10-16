@@ -250,6 +250,9 @@ def review(inv: Inventory, lab: str, minutes: int, environment: str) -> dict:
         time.sleep(5)  # start on a quiet NOC, or a page from before would count
     if noc.alerts(None):
         raise SystemExit(f"the NOC is not quiet, so a review would count this: {[a['labels'] for a in noc.alerts(None)]}")
+    # What the review runs on: the commit as it starts, since the workload runs the worktree's own make targets.
+    commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    dirty = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
     steps, start = workload(inv, lab), time.time()
     end = start + 60 * minutes
     results = {what: {"runs": 0, "failed": 0} for _, _, what, _ in steps}
@@ -277,8 +280,6 @@ def review(inv: Inventory, lab: str, minutes: int, environment: str) -> dict:
         for kind in mon["cuts"][f"{app['host']}/{app['name']}"]:
             got = noc.logs(f'{{node="{app["host"]}",source="{app["name"]}"}} |= "netlab-cut: " |= " {kind["name"]} lines"', start, every=True)
             cut.setdefault(f"{app['host']}/{app['name']}", {})[kind["name"]] = sum(int(l.split()[1]) for _, _, l in got)
-    commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
-    dirty = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
     return {
         "reviewed": date.today(),
         "started": datetime.fromtimestamp(start, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
