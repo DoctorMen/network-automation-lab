@@ -123,7 +123,7 @@ restore-drill:   ## Boot every router's latest backup on throwaway routers, and 
 	BACKUP_REPO="$(BACKUP_REPO)" BACKUP_PASSWORD="$(BACKUP_PASSWORD)" $(PY) -m pytest -v tests/live/test_restore.py --junitxml=results/restore-drill.xml
 	$(SUCCESS) restore-drill
 
-power-drill:     ## Power-cycle the whole lab and check it comes back by itself from startup config, the NOC too
+power-drill:     ## Power-cycle the whole lab: it comes back by itself from startup config, the NOC too, and r2's evidence is still in the store
 	POWER_CYCLE="$(POWER_CYCLE)" $(PY) -m pytest -v tests/live/test_power_event.py --junitxml=results/power-drill.xml
 	$(SUCCESS) power-drill
 

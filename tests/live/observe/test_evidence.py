@@ -33,6 +33,24 @@ def triggered(noc, node, since, trigger):
     return re.search(r"(fr-\S+) begin", hits[0][2])[1] if hits else None
 
 
+def test_a_stopped_flight_recorder_is_armed_again(node, mon, noc):
+    """r3's watcher (`ip monitor link`) is killed. agent.sh starts a new one within the recorder's delay plus 5 s, and
+    a line saying so reaches the central store, so the recorder is armed for the next fault and its gap is on record.
+    The flap test below then gets its dump from this new watcher."""
+    router, delay = "r3", mon["flightrec"]["delay"]
+
+    def watchers():
+        return [l.split()[0] for l in node(router).run("ps", "-o", "pid,args").stdout.splitlines() if "ip monitor link" in l]
+    old = watchers()
+    assert len(old) == 1, f"{router} runs {len(old)} flight-recorder watchers, not one"
+    since = time.time()
+    node(router).run("kill", old[0])
+    new = wait_for(lambda: (w := watchers()) and w != old and w, timeout=delay + 5, interval=0.5)
+    assert new and len(new) == 1, f"{router}'s flight recorder was not armed again within {delay + 5} s: {new}"
+    said = wait_for(lambda: noc.logs(f'{{node="{router}",source="syslog"}} |= "flightrec" |= "armed again"', since), timeout=15, interval=1)
+    assert said, f"no line from {router} in the central store says its flight recorder stopped and was armed again"
+
+
 def test_a_flap_leaves_a_state_dump_in_the_central_store(node, mon, noc, expected):
     """r3's port to h2 goes down for 1 s. Within the recorder's delay plus 10 s, r3's dump (taken while the port was
     down: its own line for eth3 says DOWN) and h2's dump (its eth1 lost carrier) are in the central store,

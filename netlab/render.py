@@ -127,12 +127,15 @@ def owned_addresses(inv: Inventory) -> dict[str, list[str]]:
 def segmentation(inv: Inventory) -> list[dict]:
     """The reachability the scope register promises (ATT-1): from every out-of-scope device, each
     device on the segment answers a service only if it is published, and a ping only if the register
-    lists that as an exception. `inside` is another device on the segment, which a closed one must answer."""
+    lists that as an exception. `inside` is another device on the segment, which a closed one must answer.
+    A server's node_exporter (decision 0023) is closed to all of them too; it is a sidecar, so its tuple names it,
+    and only the full lab's tests probe it (tests/live/observe/test_loss.py)."""
     scope = inv.raw.get("scope")
     if not scope:
         return []
     members = segment_members(inv, scope["segment"])
     excepted = {(e["src"], e["proto"]) for e in scope.get("exceptions") or []}
+    exporters = monitoring.servers(inv) if inv.monitoring else []
     tuples = []
     for src in scope.get("out_of_scope", []):
         for dst, address in members.items():
@@ -140,6 +143,9 @@ def segmentation(inv: Inventory) -> list[dict]:
             tuples += [{"src": src, "dst": dst, "address": address, "proto": "tcp", "port": port, "inside": inside,
                         "expect": "open" if port in host.get("published", []) else "closed"}
                        for port in host.get("services", [])]
+            if dst in exporters:
+                tuples.append({"src": src, "dst": dst, "address": monitoring.node_exporter_address(inv, dst), "proto": "tcp",
+                               "port": monitoring.PORTS["node"], "inside": inside, "expect": "closed", "sidecar": f"{dst}-node-exporter"})
             tuples.append({"src": src, "dst": dst, "address": address, "proto": "icmp", "inside": inside,
                            "expect": "open" if (src, "icmp") in excepted else "closed"})
     return tuples

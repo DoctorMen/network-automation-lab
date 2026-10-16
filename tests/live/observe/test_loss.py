@@ -1,8 +1,8 @@
 """OROS FND-1 and DEC-2 at the NOC (decisions 0023 and 0024). A microburst that the 5-minute average, the
 interface's own drop counter, the web check and ping all miss is traced to h2's queue and its class. A byte
 count sent on purpose matches the counters the NOC stored, within 5%, while one of the exporters restarts.
-A queue counter that falls to zero is flagged by resets() and pages nobody. Every metric's documented type
-is the one its exporter declares.
+A queue counter that falls to zero is flagged by resets() and pages nobody, and one that wraps at 2^32 shows
+no spike. Every metric's documented type is the one its exporter declares.
 
 Every interface in the lab is a veth pair, so that is the only interface type the byte count covers: there is
 no physical port, LAG or sub-interface to push one through."""
@@ -26,6 +26,7 @@ inv = load(ROOT / "inventory" / "network.yml")
 PORT = 9399  # nothing listens on it, so only the test's own receiver counts what arrives
 # Each datagram on the wire: its payload, the UDP (8) and IP (20) headers, and the Ethernet header (14) a veth counts.
 HEADERS = 8 + 20 + 14
+WRAP = 2 ** 32  # node_qdisc_drops_total is the kernel's gnet_stats_queue.drops, a 32-bit count
 
 
 def burst_tool(container, *args, timeout=120):
@@ -95,13 +96,15 @@ LINK = f'{{node="{SERVER}",device="{SHAPED["interface"]}"}}'
 def test_a_microburst_the_average_hides_is_traced_to_its_queue(node, mon, noc):
     """3000 datagrams from h2 to its gateway in a few milliseconds overflow the bulk class of h2's HTB. QueueDrops
     pages for h2's queue, and its drop count is exactly what was sent and never arrived; `tc -s class` names the
-    bulk class. Meanwhile the 5-minute average of h2's traffic stays under 5% of the link, the interface's own
-    drop counter stays at 0, and the web check and the ping from the NOC never fail."""
+    bulk class. h2 eth1's byte counter counts after the queue: what arrived, not what the queue dropped. Meanwhile
+    the 5-minute average of h2's traffic stays under 5% of the link, the interface's own drop counter stays at 0,
+    and the web check and the ping from the NOC never fail."""
     size, web = 200, next(c["id"] for c in SHAPED["classes"] if c.get("sport") == 80)
     bulk = next(c["id"] for c in SHAPED["classes"] if c.get("default"))
     quiet(noc, "QueueDrops", node=SERVER)
     start = time.time()
     drops, link_drops = sample(noc, f"node_qdisc_drops_total{QUEUE}", start), sample(noc, f"node_network_transmit_drop_total{LINK}", start)
+    out_bytes = sample(noc, f"node_network_transmit_bytes_total{LINK}", start)
     rcvbuf = sample(noc, f'node_netstat_Udp_RcvbufErrors{{node="{GATEWAY}"}}', start)
     classes = class_drops(node(SERVER), SHAPED["interface"])
     since = time.time()
@@ -122,6 +125,11 @@ def test_a_microburst_the_average_hides_is_traced_to_its_queue(node, mon, noc):
     # Which class: the bulk class took all of it, and the web class none.
     after = class_drops(node(SERVER), SHAPED["interface"])
     assert after[bulk] - classes[bulk] == lost and after[web] == classes[web], f"class drops before {classes}, after {after}"
+    # After the queue: h2 eth1 counted at least every frame that arrived, and less than the burst offered to the
+    # queue, so none of the dropped ones. h2's other traffic in the meantime (scrapes, probes) is far below what was dropped.
+    left, frame = sample(noc, f"node_network_transmit_bytes_total{LINK}", done) - out_bytes, size + HEADERS
+    assert got["received"] * frame <= left < sent["sent"] * frame, \
+        f"h2 eth1 counted {left:.0f} bytes out: {got['received'] * frame} arrived, {sent['sent'] * frame} were offered to its queue"
     # What hides it: the interface's own drop counter, the 5-minute average, the web check and ping.
     assert sample(noc, f"node_network_transmit_drop_total{LINK}", done) == link_drops, "the interface counted the queue's drops"
     average = noc.value(f"rate(node_network_transmit_bytes_total{LINK}[5m]) * 8")
@@ -133,11 +141,13 @@ def test_a_microburst_the_average_hides_is_traced_to_its_queue(node, mon, noc):
 
 
 def test_a_known_byte_count_matches_the_counters_across_an_exporter_restart(node, mon, noc, lab_name, expected):
-    """2000 datagrams of 8000 bytes from h1 to the carrier's address, paced over 5 s: what r1 received from fw1 and
-    what r2 sent the carrier, as the NOC stored them, match the bytes on the wire within 5%. r2's node_exporter
-    restarts in the middle; its counter carries on (the kernel keeps it), Prometheus sees no reset, and nothing
-    about r1 or r2 pages."""
-    count, size, rate = 2000, 8000, 400
+    """4000 datagrams of 100 bytes from h1 to the carrier's address, paced over 5 s: what r1 received from fw1 and
+    what r2 sent the carrier, as the NOC stored them, match the bytes on the wire within 5%, and within 1%, which
+    tells what a frame counts: with its 14-byte Ethernet header (9.9% of these frames) and without a 4-byte checksum
+    (2.8%). r2's node_exporter restarts in the middle; its counter carries on (the kernel keeps it), Prometheus sees
+    no reset, and nothing about r1 or r2 pages."""
+    # Small datagrams, so that each header is a large share of a frame and a count without it is far outside 1%.
+    count, size, rate = 4000, 100, 800
     counters = {"r1": f'node_network_receive_bytes_total{{node="r1",device="{facing("r1", "fw1")}"}}',
                 "r2": f'node_network_transmit_bytes_total{{node="r2",device="{facing("r2", "isp")}"}}'}
     exporter = f"clab-{lab_name}-r2-node-exporter"
@@ -163,7 +173,11 @@ def test_a_known_byte_count_matches_the_counters_across_an_exporter_restart(node
     wire = count * (size + HEADERS)
     for r, q in counters.items():
         seen = sample(noc, q, done) - before[r]
-        assert abs(seen - wire) <= 0.05 * wire, f"{r}: the NOC counted {seen:.0f} bytes, {wire} were sent ({100 * (seen - wire) / wire:+.2f}%)"
+        what = f"{r}: the NOC counted {seen:.0f} bytes, {wire} were sent ({100 * (seen - wire) / wire:+.2f}%)"
+        print(what)
+        assert abs(seen - wire) <= 0.05 * wire, what  # OROS DEC-2's tolerance
+        # The two links' other traffic in the meantime (BGP keepalives, the NOC's probes, fw1's syslog) is well inside 1%.
+        assert abs(seen - wire) <= 0.01 * wire, f"{what}: not each frame with its Ethernet header and nothing else"
     # The exporter really restarted, Prometheus saw no reset of the kernel's counter, and nothing paged.
     assert wait_for(lambda: (noc.value('process_start_time_seconds{job="node",node="r2"}') or 0) > started, timeout=30), \
         "Prometheus never scraped a restarted node_exporter on r2"
@@ -213,15 +227,50 @@ def test_a_reset_queue_counter_is_flagged_and_pages_nobody(node, mon, noc):
     assert not [x for x in noc.notifications(since, alertname="QueueDrops", node=SERVER) if x["status"] == "firing"], "a reset paged"
 
 
+def test_a_32_bit_wrap_of_the_queue_counter_shows_no_spike(mon, noc):
+    """promtool, Prometheus' own rule tester in the NOC's pinned image, runs the rendered QueueDrops rule for h2 over a
+    queue drop counter that goes 4294967290, 4294967295, 3, 8: 14 drops, with the wrap at 2^32 between the second
+    and third. The rule shows 13 (increase() reads the wrap as a reset, so the one drop before it is lost), and 13 is
+    the most it ever shows: no jump of about 4.29e9. The alert is quiet before the wrap and clears once it leaves the window.
+    No queue here drops four billion packets, so the counter is made up; the rule and the engine are the real ones."""
+    rules = yaml.safe_load((BUILD / mon["host"] / "rules.yml").read_text())["groups"][0]["rules"]
+    rule = next(r for r in rules if r["alert"] == "QueueDrops" and r["labels"]["node"] == SERVER)
+    series = {"node": SERVER, "device": SHAPED["interface"], "kind": "htb"}
+    labels = "{" + ",".join(f'{k}="{v}"' for k, v in series.items()) + "}"
+    step = mon["interval"]
+    # A minute at 4294967290, then one value a scrape: 4294967295, 3 and 8, and 8 from then on. At `full` the rule's
+    # one-minute window holds the whole wrap and starts on a sample, so increase() has nothing to extrapolate.
+    values, full = f"{WRAP - 6}x{60 // step} {WRAP - 1} 3 8 8x{300 // step}", 60 + 4 * step
+    summary = re.sub(r"\{\{ \$labels\.(\w+) \}\}", lambda m: series[m[1]], rule["annotations"]["summary"])
+    case = {"rule_files": ["/etc/prometheus/rules.yml"], "evaluation_interval": f"{step}s", "tests": [{
+        "interval": f"{step}s",
+        "input_series": [{"series": f"node_qdisc_drops_total{labels}", "values": values}],
+        "promql_expr_test": [
+            {"expr": rule["expr"], "eval_time": f"{full}s", "exp_samples": [{"labels": labels, "value": 13}]},
+            # The most the rule's expression ever shows, over the whole series: no spike.
+            {"expr": f"max_over_time(({rule['expr']})[6m:{step}s])", "eval_time": "6m", "exp_samples": [{"labels": labels, "value": 13}]}],
+        "alert_rule_test": [
+            {"eval_time": "60s", "alertname": "QueueDrops", "exp_alerts": []},
+            {"eval_time": f"{full}s", "alertname": "QueueDrops",
+             "exp_alerts": [{"exp_labels": {**series, **rule["labels"]}, "exp_annotations": {"summary": summary}}]},
+            {"eval_time": f"{full + 60 + step}s", "alertname": "QueueDrops", "exp_alerts": []}]}]}
+    out = noc.rule_test(case)
+    assert out.returncode == 0 and "SUCCESS" in out.stdout, out.stdout + out.stderr
+
+
 def test_the_servers_exporter_answers_the_noc_and_nobody_out_of_scope(node, mon, expected):
-    """h2's node_exporter, on the toy payments segment, answers the NOC, and every out-of-scope device (h1 behind fw1,
-    the carrier's router behind r2's WAN filter) finds its port closed, as it finds every port h2 doesn't publish."""
-    outside = sorted({t["src"] for t in expected["segmentation"]})
-    assert mon["servers"] and outside
+    """h2's node_exporter, on the toy payments segment, answers the NOC. The scope register's segmentation tuples close
+    its port to every out-of-scope device (h1 behind fw1, the carrier's router behind r2's WAN filter), as every port h2
+    doesn't publish; each finds it closed, and the segment's other device reaches it, so the closure is a filter."""
+    probes = [t for t in expected["segmentation"] if t.get("sidecar")]
+    assert {(t["dst"], t["port"]) for t in probes} == {(s, e["port"]) for s, e in mon["servers"].items()} and probes
+    assert {t["src"] for t in probes} == {t["src"] for t in expected["segmentation"]} and all(t["expect"] == "closed" for t in probes)
     for server, e in mon["servers"].items():
         assert node(mon["host"]).tcp_open(e["address"], e["port"]), f"the NOC can't reach {server}'s exporter"
-        reached = [src for src in outside if node(src).tcp_open(e["address"], e["port"])]
-        assert not reached, f"{server}'s exporter answers {reached}, which are out of scope"
+    reached = [f"{t['src']} -> {t['dst']}:{t['port']}" for t in probes if node(t["src"]).tcp_open(t["address"], t["port"])]
+    assert not reached, f"out of scope, and the exporter answers: {reached}"
+    dead = [f"{t['inside']} -> {t['dst']}:{t['port']}" for t in probes if not node(t["inside"]).tcp_open(t["address"], t["port"])]
+    assert not dead, f"not answering from inside the segment either, so the closed probes prove nothing: {dead}"
 
 
 def test_each_metric_is_the_type_its_exporter_declares(noc):

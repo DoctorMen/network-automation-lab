@@ -79,7 +79,7 @@ which keeps its data on the lab host's disk ([decision 0025](../decisions/0025-f
 way down left a flight-recorder dump (its interfaces, queues, filters and routing at that moment):
 search the store for `{source="syslog"} |= "flightrec"`. For a power-down that is planned, run
 `make evidence` first: it copies every node's dump and own log into `results/evidence/`. If the power
-went twice within about a minute, the store lost what it took in between the two cuts
+went twice within about a minute, the store may have lost some of what it took in between the two cuts
 ([V-027](../verdicts.yml), RISK-46), and a node's lines from before its route to the NOC came up at
 boot never left it.
 

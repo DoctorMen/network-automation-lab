@@ -116,7 +116,6 @@ def test_power_event_recovers_from_startup_config(node, expected, lab_name):
         "seconds_to_routing_up": recovered, "seconds_to_noc_settled": noc_back}, indent=2) + "\n")
 
 
-
 FACILITY = r"(?:kern|user|mail|daemon|auth|syslog|lpr|news|uucp|cron|authpriv|ftp|local[0-7])\.[a-z]+"
 
 

@@ -868,8 +868,9 @@
     Loki 3.1.1 starts each stream's count of lines again after it replays its write-ahead log, and the next
     replay drops what was counted since as duplicates until a new checkpoint is written (V-027). Loki
     checkpoints every 30 s here, so its first checkpoint after a start is done about a minute later (57 s
-    in one run here). A second power cut inside that minute loses every line the store took in since the
-    first, the flight-recorder dumps included; the nodes' own copies went with the same cuts. Two cuts a
+    in one run here). A second power cut inside that minute can lose lines the store took in since the
+    first, the flight-recorder dumps included: up to all of them on a stream with history, fewer on a young
+    one (4 of r2's last 111 lines in one drill run without the wait); the nodes' own copies went with the same cuts. Two cuts a
     minute apart are a failing supply or a breaker being tried, the case where the evidence matters most.
     The fix is a Loki release that keeps the counts across a replay, or a store that writes each line
     through before it answers.

@@ -16,6 +16,12 @@ from netlab.observe import Noc
 from ..conftest import wait_for
 
 
+def pytest_collection_modifyitems(items):
+    """The central store's secret search runs last, so it also reads the flight-recorder dumps every other test set off."""
+    last = [i for i in items if i.name == "test_no_secret_in_the_central_store"]
+    items[:] = [i for i in items if i not in last] + last
+
+
 @pytest.fixture(scope="session")
 def mon(expected):
     if not expected.get("monitoring"):
