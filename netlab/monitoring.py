@@ -312,17 +312,21 @@ def per_object(metric: str, keys: dict, test: str) -> str:
 
 
 def keep_firing(inv: Inventory) -> int:
-    """Seconds a cause's page keeps firing after its signal recovers, still holding back what depends on it:
-    the slowest dependent to recover is a log source's SourceSilent, which clears on its next heartbeat."""
+    """Seconds a cause's marker keeps firing after its signal recovers, still holding back what depends on
+    it: the slowest dependent to recover is a log source's SourceSilent, which clears on its next heartbeat.
+    The marker holds, not the page: a page that kept firing would outlast its parent's hold whenever it
+    recovered a scrape later than its parent, and page then (the h2 behind r3 in a live run)."""
     return inv.logging["heartbeat"] + 3 * inv.monitoring["interval"]
 
 
 def cause_rules(inv: Inventory) -> list[dict]:
     """A marker per cause, CauseSeen, which fires the moment its signal does (no `for`), in a rule group of
     its own evaluated every CAUSE_EVERY seconds. It never pages (Alertmanager routes it nowhere); it only has
-    to be in Alertmanager before the alerts that depend on it are first sent, group_wait after they fire."""
+    to be in Alertmanager before the alerts that depend on it are first sent, group_wait after they fire,
+    and keep firing until the slowest of them has recovered (keep_firing)."""
+    keep = keep_firing(inv)
     return [rule(inv, "CauseSeen", c["expr"], {**c["labels"], "cause": cid}, f"cause marker: {c['summary']}",
-                 c["signal"], c["condition"], c["normal"])
+                 c["signal"], c["condition"], c["normal"], keep)
             for cid, c in causes(inv).items()]
 
 
@@ -333,30 +337,30 @@ def alert_rules(inv: Inventory) -> list[dict]:
     half of the rule (the hook for routing and silencing by role, OROS DEC-1 and DEC-4), and the causes
     it depends on (deps, OROS DEC-5)."""
     mon, rules, model = inv.monitoring, [], Dependencies(inv)
-    keep, noc = keep_firing(inv), host(inv)
+    noc = host(inv)
     logs = f"logs@{noc}"
-    # A cause's own page: what it covers is held back while it fires, and for `keep` seconds after.
+    # A cause's own page: what it covers is held back while it fires, and by its marker for a while after.
     for cid, c in model.causes.items():
         if cid in inv.devices:
             rules.append(rule(inv, "NodeDown", c["expr"], {**c["labels"], "cause": cid, "deps": model.label({cid}, own=cid)},
-                              c["summary"], c["signal"], c["condition"], c["normal"], keep))
+                              c["summary"], c["signal"], c["condition"], c["normal"]))
         elif "link" in c["labels"]:
             link = next(l for l in inv.links if link_id(l) == cid)
             rules.append(rule(inv, "LinkDown", c["expr"], {**c["labels"], "cause": cid, "deps": model.label(model.link_objects(link), own=cid)},
-                              c["summary"], c["signal"], c["condition"], c["normal"], keep))
+                              c["summary"], c["signal"], c["condition"], c["normal"]))
     for r in exporter_routers(inv):
         for job in EXPORTERS:
             cid = f"{job}@{r}"
             signal = f"up{selector(job=job, node=r)}"
             labels = {**target_labels(inv, r), "job": job, **({"cause": cid} if cid in model.causes else {}), "deps": model.label({r})}
             rules.append(rule(inv, "TargetDown", f"{signal} == 0", labels, f"{job} on {r} does not answer its scrape",
-                              signal, "== 0", "1", keep if cid in model.causes else None))
+                              signal, "== 0", "1"))
     # The NOC's own services: one rule per job, since every target of a blackbox job is one exporter.
     for job in ("web", "icmp", "logs", "pushgateway"):
         signal = f"min(up{selector(job=job)})"
         labels = {"job": job, **({"cause": logs} if job == "logs" else {}), "deps": "/"}
         rules.append(rule(inv, "TargetDown", f"{signal} == 0", labels, f"the NOC's {job} job does not answer its scrape",
-                          signal, "== 0", "1", keep if job == "logs" else None))
+                          signal, "== 0", "1"))
     for s in bgp_peers(inv):
         # frr_exporter: 1 Established, 0 down, 2 administratively down. `== 0` would miss a local shutdown.
         keys = {"node": s["node"], "peer": s["address"]}
@@ -575,8 +579,8 @@ def expected(inv: Inventory) -> dict:
         "alert_within": {a: w + deliver(inv) + (TEXTFILE_EVERY if a == "PendingRebootOverdue" else 0)
                          for a, w in WAIT.items()},
         "group_wait": inv.monitoring["group_wait"],
-        # One page per cause (decision 0021): each cause with what depends on it, and how long its page keeps
-        # firing after it recovers.
+        # One page per cause (decision 0021): each cause with what depends on it, and how long its marker
+        # keeps holding that back after it recovers.
         "causes": {cid: {"labels": c["labels"], "covers": sorted(v for v in deps.dom if cid in deps.dom[v])}
                    for cid, c in deps.causes.items()},
         "keep_firing": keep_firing(inv),

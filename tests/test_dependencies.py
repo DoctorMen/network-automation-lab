@@ -88,13 +88,14 @@ def test_markers_are_in_alertmanager_before_what_they_hold_back():
 
 
 def test_a_cause_keeps_holding_back_through_the_slowest_recovery():
-    """After a cause recovers, its page keeps firing for a heartbeat and three intervals, the longest a
-    dependent takes to clear (a log source's next heartbeat), so nothing pages late."""
+    """After a cause recovers, its marker keeps firing for a heartbeat and three intervals, the longest a
+    dependent takes to clear (a log source's next heartbeat), so nothing pages late. No page keeps firing:
+    h2's page, held behind r3, would outlast r3's hold whenever h2 answered a scrape after r3 did."""
     keep = f"{monitoring.keep_firing(inv)}s"
     assert monitoring.keep_firing(inv) >= inv.logging["heartbeat"] + 3 * inv.monitoring["interval"]
     assert monitoring.keep_firing(inv) > monitoring.FLAP_WINDOW + 2 * inv.monitoring["interval"]
-    for r in monitoring.alert_rules(inv):
-        assert (r.get("keep_firing_for") == keep) == ("cause" in r["labels"]), r["alert"]
+    assert all(r["keep_firing_for"] == keep for r in monitoring.cause_rules(inv))
+    assert [r["alert"] for r in monitoring.alert_rules(inv) if "keep_firing_for" in r] == []
 
 
 def test_a_new_router_needs_no_hand_tuning(tmp_path):

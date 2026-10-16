@@ -30,7 +30,7 @@ failure_modes:
     mitigation: Each cause has a marker (CauseSeen, no `for`) evaluated every second, and group_wait holds every new alert 5 s; the margin is checked offline
     test: tests/test_dependencies.py::test_markers_are_in_alertmanager_before_what_they_hold_back
   - mode: dependents still recovering page after the cause clears
-    mitigation: A cause's page keeps firing for a heartbeat and three intervals (75 s) after it recovers, the slowest dependent's recovery
+    mitigation: A cause's marker keeps firing for a heartbeat and three intervals (75 s) after it recovers, the slowest dependent's recovery; no page keeps firing, so a page held behind another cause can't outlast that cause's hold
     test: tests/test_dependencies.py::test_a_cause_keeps_holding_back_through_the_slowest_recovery
   - mode: two causes hold each other back and nothing pages
     mitigation: A cause's page leaves itself and whatever depends on it out of its deps; the offline test checks the causes form no loop
@@ -60,13 +60,13 @@ OROS DEC-5 asks that dependent alerts sit behind the causal one (host, uplink, s
 - Every alert carries `deps`, written `/a/b/`: the causes its objects depend on, themselves included, plus the collector it is read through. A cause's own page leaves itself, and what depends on it, out.
 - Each cause has a marker, CauseSeen, with no `for`, in a rule group evaluated every second and routed nowhere. Alertmanager has one inhibit rule per cause: while anything labelled `cause=X` fires, every alert whose deps list X is held back.
 - group_wait is 5 s, so a dependent waits its `for` (10 s or more) plus 5 s, while its cause's marker is in Alertmanager within about 8 s.
-- A cause's page keeps firing 75 s after it recovers, so dependents that clear late stay held back. A log source's SourceSilent clears only on its next heartbeat, the slowest.
+- A cause's marker keeps firing 75 s after it recovers, so dependents that clear late stay held back. A log source's SourceSilent clears only on its next heartbeat, the slowest. The marker holds, not the page: in a full live run, h2's page (itself a cause, behind r3) kept firing as long as r3's and answered one scrape later, so it outlasted r3's hold and paged.
 - InterfaceFlapped is now one rule per interface, firing once the carrier is back. A link still down is LinkDown's page.
 
 ## Consequences
 
 - One page per cause, measured live: r3 cut off and frr_exporter killed beside r1 page exactly twice, with 20 or more alerts held back.
 - Every state alert's bound grows by 4 s (group_wait 1 s to 5 s): 31 s instead of 27 s.
-- A cause's page resolves 75 s after its signal does.
+- A cause's page resolves when its signal does; what depends on it stays held back 75 s more.
 - A real failure behind a cause pages only when the cause clears (RISK-42).
 - The NOC's own uplink has no end the NOC can watch past, so its failure pages as r2, the first hop. The NOC's own services are not in the model (RISK-43).

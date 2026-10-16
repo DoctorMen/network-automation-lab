@@ -22,8 +22,8 @@ route:
       group_wait: 0s
       repeat_interval: {{ mon.alert_path.every }}s
 # One page per cause (OROS DEC-5, decision 0021). Each alert's deps label lists the causes it can't be seen
-# without, from the inventory's graph (netlab/monitoring.py Dependencies). While a cause fires (its marker,
-# or its page, which keeps firing for a while after it recovers), every alert that lists it is held back.
+# without, from the inventory's graph (netlab/monitoring.py Dependencies). While a cause fires (its page, or
+# its marker, which keeps firing for a while after it recovers), every alert that lists it is held back.
 inhibit_rules:
 {% for c in causes %}
   - source_matchers: ['cause="{{ c }}"']

@@ -755,7 +755,7 @@
   impact: 2
   reasoning: >-
     While a cause fires, every alert that lists it in deps is held back (decision 0021), whether it
-    follows from the cause or is a second failure behind it. A cause's page keeps firing 75 s after it
+    follows from the cause or is a second failure behind it. A cause's marker keeps firing 75 s after it
     recovers, so the dependents still recovering behind it don't page. A failure that is still true then
     pages, up to 75 s later than it would have on its own. Telling the two apart needs a view from
     beyond the cause, which an in-band NOC doesn't have (RISK-30).

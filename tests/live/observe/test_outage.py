@@ -34,7 +34,7 @@ def deps(alert):
 @pytest.fixture(scope="module")
 def outage(lab_name, node, mon, noc):
     """Break both, hold until every dependent with a `for` has fired, put both back, and wait until both
-    pages have resolved, the parent's after it kept firing. Returns what the pager and Alertmanager saw."""
+    pages have resolved and the markers have stopped holding. Returns what the pager and Alertmanager saw."""
     inv, routers, causes = load(ROOT / "inventory" / "network.yml"), list(mon["exporters"]), mon["causes"]
     rules = noc.rules()
     # The NOC's first hop hides everything when it fails, the killed exporter included, so the parent is the
@@ -66,12 +66,11 @@ def outage(lab_name, node, mon, noc):
         for i in ifaces:
             node(parent).run("ip", "link", "set", i, "up")
         subprocess.run(["docker", "start", exporter], check=True, capture_output=True, timeout=30)
-    # The parent's page keeps firing for keep_firing seconds after it answers again, holding back what is
-    # still recovering behind it, then resolves.
-    back = mon["keep_firing"] + mon["alert_within"]["NodeDown"] + 30
-    out["parent_resolved"] = wait_resolved(noc, "NodeDown", since, back, node=parent)
+    # Both pages resolve once their objects answer; each cause's marker keeps firing for keep_firing
+    # seconds more, holding back what is still recovering behind it, then everything is quiet.
+    out["parent_resolved"] = wait_resolved(noc, "NodeDown", since, mon["alert_within"]["NodeDown"] + 30, node=parent)
     out["service_resolved"] = wait_resolved(noc, "TargetDown", since, 60, job="frr", node=healthy)
-    out["quiet_after"] = wait_for(lambda: not firing(noc), timeout=60, interval=2)
+    out["quiet_after"] = wait_for(lambda: not firing(noc), timeout=mon["keep_firing"] + 30, interval=2)
     out["pages"] = [x for x in noc.notifications(since) if x["status"] == "firing"]
     return out
 
