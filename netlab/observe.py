@@ -65,6 +65,12 @@ class Noc:
     def targets(self) -> list[dict]:
         return self.get(monitoring.PORTS["prometheus"], "/api/v1/targets")["data"]["activeTargets"]
 
+    def rule_test(self, case: dict) -> subprocess.CompletedProcess:
+        """`promtool test rules` with this case (series made up for it, the expected results), run in the Prometheus
+        sidecar against the rules it has loaded, with the promtool of its own pinned image."""
+        return subprocess.run(["docker", "exec", "-i", f"{self.container}-prometheus", "promtool", "test", "rules", "/dev/stdin"],
+                              input=yaml.safe_dump(case), capture_output=True, text=True, timeout=60)
+
     # The pager
     def notifications(self, since: float = 0, **labels) -> list[dict]:
         """Each alert the sink received after `since`, as {received, status, labels}: one entry per alert in

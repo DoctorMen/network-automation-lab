@@ -249,12 +249,15 @@ def test_the_central_store_keeps_its_data_on_the_lab_host(tmp_path):
 
 def test_flight_recorder_is_armed_on_a_link_failure_and_only_reads(tmp_path):
     """agent.sh dumps state when a link loses carrier or goes down, at most once per FLIGHTREC['every'] s, and
-    sends it after FLIGHTREC['delay'] s. The dump runs only reading commands and never the running config."""
+    sends it after FLIGHTREC['delay'] s. A watcher that stops is started again, with a line that says so. The dump
+    runs only reading commands and never the running config."""
     render_all(inv, tmp_path)
     agent = (tmp_path / "monitoring" / "agent.sh").read_text()
     dump = agent[agent.index("dump() {"):agent.index('if [ "${1:-}" = dump ]')]
     assert "ip monitor link" in agent and "*NO-CARRIER*|*\"state DOWN\"*|*LOWERLAYERDOWN*" in agent
     assert f"-ge {monitoring.FLIGHTREC['every']} ]" in agent and f"sleep {monitoring.FLIGHTREC['delay']};" in agent
+    assert re.search(r"while :; do\n\s+last=0\n\s+ip monitor link \|.*?\n\s+done\n\s+sleep \d+\n\s+logger -t flightrec \"[^\"]*armed again\"\n\s+done",
+                     agent, re.S), "nothing starts the watcher again when it stops"
     assert f"cut -c1-{monitoring.FLIGHTREC['width']}" in dump
     commands = re.findall(r"^\s+run (.+)$", dump, re.M)
     assert commands and all(c.split()[0] in ("ip", "tc", "iptables", "vtysh") for c in commands), commands

@@ -36,14 +36,16 @@ def test_register_the_topology_contradicts_is_refused(tmp_path):
 
 
 def test_segmentation_probes_every_out_of_scope_device():
-    """Each out-of-scope device probes every service and pings every device on the segment: open only where published or excepted."""
+    """Each out-of-scope device probes every service and pings every device on the segment: open only where published or excepted.
+    h2's node_exporter, the NOC's listener there, is closed to each of them and named as a sidecar."""
     tuples = expected_state(inv)["segmentation"]
     assert {(t["src"], t["dst"], t["proto"], t.get("port"), t["expect"]) for t in tuples} == {
-        ("h1", "h2", "tcp", 80, "open"), ("h1", "h2", "tcp", 22, "closed"),
+        ("h1", "h2", "tcp", 80, "open"), ("h1", "h2", "tcp", 22, "closed"), ("h1", "h2", "tcp", 9100, "closed"),
         ("h1", "h2", "icmp", None, "open"), ("h1", "r3", "icmp", None, "open"),
-        ("isp", "h2", "tcp", 80, "open"), ("isp", "h2", "tcp", 22, "closed"),
+        ("isp", "h2", "tcp", 80, "open"), ("isp", "h2", "tcp", 22, "closed"), ("isp", "h2", "tcp", 9100, "closed"),
         ("isp", "h2", "icmp", None, "closed"), ("isp", "r3", "icmp", None, "closed")}
     assert {t["dst"]: t["inside"] for t in tuples} == {"h2": "r3", "r3": "h2"}
+    assert {(t["src"], t["port"]) for t in tuples if t.get("sidecar") == "h2-node-exporter"} == {("h1", 9100), ("isp", 9100)}
 
 
 def test_published_port_needs_a_listener(tmp_path):

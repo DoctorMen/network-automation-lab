@@ -58,20 +58,25 @@ fi
 # The flight recorder, armed for the next fault: when an interface loses its carrier or goes down, it takes
 # a dump at once, while the fault is still there, and sends it {{ flightrec.delay }} s later, because the link that went
 # down may have been this node's way to the collector. At most one dump every {{ flightrec.every }} s, so a flapping
-# link can't flood the collector or push everything else out of the box's own small log.
+# link can't flood the collector or push everything else out of the box's own small log. If the watcher stops
+# (killed, or `ip` failed), it is started again {{ flightrec.delay }} s later, with a line that says so.
 (
-  last=0
-  ip monitor link | while read -r line; do
-    case "$line" in
-      *NO-CARRIER*|*"state DOWN"*|*LOWERLAYERDOWN*) ;;
-      *) continue ;;
-    esac
-    now=$(date +%s)
-    [ $((now - last)) -ge {{ flightrec.every }} ] || continue
-    last=$now
-    dev=${line#*: }
-    dev=${dev%%[:@]*}
-    dump "trigger: $dev lost carrier or went down" > /tmp/flightrec.last
-    (sleep {{ flightrec.delay }}; logger -t flightrec < /tmp/flightrec.last) &
+  while :; do
+    last=0
+    ip monitor link | while read -r line; do
+      case "$line" in
+        *NO-CARRIER*|*"state DOWN"*|*LOWERLAYERDOWN*) ;;
+        *) continue ;;
+      esac
+      now=$(date +%s)
+      [ $((now - last)) -ge {{ flightrec.every }} ] || continue
+      last=$now
+      dev=${line#*: }
+      dev=${dev%%[:@]*}
+      dump "trigger: $dev lost carrier or went down" > /tmp/flightrec.last
+      (sleep {{ flightrec.delay }}; logger -t flightrec < /tmp/flightrec.last) &
+    done
+    sleep {{ flightrec.delay }}
+    logger -t flightrec "ip monitor link had stopped; the flight recorder is armed again"
   done
 ) </dev/null >/dev/null 2>&1 &

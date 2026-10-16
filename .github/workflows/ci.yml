@@ -270,7 +270,7 @@ jobs:
 
   control-status:
     name: Every control's latest test is green and inside its period
-    needs: [offline, lab]
+    needs: [offline, lab, observe]
     # Main's claims, proven by main's runs. A pull request's run tests other code, so it is skipped.
     if: ${{ always() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-24.04

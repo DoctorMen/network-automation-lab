@@ -141,11 +141,12 @@ counts:
       of every class under it. Only root qdiscs are exported, so which class dropped is `tc -s class show`
     type: counter
     wraps: a 32-bit counter (gnet_stats_queue.drops), so it wraps at 4294967296 drops. A wrap is a fall, which
-      increase() reads as a reset like the one tests/live/observe/test_loss.py makes; it loses at most the drops
-      of one scrape interval
+      increase() reads as a reset; it loses the drops between the last scrape before the wrap and the wrap itself,
+      and never shows a jump of about 4.29e9
     resets: when the qdisc is replaced (tc qdisc del and add, or the node restarts)
     proven_by: [tests/live/observe/test_loss.py::test_a_microburst_the_average_hides_is_traced_to_its_queue,
-                tests/live/observe/test_loss.py::test_a_reset_queue_counter_is_flagged_and_pages_nobody]
+                tests/live/observe/test_loss.py::test_a_reset_queue_counter_is_flagged_and_pages_nobody,
+                tests/live/observe/test_loss.py::test_a_32_bit_wrap_of_the_queue_counter_shows_no_spike]
   node_qdisc_bytes_total:
     counts: bytes an interface's root queue passed on to the interface, outbound
     type: counter
@@ -184,7 +185,7 @@ counts:
     resets: when the node restarts
   node_netstat_Udp_OutDatagrams:
     counts: UDP datagrams the node sent that its queue took. One the queue dropped is counted under
-      Udp SndbufErrors instead, while the sender's send() still reports success (V-025)
+      Udp SndbufErrors instead, while the sender's send() still reports success (V-026)
     type: counter
     exported_as: untyped
     wraps: a 64-bit kernel counter (per-CPU SNMP MIB, summed); it does not wrap in the life of a lab
@@ -408,7 +409,8 @@ reads:
     value: which processes run, and how they were started
     status: gap
     fallback: no process exporter. make verify checks the daemons; tests/live/observe/test_central_store.py the
-      web server the forwarder reads
+      web server the forwarder reads. A flight-recorder watcher that stops is started again by agent.sh, with a
+      line in the store that says so (tests/live/observe/test_evidence.py)
   - read: cat /proc/<arg>/stat
     value: a container's start time (was it restarted?)
     status: gap

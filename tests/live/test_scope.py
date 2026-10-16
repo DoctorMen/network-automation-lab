@@ -23,7 +23,8 @@ def what(t):
 
 def test_out_of_scope_cannot_reach_in_scope(node, expected):
     """Every out-of-scope device reaches the segment only on published ports and the register's exceptions; every closed probe answers from inside, so the block is policy."""
-    tuples = expected["segmentation"]
+    # A port only a sidecar serves (h2's node_exporter) runs only in the full lab: tests/live/observe/test_loss.py probes it.
+    tuples = [t for t in expected["segmentation"] if not t.get("sidecar")]
     assert {t["src"] for t in tuples} and any(t["expect"] == "closed" for t in tuples), "the register implies nothing to probe"
     wrong = [f"{t['src']} -> {what(t)} {'closed' if t['expect'] == 'open' else 'open'}, expected {t['expect']}"
              for t in tuples if reachable(node, t) != (t["expect"] == "open")]
