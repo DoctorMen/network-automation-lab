@@ -158,7 +158,9 @@ def test_every_node_has_one_exec_list(tmp_path):
     for n in sources:
         assert nodes[n]["exec"][-1] == agent and nodes[n]["exec"].count(agent) == 1, n
     assert not [n for n, v in nodes.items() if agent in v.get("exec", []) and n not in sources]
-    assert {n: v["exec"][:-1] for n, v in nodes.items() if n in inv.routers and n in sources} == {"r1": [], "r2": ["sh /edge.sh"], "r3": ["sh /edge.sh"]}
+    # Routers we own also set up their accounts and accounting proxy, just before the agent (decision 0029).
+    acct = ["sh /access/access.sh"]
+    assert {n: v["exec"][:-1] for n, v in nodes.items() if n in inv.routers and n in sources} == {"r1": acct, "r2": ["sh /edge.sh", *acct], "r3": ["sh /edge.sh", *acct]}
     assert nodes["fw1"]["exec"][:-1] == ["sh /firewall.sh"]
     h2 = nodes["h2"]["exec"]
     assert h2[0].startswith("ip addr add ") and h2[1].startswith("ip route replace default ") and h2[2].startswith("tc qdisc add ")

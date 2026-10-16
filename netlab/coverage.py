@@ -76,6 +76,8 @@ def classify(tokens: list[str]) -> list[tuple[str, str]]:
         return script(args[1])
     if prog == "sh" and args[:2] == ["/monitoring/agent.sh", "dump"]:
         return [("read", "sh /monitoring/agent.sh dump")]  # the flight recorder's state dump, on demand
+    if prog == "su" and "-c" in args[:-1]:  # su ACCOUNT -c '...': the script runs as that account
+        return script(args[args.index("-c") + 1])
     if prog in ("unshare", "env", "timeout"):
         rest = [i for i, a in enumerate(args) if not a.startswith("-") and "=" not in a and not a.isdigit()]
         return classify(args[rest[0]:]) if rest else [("action", prog)]
@@ -108,13 +110,15 @@ def classify(tokens: list[str]) -> list[tuple[str, str]]:
     if prog == "tc":
         words = [a for a in args if not a.startswith("-")]
         return [("read", f"tc {words[0]} show")] if "show" in words else [("action", " ".join(["tc", *words[:1]]))]
-    if prog in ("ping", "traceroute", "wget", "uname", "iptables-save", "apk", "readlink", "ps"):
+    if prog in ("ping", "traceroute", "wget", "uname", "iptables-save", "apk", "readlink", "ps", "id"):
         return [("read", prog)]
     if prog == "nc":
         return [("read", "nc -z")] if "-z" in args else [("action", "nc listener")]
     if prog in ("netstat", "nstat"):
         return [("read", normalize(" ".join([prog, *args])))]
-    if prog in ("cat", "grep", "ls", "head", "tail"):
+    if prog == "sed" and any(a == "--in-place" or re.fullmatch(r"-[a-zE]*i\S*", a) for a in args):
+        return [("action", "sed -i")]  # edits the file in place; any other sed reads it, like cat
+    if prog in ("cat", "grep", "ls", "head", "tail", "sed"):
         paths = [a for a in args if a.startswith("/")]
         return [("read", normalize(f"{prog} {' '.join(paths)}"))] if paths else [("action", prog)]
     if prog == ".":  # sourcing a file: reads it, unless it is a script being run

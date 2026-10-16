@@ -46,6 +46,13 @@ routers:
     wan_filter:
       interface: eth3
       bogons: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]   # RFC 1918: never a real internet source
+    # Source NAT for the users (OROS FND-5, decision 0031): a connection LAN-A opens to the internet leaves
+    # from one address the carrier assigned us and routes to our link, never from r2's own BGP address.
+    # Only LAN-A: servers keep their addresses, and so does everything r2 itself sends. Each translation
+    # is logged to the NOC, so `make whois` names the inside host behind an outside complaint.
+    nat:
+      inside: [10.10.10.0/24]
+      address: 198.51.100.64
   r3:
     owner: campus NOC
     role: core
@@ -85,6 +92,20 @@ hosts:
   # The NOC's own LAN, routed and in-band like any other (decision 0018): monitoring reaches every
   # device through the campus, and nothing in the lab has a management network to take a shortcut.
   noc: { owner: campus NOC, interface: eth1, address: 10.30.30.10/24, gateway: 10.30.30.1, segment: NOC }
+
+# Who may log in to the routers we own and change them, each under an account of their own (OROS ACC-1,
+# ACC-2, CHG-6; decision 0029). Each account has the same uid on every router. People are people; agents
+# are tools, named for what runs as them. Every account is in `group`, the only one the accounting proxy
+# on each router lets through to FRR, and every command it relays goes to the NOC as it runs. The NOC pages
+# on an FRR session or a command by any account not listed here (UnexpectedAdmin), even one in the group.
+access:
+  group: { name: netadmin, gid: 2000 }
+  people:
+    - { name: alice, uid: 2001 }
+    - { name: bob, uid: 2002 }
+  agents:
+    - { name: netlab, uid: 2100, what: "the CM tool: make apply and make drift (Ansible)" }
+  ansible_user: netlab      # the account Ansible logs in as on these routers
 
 # Toy PCI DSS scope (OROS ATT-1, decision 0013). LAN-B stands in for a payments segment, kept small by
 # segmentation. Every device has a scope decision: `systems` are in scope, each with its clause, and
@@ -183,6 +204,7 @@ monitoring:
     vector: timberio/vector:0.40.1-alpine
     pushgateway: prom/pushgateway:v1.9.0
     mailpit: axllent/mailpit:v1.20
+    netshoot: nicolaka/netshoot:v0.13      # conntrack, for a NAT router's translation log (decision 0031)
   # What each tag resolved to when it was pulled (docker image inspect, RepoDigests). A tag can be re-pushed;
   # tests/live/observe/test_noc.py fails if a sidecar runs anything else.
   digests:
@@ -195,6 +217,7 @@ monitoring:
     vector: sha256:a29c5e3eeea49ea0a927d598f7e88624ff18ebd35df827772a337c96684c9ce5
     pushgateway: sha256:98a458415f8f5afcfd45622d289a0aa67063563bec0f90d598ebc76783571936
     mailpit: sha256:7eef0f38dbc85e4e264f2edf5d70fbb694826791e05cb2cae4fc9e3282f968f5
+    netshoot: sha256:a20c2531bf35436ed3766cd6cfe89d352b050ccc4d7005ce6400adf97503da1b
   # The right content, not just a 200. h2 serves a listing of its root directory, and every listing
   # has the same title, so the check needs an entry only the real one has.
   web:
@@ -234,6 +257,8 @@ logging:
   budget:
     store_mb: 1536
     syslog_kb: 8192       # each router, firewall and server's syslog
+    nat_kb: 2048          # each NAT router's translation log (decision 0031)
+    accounting_kb: 2048   # each router's command records from its accounting proxy (decision 0029)
   # Apps whose own log is forwarded as the app writes it, by a forwarder that doesn't run as root.
   # h2's web server writes an access line per request. `cut` names the kinds of line its forwarder drops
   # before they leave the host (decision 0026): web-check is the NOC's web check of this app (the check's

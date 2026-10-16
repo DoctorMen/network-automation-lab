@@ -47,7 +47,11 @@ fi
 
 # Every syslog line goes to the collector as it is written (-R), and a small rotated copy stays on the box
 # (-L, {{ logs.on_box.size_kb }} KB plus {{ logs.on_box.rotated }} rotated file). busybox syslogd sends over UDP and never knows whether a line arrived.
+# Under umask 027 the box's copy is root's alone to change (0640): it holds the routers' command records.
+was=$(umask)
+umask 027
 syslogd -R {{ collector }}:{{ ports.syslog }} -L -s {{ logs.on_box.size_kb }} -b {{ logs.on_box.rotated }}
+umask "$was"
 # The heartbeat sets this source's normal gap: the collector expects a line at least every {{ logs.heartbeat }} s.
 (while :; do logger -t heartbeat alive; sleep {{ logs.heartbeat }}; done) </dev/null >/dev/null 2>&1 &
 # Routers we own: the pending-reboot metric for node_exporter's textfile collector, by the same kernel

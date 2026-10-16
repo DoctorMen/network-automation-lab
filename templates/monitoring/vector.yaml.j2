@@ -11,6 +11,9 @@ sources:
     type: socket
     mode: udp
     address: 0.0.0.0:{{ ports.syslog }}
+    # The port each line was sent from: a router's command records and its translation log come from their
+    # own ports below 1024, which only root on that router can send from (decisions 0029 and 0031).
+    port_key: port
   forwarders:
     type: vector
     address: 0.0.0.0:{{ ports.forward }}
@@ -28,6 +31,15 @@ transforms:
       nodes = {{ addresses | tojson }}
       .node = get(nodes, [.host]) ?? "unknown"
       .source = "syslog"
+      # A line from a router's own low port is that router's command record or translation log, each a source of
+      # its own; the same text sent from any other port, by any other account, stays syslog (decision 0029).
+      sent_from = to_string(.port) ?? ""
+{% for port, s in senders.items() %}
+      if sent_from == "{{ port }}" && includes({{ s.nodes | tojson }}, .node) {
+        .source = "{{ s.source }}"
+      }
+{% endfor %}
+      del(.port)
       .message = strip_whitespace(string!(.message))
   mail_node:
     type: remap
@@ -44,6 +56,28 @@ transforms:
       # Each line's size in bytes as it goes to the store: the ingest each source's budget is held to (decision
       # 0026). VRL's length() counts a string's bytes; strlen() would count its characters.
       .bytes = length(string!(.message))
+  # A record from a router's accounting proxy (decision 0029): an account opened FRR's CLI, was refused or ran a
+  # command. Its arrival time per node and account is what UnexpectedAdmin reads; the line itself goes to Loki
+  # under its own source. A line that only looks like one (sent any other way) is not counted.
+  accounting:
+    type: remap
+    inputs: [syslog_node]
+    drop_on_abort: true
+    source: |
+      if .source != "{{ accounting_source }}" { abort }
+      parsed, err = parse_regex(.message, r'^<\d+>\w{3} [ \d]\d [\d:]{8} vty-aaa\[\d+\]: (?P<event>accept|refuse|command) user=(?P<user>\S+) ')
+      if err != null { abort }
+      .event = parsed.event
+      .user = parsed.user
+      .seen = to_unix_timestamp(now())
+  admin_seen:
+    type: log_to_metric
+    inputs: [accounting]
+    metrics:
+      - type: gauge
+        field: seen
+        name: admin_last_seen_seconds
+        tags: { node: "{% raw %}{{ node }}{% endraw %}", user: "{% raw %}{{ user }}{% endraw %}", event: "{% raw %}{{ event }}{% endraw %}" }
   last_seen:
     type: log_to_metric
     inputs: [seen]
@@ -72,7 +106,7 @@ sinks:
     labels: { node: "{% raw %}{{ node }}{% endraw %}", source: "{% raw %}{{ source }}{% endraw %}" }
   metrics:
     type: prometheus_exporter
-    inputs: [last_seen]
+    inputs: [last_seen, admin_seen]
     address: 127.0.0.1:{{ ports.collector_metrics }}
     # Prometheus stamps each sample with its own scrape time, so a silent source's age keeps growing,
     # and a source's series is kept between its lines (the default would drop it after 60 s).

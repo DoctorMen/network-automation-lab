@@ -263,6 +263,10 @@ def validate(inv: Inventory) -> list[str]:
     problems.extend(rtbh_problems(inv))
     problems.extend(scope_problems(inv))
     problems.extend(monitoring_problems(inv))
+    from .access import problems as access_problems  # access.py imports this module
+    problems.extend(access_problems(inv))
+    from .nat import problems as nat_problems  # so does nat.py
+    problems.extend(nat_problems(inv))
     # A TCP MD5 entry names the two ends of one BGP session, and a secret by file name (not its value).
     for i, auth in enumerate(inv.raw.get("bgp_auth", [])):
         label = f"bgp_auth #{i + 1}"
@@ -450,8 +454,15 @@ def budget_problems(inv: Inventory) -> list[str]:
                  if not (isinstance(a.get("budget_kb"), int) and a["budget_kb"] > 0)]
     if problems:
         return problems
-    from .monitoring import log_sources  # monitoring imports this module, so not at the top
-    daily_kb = sum(s["budget"] for s in log_sources(inv)) // 1024
+    from . import access, nat  # they import this module, so not at the top
+    from .monitoring import ingest_sources
+    sources = ingest_sources(inv)
+    # The translation log and the command records take their budget from nat_kb and accounting_kb.
+    problems = [f"logging: {s['node']}/{s['source']} needs a budget: set logging.budget.{s['source']}_kb over 0"
+                for s in sources if s["source"] in (nat.SOURCE, access.SOURCE) and s["budget"] <= 0]
+    if problems:
+        return problems
+    daily_kb = sum(s["budget"] for s in sources) // 1024
     days = logs["retention"] / 24
     if daily_kb * days > budget["store_mb"] * 1024:
         problems.append(f"logging: the sources' budgets ({daily_kb} KB a day) for {days:g} days of retention need "

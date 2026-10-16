@@ -9,7 +9,9 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
-from .conftest import wait_for
+from netlab.inventory import load
+
+from .conftest import ROOT, wait_for
 from .test_collection import playbook
 
 TOOLS = Path(__file__).parent / "tools"
@@ -147,7 +149,7 @@ def rules_check(devices):
 
 
 def iptables_rules(node):
-    return node.run("sh", "-c", "iptables -S; iptables -t raw -S").stdout
+    return node.run("sh", "-c", "iptables -S; iptables -t raw -S; iptables -t nat -S").stdout
 
 
 def delete_by_hand(node, table, chain, comment):
@@ -162,7 +164,9 @@ def delete_by_hand(node, table, chain, comment):
 
 
 def test_edge_filter_hand_change_is_flagged(node, expected):
-    """A hole opened by hand in r2's internet filter, and an anti-spoof rule deleted on r2 and on fw1, all fail the drift check, which names each."""
+    """A hole opened by hand in r2's internet filter, a translation added by hand to r2's NAT (the server LAN
+    behind the users' address, decision 0031), and an anti-spoof rule deleted on r2 and on fw1, all fail the
+    drift check, which names each."""
     edges = "r2,fw1"
     clean = rules_check(edges)
     assert clean.returncode == 0, "drift check fails on the clean lab, so a failure proves nothing:\n" + clean.stdout
@@ -171,17 +175,23 @@ def test_edge_filter_hand_change_is_flagged(node, expected):
     bogon = f"bogon {wan['bogons'][0]}"
     rules_before = {n.name: iptables_rules(n) for n in (r2, fw1)}
     hole = ["FORWARD", "-i", wan["interface"], "-p", "tcp", "--dport", "22", "-j", "ACCEPT", "-m", "comment", "--comment", mark]
+    translated = expected["nat"]["r2"]
+    servers = str(ipaddress.IPv4Interface(load(ROOT / "inventory" / "network.yml").hosts["h2"]["address"]).network)
+    widened = ["POSTROUTING", "-o", translated["interface"], "-s", servers, "-j", "SNAT", "--to-source", translated["address"]]
+    named = f"+-A POSTROUTING -s {servers} -o {translated['interface']} -j SNAT --to-source {translated['address']}"
     put_back = []
     try:
         r2.run("iptables", "-I", *hole)
+        r2.run("iptables", "-t", "nat", "-A", *widened)
         put_back.append(delete_by_hand(r2, "raw", "PREROUTING", bogon))
         put_back.append(delete_by_hand(fw1, "raw", "PREROUTING", "anti-spoof-inside"))
         drifted = rules_check(edges)
         assert drifted.returncode != 0, "drift check passed with a hole in r2's internet filter"
-        unnamed = [change for change in (mark, bogon, "anti-spoof-inside") if change not in drifted.stdout]
+        unnamed = [change for change in (mark, named, bogon, "anti-spoof-inside") if change not in drifted.stdout]
         assert not unnamed, f"drift check failed but didn't name {unnamed}:\n" + drifted.stdout
     finally:
         r2.run("iptables", "-D", *hole, check=False)
+        r2.run("iptables", "-t", "nat", "-D", *widened, check=False)
         for restore in put_back:
             restore()
     assert {n.name: iptables_rules(n) for n in (r2, fw1)} == rules_before, "the rules were not put back as they were"

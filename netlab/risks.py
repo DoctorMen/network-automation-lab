@@ -113,6 +113,15 @@ DETECTORS = {
     # Log volume at the source (decision 0026).
     "log-cut-at-source": Detector("build", "*/forwarder.yaml", r'\.cut = "', None,
                                   "a kind of log line cut at its source, so the store holds only a count of it"),
+    # Attribution (decisions 0029, 0030 and 0031).
+    "root-skips-accounting": Detector("build", "access/vtysh", r'^\[ "\$\(id -u\)" -eq 0 \] && exec /usr/bin/vtysh', None,
+                                      "root uses FRR's own sockets, past the accounting proxy"),
+    "shell-login-unrecorded": Detector("build", "access/access.sh", r"adduser -D .* -s /bin/sh ", None,
+                                       "an account with a shell whose login itself is recorded nowhere"),
+    "nat-log-start-only": Detector("build", "*/natlog.sh", r"^\s+conntrack -E -e NEW ", None,
+                                   "the translation log records when each translation began, not when it ended"),
+    "drift-play-as-root": Detector("repo", "ansible/drift.yml", r"^\s+ansible_user: root$", None,
+                                   "a playbook reads a router's kernel tables as root, which no record attributes"),
 }
 
 

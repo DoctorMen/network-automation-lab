@@ -24,6 +24,11 @@ topology:
         # The exporters listen on the loopback, and start before zebra has put the address there.
         net.ipv4.ip_nonlocal_bind: 1
 {% endif %}
+{% if name in root_only_ports %}
+        # Only root may send from a port below 1024, the ports the collector trusts for command records and
+        # the translation log (decision 0029). Docker sets 0 in a container, which lets any account.
+        net.ipv4.ip_unprivileged_port_start: {{ unprivileged_port_start }}
+{% endif %}
       binds:
         # Read-only: the rendered files are the intent. A writable bind would let a hand change
         # saved with `write memory` (or an edit to daemons) overwrite build/ and slip past the
@@ -44,9 +49,16 @@ topology:
 {% if name in mon.sources %}
         - monitoring/agent.sh:/monitoring/agent.sh:ro
 {% endif %}
+{% if name in access %}
+        # Named accounts, the accounting proxy and the vtysh that uses it (decision 0029).
+        - access:/access:ro
+{% endif %}
       exec:
 {% if name in edge %}
         - sh /edge.sh
+{% endif %}
+{% if name in access %}
+        - sh /access/access.sh
 {% endif %}
 {% if name in mon.sources %}
         # Syslog to the NOC's collector, a heartbeat, and the pending-reboot metric (decision 0019).

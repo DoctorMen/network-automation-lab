@@ -14,7 +14,9 @@ import re
 import subprocess
 import sys
 
-VTYSH = "/usr/bin/vtysh"
+# On a router we own, the vtysh there sends every account but root through the accounting proxy, the only
+# way they can reach FRR (decision 0029). The carrier's isp has only FRR's own.
+VTYSH = "/usr/local/bin/vtysh" if os.path.exists("/usr/local/bin/vtysh") else "/usr/bin/vtysh"
 # FRR 8.4: `neighbor <peer> password <line>`, and the line may contain spaces, so take the rest of it.
 PASSWORD = re.compile(r"^(\s*neighbor\s\S+\spassword)\s(.+?)\s*$")
 

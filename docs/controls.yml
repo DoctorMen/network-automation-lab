@@ -515,7 +515,7 @@ controls:
       might want to; most entries are gaps today, each with its fallback.
 
   - id: log-arrival
-    claim: "Every log source has a last-seen check counted where its lines arrive, not by the sender. r1's syslog dropped on the way pages as silent within twice its heartbeat while r1's own counters say it is still sending, and comes back without a restart of anything. `make testevent` sends a marked line from every source the way its real lines go and finds each one in the central store"
+    claim: "Every log source has a last-seen check counted where its lines arrive, not by the sender. r1's syslog dropped on the way pages as silent within twice its heartbeat while r1's own counters say it is still sending, and comes back without a restart of anything. `make testevent` sends a marked line from every source the way its real lines go (for r2's translation log, a real translation, found by its port) and finds each one in the central store"
     test:
       - tests/live/observe/test_arrival.py::test_every_source_has_a_last_seen_check
       - tests/live/observe/test_arrival.py::test_synthetic_event_from_every_source_reaches_the_store
@@ -797,6 +797,110 @@ controls:
       pager received, but a person commits it. Blind spots are written by hand, so an entry is only as good
       as whoever wrote it; the check proves it is there and not blank. make test fails 92 days after the
       last review, and on any rule change, until make fp-review runs again on a full lab.
+
+  - id: attrib-accounts
+    claim: "Each person and the CM tool has a named account with its own uid on every router we own, and FRR answers an account only through an accounting proxy that records every command as one line under the uid the kernel reports, not the name the shell claims, with secrets hidden, abbreviated ones too. The proxy sends each record to the collector from a port only root can send from, and the collector takes a record only from that port of a router we own, so a line an account writes to syslog, sends to the collector itself or hides in a command is not taken for one. A record reaches the central store within 10 s, and after root deletes every accounting line from the router's own log, which only root can change, the central copy is unchanged and names the real account. Root itself still goes past the proxy (RISK-60)"
+    test:
+      - tests/live/test_access.py::test_each_router_we_own_has_the_named_accounts
+      - tests/live/test_access.py::test_frr_answers_a_person_only_through_the_accounting_proxy
+      - tests/live/test_access.py::test_the_record_names_the_account_the_kernel_reports
+      - tests/live/test_access.py::test_only_root_sends_from_the_ports_the_collector_trusts
+      - tests/live/observe/test_accounting.py::test_record_leaves_the_box_and_outlives_root_deleting_its_copy
+      - tests/live/observe/test_accounting.py::test_a_record_an_account_forges_is_not_taken_for_one
+      - tests/test_attribution.py::test_every_router_we_own_gets_each_account_and_the_proxy
+      - tests/test_attribution.py::test_a_secret_typed_into_vtysh_is_hidden_in_its_record
+      - tests/test_attribution.py::test_the_labs_own_config_is_recorded_as_typed
+      - tests/test_attribution.py::test_no_command_puts_a_line_of_its_own_in_the_records
+      - tests/test_attribution.py::test_only_a_record_from_the_senders_own_port_counts
+    period: P31D
+    threat: >-
+      A change nobody will own, made under a shared root account, and the one record of it deleted from
+      the box by whoever made it, or written again under someone else's name.
+    fails_when: >-
+      Root on the router uses FRR's own sockets and can stop the proxy, so what root does is not recorded,
+      and root on the router or in one of its sidecars can send from the proxy's port (RISK-60); the console
+      in this lab is root. The records cross the campus as clear UDP: one can be lost, and a host on the
+      campus can forge one from a router's address and the proxy's port (RISK-34). The proxy records
+      commands sent, not whether each took effect, and a word that only happens to start a secret keyword
+      hides the rest of its command.
+
+  - id: attrib-unexpected-admin
+    claim: "Any account but root (RISK-60) that the inventory doesn't list pages as UnexpectedAdmin, naming the router and the account, within the bound `expected_state.json` states of its first FRR command, whether it was added to the admin group by hand (the proxy lets it in) or not (the proxy refuses it). A listed person doesn't page, each page clears once that account has been quiet for 60 s, and a record an account on the router forges counts for nothing. A shell login that never opens FRR's CLI is not seen (RISK-61)"
+    test:
+      - tests/live/observe/test_accounting.py::test_an_account_not_on_the_list_pages_and_a_listed_one_does_not
+      - tests/live/observe/test_accounting.py::test_a_record_an_account_forges_is_not_taken_for_one
+      - tests/live/test_access.py::test_an_account_outside_the_group_is_refused_and_recorded
+      - tests/test_attribution.py::test_unexpected_admin_rule_per_router_excludes_only_the_inventory_accounts
+      - tests/test_attribution.py::test_only_a_record_from_the_senders_own_port_counts
+    period: P31D
+    threat: >-
+      An account added by hand, a contractor's left over, or one an attacker made, used on a router for
+      days before anyone looks.
+    fails_when: >-
+      It sees only FRR use: a shell login that never opens FRR's CLI writes no line (RISK-61), and root's
+      vtysh goes past the proxy and pages nothing (RISK-60). A record forged on the campus from a router's
+      address and the proxy's port pages too, and a lost one doesn't (RISK-34). An account the inventory
+      lists is trusted whatever it does.
+
+  - id: attrib-drift-actor
+    claim: "When a router differs from its intent, `make drift` shows each differing line's running value and names who set it, from the command records at the NOC: after alice and then bob set the same line, it names bob, whose value is running, and not alice. `make apply` puts the intent back, and its commands are recorded under the CM tool's own account. When root then sets bob's value again outside the proxy, the lookup `make drift` runs names no one for either line, and a record alice forges under another name for her own change leaves her named"
+    test:
+      - tests/live/observe/test_accounting.py::test_drift_names_whoever_set_the_running_value_last
+      - tests/live/observe/test_accounting.py::test_a_record_an_account_forges_is_not_taken_for_one
+      - tests/test_attribution.py::test_drift_lines_are_read_with_their_context_and_state
+      - tests/test_attribution.py::test_the_newest_record_that_set_a_line_is_named
+      - tests/test_attribution.py::test_a_removed_line_is_named_by_its_no_record
+      - tests/test_attribution.py::test_a_line_changed_again_outside_the_proxy_names_no_one
+      - tests/test_attribution.py::test_a_password_line_is_matched_without_its_secret
+      - tests/test_attribution.py::test_the_lookup_says_so_when_the_noc_does_not_answer
+    period: P31D
+    threat: >-
+      A drifted line found by the nightly check, with hours spent finding who typed it while the session
+      it broke stays down, or the wrong person blamed for it.
+    fails_when: >-
+      A record holds the command as typed, not the stanza it was typed under or the daemon's answer, so
+      the same command under another interface can be named, or hide the record that did set the line, and
+      a refused command can be named (RISK-62). A change from root outside the proxy names no one (RISK-60).
+      It names people only on routers we own; isp is administered as root.
+
+  - id: attrib-nat
+    claim: "r2 translates LAN-A, and nothing else, to one address the carrier routes to us: a user's connection reaches the internet from it, the server LAN and r2 itself keep their own addresses, no other device translates, nothing from the internet reaches an inside host through that address unasked, and a translation added by hand fails the drift check, which names it"
+    test:
+      - tests/live/test_nat.py::test_users_leave_from_the_assigned_address_and_nothing_else_is_translated
+      - tests/live/test_nat.py::test_nat_is_one_rule_for_lan_a_only
+      - tests/live/test_nat.py::test_nothing_reaches_inside_through_the_nat_address_unasked
+      - tests/live/test_edge.py::test_edge_filter_hand_change_is_flagged
+      - tests/test_attribution.py::test_nat_is_one_rule_for_the_users_out_of_the_wan_only
+    period: P31D
+    threat: >-
+      A NAT wider than needed, hiding servers or the router's own traffic behind the users' address, or
+      opening a way in from the internet.
+    fails_when: >-
+      The test's far end is the carrier stand-in, and it counts TCP connections only. The NAT's own state
+      is the kernel's conntrack table, which a full table or a reboot clears; connections then start again
+      with new translations.
+
+  - id: attrib-whois
+    claim: "An outside complaint giving the NAT address, a port and a time names the inside host behind it from the NOC's copy of r2's translation log alone: `make whois` names h1 and the port it used, a port nobody held or a time before the connection names no one, and two inside addresses using the same inside port to the same far end are each named by the outside port they got. A translation line an account on r2 forges names no one, since the collector takes the log only from a port below 1024 that no account on r2 but root can send from. The translation log has its own last-seen check, and `make testevent` makes a real translation and finds it"
+    test:
+      - tests/live/observe/test_whois.py::test_a_complaint_names_the_inside_host_from_the_noc_alone
+      - tests/live/observe/test_whois.py::test_the_same_inside_port_from_two_hosts_names_each_by_its_own_outside_port
+      - tests/live/observe/test_accounting.py::test_a_record_an_account_forges_is_not_taken_for_one
+      - tests/live/observe/test_arrival.py::test_every_source_has_a_last_seen_check
+      - tests/live/observe/test_arrival.py::test_synthetic_event_from_every_source_reaches_the_store
+      - tests/test_attribution.py::test_translation_log_lines_parse
+      - tests/test_attribution.py::test_the_outside_port_names_the_inside_host_that_held_it_then
+      - tests/test_attribution.py::test_only_a_record_from_the_senders_own_port_counts
+    period: P31D
+    threat: >-
+      An abuse complaint about the NAT address that nobody can answer, or that blames the wrong user.
+    fails_when: >-
+      The log records when each translation began, not when it ended, over UDP: a lost line names no one,
+      and a reused outside port needs the far end to narrow it (RISK-63). `make whois` looks back an hour
+      unless told to look further, and takes a translation stamped at most 2 s after the complaint's time,
+      so a complainant whose clock runs further behind r2's is told nobody held the port (RISK-63). A line
+      forged on the campus from r2's address and the log's port is taken (RISK-34), as is one from root on
+      r2 (RISK-60). The second inside host is a second address on h1, standing in for a second user.
 
   - id: verdict-log
     claim: "Every odd behaviour in the log has one verdict (my config, normal behaviour, platform bug or lab artifact), the version it was seen on, and a fix or workaround. None may stay unclassified past 5 working days"

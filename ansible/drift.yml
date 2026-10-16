@@ -45,6 +45,7 @@
         label: intended
         mismatch: has drifted from intended config
         with_password_tags: true
+        name_actors: true
 
 # Load each backup just taken back on its router in test mode.
 - ansible.builtin.import_playbook: verify_capture.yml
@@ -55,11 +56,15 @@
 # namespace with its own empty iptables tables. The live rules are never touched.
 # Routers with an edge.sh (the edge_routers group: r2's internet filter, r3's reverse-path filter) get
 # the same check against that script. The filter and raw tables are both compared, because the
-# anti-spoof rules live in raw (decision 0012).
+# anti-spoof rules live in raw (decision 0012), and so is the nat table, where r2's source NAT lives
+# (decision 0031): a widened or added translation is drift like any other rule.
 - name: Back up firewall and edge router rules and detect drift
   hosts: firewalls:edge_routers
   gather_facts: false
   vars:
+    # iptables needs root. The routers' FRR plays run as the CM tool's account (decision 0029); the kernel's
+    # tables have no accounting of their own, so this play reads them as the console does (RISK-64).
+    ansible_user: root
     backup_dir: "{{ playbook_dir }}/../backups"
     firewall_sh: "{{ playbook_dir }}/../build/{{ inventory_hostname }}/{{ rules_script | default('firewall.sh') }}"
   tasks:
@@ -92,12 +97,12 @@
         mode: "0644"
 
     - name: Replay them in a fresh network namespace
-      ansible.builtin.shell: unshare -n sh -ec '. /tmp/intended-rules.sh; iptables -S; iptables -t raw -S' > /tmp/intended.rules
+      ansible.builtin.shell: unshare -n sh -ec '. /tmp/intended-rules.sh; iptables -S; iptables -t raw -S; iptables -t nat -S' > /tmp/intended.rules
       changed_when: false
 
     # A line diff, not a set comparison: rule order is policy.
     - name: Diff the live rules against the replayed intent
-      ansible.builtin.shell: (iptables -S; iptables -t raw -S) | diff -u /tmp/intended.rules -
+      ansible.builtin.shell: (iptables -S; iptables -t raw -S; iptables -t nat -S) | diff -u /tmp/intended.rules -
       register: rule_diff
       changed_when: false
       failed_when: rule_diff.rc > 1  # 1 means the rules differ, which the next task reports

@@ -198,11 +198,17 @@ def test_budget_rule_pages_once_a_source_passes_its_day(docker, rendered):
 
 
 def test_every_source_has_a_budget_and_a_rule():
+    """Every source the store keeps, the translation log and the command records included, has its own budget
+    and its own rule; the command records have no heartbeat, so they have a budget but no SourceSilent."""
     rules = {(r["labels"]["node"], r["labels"]["source"]): r for r in monitoring.alert_rules(inv) if r["alert"] == "LogIngestOverBudget"}
-    for s in monitoring.log_sources(inv):
+    sources = monitoring.ingest_sources(inv)
+    for s in sources:
         assert s["budget"] > 0, s
         assert rules[(s["node"], s["source"])]["expr"].endswith(f"[1d])) > {s['budget']}")
-    assert set(rules) == {(s["node"], s["source"]) for s in monitoring.log_sources(inv)}
+    assert set(rules) == {(s["node"], s["source"]) for s in sources}
+    assert {s["source"] for s in sources} == {"syslog", "http", "nat", "accounting"}
+    silent = {(r["labels"]["node"], r["labels"]["source"]) for r in monitoring.alert_rules(inv) if r["alert"] == "SourceSilent"}
+    assert silent == {(s["node"], s["source"]) for s in sources if s["source"] != "accounting"}
 
 
 def problems(tmp_path, mutate) -> str:
@@ -224,6 +230,15 @@ def test_a_source_without_a_budget_is_refused(tmp_path):
     def m(raw):
         raw["logging"]["apps"][0].pop("budget_kb")
     assert "needs a budget_kb over 0" in problems(tmp_path, m)
+
+
+def test_a_translation_log_or_command_records_without_a_budget_are_refused(tmp_path):
+    def m(raw):
+        raw["logging"]["budget"].pop("nat_kb")
+        raw["logging"]["budget"].pop("accounting_kb")
+    out = problems(tmp_path, m)
+    assert "r2/nat needs a budget: set logging.budget.nat_kb over 0" in out
+    assert "r1/accounting needs a budget: set logging.budget.accounting_kb over 0" in out
 
 
 def test_a_cut_kind_netlab_does_not_know_is_refused(tmp_path):

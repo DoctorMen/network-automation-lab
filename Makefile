@@ -6,7 +6,7 @@ LAB_ENV ?= local
 NOTE    ?=
 
 .PHONY: help validate render test deploy live drift apply locate measure destroy all
-.PHONY: secrets gitleaks finding risks review deploy-network observe coverage testevent alerts silence ingest detections fp-review
+.PHONY: secrets gitleaks finding risks review deploy-network observe coverage testevent alerts silence ingest detections fp-review whois
 
 help:            ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-15s %s\n", $$1, $$2}'
@@ -73,6 +73,9 @@ detections:      ## Write docs/detections.md from the deployed rules; fails on a
 
 fp-review:       ## On a full lab: run the benign workload (30 min), count every page, write monitoring/fp-review.yml (LAB_ENV=...)
 	$(PY) -m netlab.detections review --env $(LAB_ENV)
+
+whois:           ## Which inside host held a NAT address and port at a time: make whois ADDR=198.51.100.64 PORT=41000 AT=2026-10-16T05:40:00Z [REMOTE=203.0.113.1]
+	$(PY) -m netlab.who flow "$(ADDR)" "$(PORT)" "$(AT)" $(if $(REMOTE),--remote "$(REMOTE)")
 
 drift:           ## Back up routers and firewall, fail on drift or on a backup missing running config
 	cd ansible && ansible-playbook drift.yml

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from netlab import kernel, monitoring
+from netlab import kernel, monitoring, nat
 from netlab.inventory import InventoryError, load
 from netlab.render import render_all
 
@@ -113,7 +113,8 @@ def test_source_silent_bound():
     with its heartbeat and two scrapes of jitter never trips it."""
     mon, logs = monitoring.expected(inv), inv.logging
     for s in mon["sources"]:
-        if s["source"] == "syslog":
+        # A translation log (decision 0031) has the same heartbeat as syslog, so the same bound.
+        if s["source"] in ("syslog", nat.SOURCE):
             assert logs["heartbeat"] + 2 * mon["interval"] < s["silent_after"]
             assert s["silent_after"] + mon["alert_within"]["SourceSilent"] <= s["within"] == 2 * logs["heartbeat"]
         else:

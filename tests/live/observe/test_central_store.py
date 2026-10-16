@@ -72,11 +72,14 @@ def test_history_outlasts_on_box_rotation(node, mon, noc):
 
 
 def test_no_secret_in_the_central_store(noc, expected):
-    """Every line the store holds from the last day, searched here for each BGP password (never sent as a query)."""
+    """Every line the store holds from the last day, searched here for each BGP password (never sent as a query).
+    The routers' command records are searched too: `make apply` sets the password through vtysh as the CM tool,
+    so through the accounting proxy (decision 0029)."""
     values = sorted({(secrets.store() / e["secret"]).read_text().strip() for ends in expected.get("bgp_md5", {}).values() for e in ends})
     assert values, "no BGP password to look for"
     start, hits, lines = time.time() - 86400, [], 0
-    for source in {s["source"] for s in expected["monitoring"]["sources"]}:
+    records = {expected["access"]["source"]} if expected.get("access") else set()
+    for source in {s["source"] for s in expected["monitoring"]["sources"]} | records:
         got = noc.logs(f'{{source="{source}"}}', start, every=True)
         lines += len(got)
         hits += [f"{labels['node']}/{labels['source']}" for _, labels, line in got if any(v in line for v in values)]

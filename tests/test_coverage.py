@@ -78,6 +78,9 @@ def test_reads_are_told_from_writes():
     assert coverage.classify(["ip", "link", "set", "eth2", "down"]) == [("action", "ip link set")]
     assert coverage.classify(["sh", "-c", "iptables -S; iptables -t raw -S"]) == [("read", "iptables -S")] * 2
     assert coverage.classify(["sh", "-ec", "ls /lib/modules 2>/dev/null"]) == [("read", "ls /lib/modules")]
+    # sed -i changes a file; sed -n reads one, and must be listed like any read.
+    assert coverage.classify(["sh", "-c", "sed -i /vty-aaa/d /var/log/messages"]) == [("action", "sed -i")]
+    assert coverage.classify(["sed", "-n", "1p", "/var/log/messages"]) == [("read", "sed /var/log/messages")]
 
 
 def test_every_metric_says_what_it_counts():

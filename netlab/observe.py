@@ -17,6 +17,7 @@ operator on the NOC's own box would make it. The live tests in tests/live/observ
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 import re
@@ -31,7 +32,7 @@ from pathlib import Path
 import yaml
 
 from .inventory import Inventory, load
-from . import monitoring
+from . import monitoring, nat
 
 ROOT = Path(__file__).resolve().parent.parent
 TAG = "netlab-testevent"
@@ -199,18 +200,30 @@ def lab_name(build: Path = ROOT / "build") -> str:
     return yaml.safe_load((build / "topology.clab.yml").read_text())["name"]
 
 
-def send_testevent(inv: Inventory, lab: str, source: dict, marker: str) -> None:
+def send_testevent(inv: Inventory, lab: str, source: dict, marker: str) -> str:
     """One marked line from one source, the way its real lines travel: logger on the node itself, which
-    busybox syslogd sends on; for an app, a request the app writes into its own access log."""
+    busybox syslogd sends on; for an app, a request the app writes into its own access log; for a translation
+    log, a connection from a host behind the NAT to the carrier, on a port taken from the marker. Returns what
+    to look for in the store: the marker, or for a translation that port as the connection's destination."""
     if source["source"] == "syslog":
         subprocess.run(["docker", "exec", f"clab-{lab}-{source['node']}", "logger", "-t", TAG, marker],
                        check=True, capture_output=True, timeout=30)
-        return
+        return marker
+    if source["source"] == nat.SOURCE:
+        translated = nat.expected(inv)[source["node"]]
+        inside = next(h for h, v in inv.hosts.items()
+                      if any(ipaddress.IPv4Interface(v["address"]) in ipaddress.IPv4Network(n) for n in translated["inside"]))
+        port = 40000 + int(marker.rsplit("-", 1)[1], 16) % 20000
+        # The carrier refuses the port; the translation is logged when the first packet leaves.
+        subprocess.run(["docker", "exec", f"clab-{lab}-{inside}", "nc", "-z", "-w", "2",
+                        monitoring.loopback(inv, translated["carrier"]), str(port)], capture_output=True, timeout=30)
+        return f"dport={port} [UNREPLIED]"
     app = next(a for a in inv.logging["apps"] if a["host"] == source["node"] and a["name"] == source["source"])
     address = monitoring.probe_address(inv, app["host"])
     # A 404 is still an access line. From the NOC, the client a real check would come from.
     subprocess.run(["docker", "exec", f"clab-{lab}-{monitoring.host(inv)}", "wget", "-q", "-O", "/dev/null",
                     f"http://{address}:{app['port']}/{marker}"], capture_output=True, timeout=30)
+    return marker
 
 
 def testevent(inv: Inventory, lab: str, timeout: float = 60) -> list[dict]:
@@ -220,11 +233,14 @@ def testevent(inv: Inventory, lab: str, timeout: float = 60) -> list[dict]:
     for s in monitoring.log_sources(inv):
         marker = f"NOT3-{s['node']}-{s['source']}-{uuid.uuid4().hex[:12]}"
         sent.append({**{k: s[k] for k in ("node", "source")}, "marker": marker, "sent": time.time(), "seconds": None})
-        send_testevent(inv, lab, s, marker)
+        sent[-1]["needle"] = send_testevent(inv, lab, s, marker)
     while time.time() < start + timeout and any(e["seconds"] is None for e in sent):
         lines = noc.logs('{node=~".+"} |= "NOT3-"', start - 5)
+        # A translation's line holds no marker, only its port; its source's own lines are searched for that.
+        for src in {(e["node"], e["source"]) for e in sent if e["needle"] != e["marker"]}:
+            lines += noc.logs(f'{{node="{src[0]}",source="{src[1]}"}} |= "UNREPLIED"', start - 5)
         for e in sent:
-            hit = next((t for t, labels, line in lines if e["marker"] in line
+            hit = next((t for t, labels, line in lines if e["needle"] in line
                         and labels.get("node") == e["node"] and labels.get("source") == e["source"]), None)
             if hit is not None and e["seconds"] is None:
                 # The collector stamps a line when it arrives; docker exec itself takes a few tenths.
@@ -292,7 +308,7 @@ def ingest(inv: Inventory, noc: Noc, pace_window: str = "10m") -> list[dict]:
     day = {(r["node"], r["source"]): r["value"] for r in noc.query("increase(log_bytes_total[1d])")}
     pace = {(r["node"], r["source"]): r["value"] for r in noc.query(f"rate(log_bytes_total[{pace_window}]) * 86400")}
     return [{"node": s["node"], "source": s["source"], "bytes": day.get((s["node"], s["source"])),
-             "budget": s["budget"], "pace": pace.get((s["node"], s["source"]))} for s in monitoring.log_sources(inv)]
+             "budget": s["budget"], "pace": pace.get((s["node"], s["source"]))} for s in monitoring.ingest_sources(inv)]
 
 
 def kb(value: float | None) -> str:
@@ -334,7 +350,7 @@ def main(argv: list[str] | None = None) -> int:
     results = testevent(inv, lab)
     for e in results:
         where = f"arrived in {e['seconds']} s" if e["seconds"] is not None else "NOT FOUND in the central store"
-        print(f"{e['node']:<5} {e['source']:<7} {e['marker']}  {where}")
+        print(f"{e['node']:<5} {e['source']:<7} {e['needle']}  {where}")
     return 1 if any(e["seconds"] is None for e in results) else 0
 
 

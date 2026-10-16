@@ -688,7 +688,9 @@
     busybox syslogd, the only syslog daemon in the router image, sends each line once over UDP 514 with
     no acknowledgement, queue or authentication (RFC 5426). A congested or dead link loses the lines
     behind it for good, and any host on the campus can send a line naming any router's address. The
-    collector names a line by its source address only. A whole stream lost pages as SourceSilent within
+    collector names a line by its source address only, and takes a command record or a translation line
+    only from its sender's port below 1024 (decision 0029), which keeps out the router's other accounts but
+    not a host that forges both on the wire. A whole stream lost pages as SourceSilent within
     twice its heartbeat; a single lost line, or a forged one, is not detected. The fix is a TLS syslog
     sender (RFC 5425) in a sidecar, reading FRR's lines from a socket rather than the image's syslogd.
   compensating_control: tests/live/observe/test_arrival.py::test_blocked_source_raises_source_silent_and_comes_back_without_a_restart
@@ -966,6 +968,121 @@
     arrives more than its 120 s wait after the workload ends would be missed.
   compensating_control: tests/test_detections.py::test_table_has_a_full_row_for_every_deployed_rule_and_a_current_review
   compensates: the workload is stated in docs/detections.md, every figure is from the current 92-day cycle and from the rules that run now
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-60
+  kind: accepted-risk
+  title: root on a router changes FRR with no record, and can stop the accounting
+  detectors: [root-skips-accounting]
+  likelihood: 2
+  impact: 4
+  reasoning: >-
+    The accounting proxy (decision 0029) sees only what reaches FRR through it. Root keeps FRR's own
+    sockets (root and frrvty), so vtysh as root goes straight to the daemons, and root can also stop the
+    proxy or delete the box's copy of the records. The collector trusts a record, or a line of r2's
+    translation log, by the port below 1024 it came from, which root may send from: root on the router,
+    and root in any of its sidecars, which share its network namespace (frr_exporter and the translation
+    log run as root), can send a line the collector takes for one. In this lab root is the `docker exec`
+    console, which every live test and the carrier's isp use, and which anyone who can run docker on the
+    host has. frr_exporter shares the same sockets (RISK-33). What already reached the NOC stays there,
+    and a change with no record names no one in `make drift`, even after the CM tool put the intent back
+    in between. The fix is no shared root: a login
+    per person through sshd with short-lived certificates (OROS ACC-3, a later build), sudo rules that
+    leave root to break-glass use, and an alert on any FRR change no record explains.
+  compensating_control: tests/live/observe/test_accounting.py::test_record_leaves_the_box_and_outlives_root_deleting_its_copy
+  compensates: a record is at the NOC within seconds, and root deleting the box's copy leaves the NOC's whole
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-61
+  kind: accepted-risk
+  title: a shell login that never opens FRR's CLI is recorded nowhere
+  detectors: [shell-login-unrecorded]
+  likelihood: 3
+  impact: 2
+  reasoning: >-
+    The routers have no sshd or login daemon; a person reaches one through the host's console (`docker exec`,
+    then su to their account), which writes no login record. UnexpectedAdmin reads the proxy's lines, so an
+    unlisted account pages when it opens FRR's CLI or is refused by the proxy, not when it only runs shell
+    commands. Without root those can't change routing, filters or FRR's config: the iptables and FRR sockets
+    need root or frrvty. The fix is sshd with its own log lines at the NOC, which a later build adds (OROS ACC-3).
+  compensating_control: tests/live/observe/test_accounting.py::test_an_account_not_on_the_list_pages_and_a_listed_one_does_not
+  compensates: an unlisted account pages the moment it touches FRR, in the admin group or not
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-62
+  kind: accepted-risk
+  title: the drift check matches records by a command's text, not its stanza or its result
+  likelihood: 2
+  impact: 2
+  reasoning: >-
+    `make drift` names who set each differing line from the command records (decision 0030): the newest
+    record of the same command decides, and is named only if it set the running value, or for a missing
+    line removed or replaced the intended one. A record holds the command as typed, not the interface or
+    stanza it was typed under, nor whether the daemon accepted it. So the same command typed since under
+    another interface can name the wrong person, or hide the record that did set the line and name no one,
+    and a command the daemon refused can be named. A change made outside the proxy (RISK-60) names no one,
+    and says so. The fix is to keep each session's context with its records (the proxy sees every line of
+    the session, under one pid) and the daemon's answer to each command.
+  compensating_control: tests/live/observe/test_accounting.py::test_drift_names_whoever_set_the_running_value_last
+  compensates: with two people changing the same line, the one whose value is running is named, not the other, and a value root set again after `make apply` names no one
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-63
+  kind: accepted-risk
+  title: the translation log can lose a translation, and records only when each began
+  detectors: [nat-log-start-only]
+  likelihood: 2
+  impact: 3
+  reasoning: >-
+    r2's translation log (decision 0031) is conntrack's NEW events sent as syslog over UDP: a line lost on the
+    way or dropped by conntrack itself when its netlink buffer overflows under load is gone, and a complaint
+    about that translation names no one. A dead log pages as SourceSilent within twice its heartbeat (measured
+    once by hand: 93 s after its last line, bound 120 s); a single lost line is not detected (RISK-34). It
+    records when a translation began, not when it ended, so an outside
+    port reused for a different far end is told apart only when the complaint gives the far end's address and
+    port, and `make whois` looks back an hour by default. It takes a translation stamped at most 2 s after the
+    complaint's time (--skew), which fits the lab's one clock: a complainant whose clock runs further behind
+    r2's is told nobody held the port until --skew is widened. The fix is DESTROY events too, a sender with a
+    queue (or the kernel's own NAT log, sent by a TCP or TLS forwarder), longer lookups against the 720 h
+    store, and a skew taken from how far off the complainant's clock is known to be.
+  compensating_control: tests/live/observe/test_whois.py::test_the_same_inside_port_from_two_hosts_names_each_by_its_own_outside_port
+  compensates: two inside hosts on the same inside port to the same far end are each named by their own outside port
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-64
+  kind: accepted-risk
+  title: the drift check reads the edge routers' filters as root
+  detectors: [drift-play-as-root]
+  likelihood: 1
+  impact: 2
+  reasoning: >-
+    The FRR half of `make drift` and all of `make apply` run as the CM tool's own account (decision 0029), so
+    their commands are recorded. iptables needs root, and the kernel's tables have no accounting of their own,
+    so the play that reads r2's and r3's filters and NAT runs as root, like the console. It only reads
+    (iptables -S and iptables-save) and replays the intent in a separate, empty network namespace. The fix is a
+    sudo rule letting the CM tool's account run iptables -S and iptables-save only, logged like its FRR commands.
+  compensating_control: tests/live/test_edge.py::test_edge_filter_hand_change_is_flagged
+  compensates: any change to the filters or the NAT, by whoever made it, fails the drift check, which names it
   owner: DoctorMen
   review_by: 2027-01-15
   presented_to: pending

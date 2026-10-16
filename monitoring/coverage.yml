@@ -53,9 +53,10 @@ collectors:
     metrics: [probe_success]
   logs:
     exporter: vector (the collector on noc)
-    reads: its own count, size and last-seen time of the lines each source sent, and of each mail the NOC's
-      mailbox (Mailpit) reports receiving (source mail, the alert path's heartbeat)
-    metrics: [log_last_seen_seconds, log_lines_total, log_bytes_total]
+    reads: its own count, size and last-seen time of the lines each source sent, of each mail the NOC's mailbox
+      (Mailpit) reports receiving (source mail, the alert path's heartbeat), and of each account in the routers'
+      accounting records (decision 0029)
+    metrics: [log_last_seen_seconds, log_lines_total, log_bytes_total, admin_last_seen_seconds]
   pushgateway:
     exporter: the pushgateway on noc (decisions 0020 and 0022)
     # Nothing here is read from a device: each value is what a job or `make apply` pushed as its last step.
@@ -222,6 +223,11 @@ counts:
     type: counter
     wraps: a 64-bit float in Vector; it does not wrap in the life of a lab
     resets: when the collector (noc-collector) restarts
+  admin_last_seen_seconds:
+    counts: the Unix time, by the collector's clock, at which the last accounting record of an account on a router
+      arrived there, one series per router, account and event (accept, refuse or command); only records from the
+      accounting proxy's port count (decision 0029)
+    type: gauge
   log_bytes_total:
     counts: bytes of the message of each line the collector received from a node and source since the
       collector started (VRL length(), bytes and not characters); LogIngestOverBudget compares its last 24 h
@@ -247,7 +253,7 @@ counts:
     type: gauge
 
 # Programs that change a device and read nothing from it (the lint counts them as actions, not reads).
-actions: [kill, mkdir, rm, cp, mv, touch, umask, seq, sleep, diff, logger, frr-reload.py, watchfrr.sh]
+actions: [kill, mkdir, rm, cp, mv, touch, umask, seq, sleep, printf, diff, logger, frr-reload.py, watchfrr.sh, adduser, deluser]
 
 # Commands built at run time, which the lint can't read from the source.
 opaque:
@@ -342,7 +348,10 @@ reads:
     status: gap
     fallback: no exporter carries a config. make drift backs up and diffs every router and the firewall
       every night (REC-2). FRR's `log commands` would put each vtysh line in the central store, and with it
-      the BGP password lines make apply sends; it is left off on purpose (decision 0019)
+      the BGP password lines make apply sends; it is left off on purpose (decision 0019). Instead the routers'
+      accounting proxy sends every FRR command an account but root runs, secrets hidden, from a port only
+      root can send from (decision 0029), and make drift names who set each differing line from those
+      records (decision 0030)
   - read: vtysh show interface description
     value: which neighbor an interface faces
     status: gap
@@ -563,3 +572,33 @@ reads:
     value: no BGP password on a command line, in an environment or in Ansible's files
     status: gap
     fallback: tests/live/test_secrets.py on every CI run
+  # --- Accounts and their records (decision 0029) ---
+  - read: id
+    value: an account exists on a router, with its uid and groups
+    status: gap
+    fallback: nothing exports the accounts a router has. access.sh creates them from the inventory at every
+      deploy; tests/live/test_access.py checks them on every CI run, and an FRR command or a refused
+      connection by any account but root that the inventory doesn't list pages as UnexpectedAdmin (metric
+      admin_last_seen_seconds); a login alone is not seen (RISK-61)
+  - read: ls /tmp/netlab-bin /tmp/rollback
+    value: only the CM tool's account can write its scratch folders
+    status: gap
+    fallback: set by access.sh at deploy; tests/live/test_access.py on every CI run
+  - read: cat /var/log/messages.<arg> /var/log/messages
+    value: the router's own copy of its accounting proxy's records
+    status: derived
+    logql: '{source="accounting"} |= "vty-aaa"'
+    how: the proxy sends each record to the central store from its own port as it writes it;
+      tests/live/observe/test_accounting.py shows the central copy is whole after root deletes the box's
+  - read: ls /var/log/messages
+    value: only root can change the router's own copy of its records
+    status: gap
+    fallback: agent.sh starts syslogd under umask 027 at deploy; tests/live/test_access.py on every CI run
+  - read: ls /home/<arg>
+    value: an account a test added by hand left no home folder behind once it was deleted
+    status: gap
+    fallback: tests/live/test_access.py and tests/live/observe/test_accounting.py on every CI run
+  - read: python3 INJECT
+    value: whether a command sent to the accounting proxy can put a record of its own in the store
+    status: gap
+    fallback: tests/live/observe/test_accounting.py on every CI run

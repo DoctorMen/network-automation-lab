@@ -90,6 +90,10 @@ exit
 !
 ip route {{ rtbh.discard }}/32 Null0
 {% endif %}
+{% for route in nat_routes %}
+! The address {{ route.customer }} translates its users to (decision 0031), routed to its end of the link.
+ip route {{ route.prefix }} {{ route.next_hop }}
+{% endfor %}
 {% if router.role == 'isp' %}
 ! Stand-in for "the internet": a /24 the ISP originates.
 ip route 203.0.113.0/24 Null0

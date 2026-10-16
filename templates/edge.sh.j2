@@ -42,3 +42,15 @@ iptables -A FORWARD -i {{ wan.interface }} -p tcp --syn -d {{ p.address }} --dpo
 {% endfor %}
 iptables -A FORWARD -i {{ wan.interface }} -j DROP -m comment --comment "wan-drop"
 {% endif %}
+{% if nat %}
+
+# Source NAT for {{ nat.inside | join(', ') }} only (decision 0031): a connection it opens out of
+# {{ nat.interface }} leaves from {{ nat.address }}, the address the carrier assigned and routes to us.
+# Everything else, the servers and {{ name }}'s own BGP session among them, keeps its address. The nat table
+# sees only the first packet of each connection; conntrack translates the rest, and the replies, and
+# logs each new translation to the NOC (templates/monitoring/natlog.sh.j2).
+iptables -t nat -F POSTROUTING
+{% for net in nat.inside %}
+iptables -t nat -A POSTROUTING -o {{ nat.interface }} -s {{ net }} -j SNAT --to-source {{ nat.address }} -m comment --comment "nat {{ net }}"
+{% endfor %}
+{% endif %}

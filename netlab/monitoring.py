@@ -19,6 +19,7 @@ from pathlib import Path
 
 import yaml
 
+from . import access, nat
 from .inventory import Inventory
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -37,7 +38,8 @@ EXPORTERS = {"frr": "frr_exporter", "node": "node_exporter"}
 # path are settled facts too, and Watchdog always fires.
 WAIT = {"TargetDown": 15, "BGPSessionDown": 10, "OSPFNeighborDown": 10, "BFDPeerDown": 10, "WebContentWrong": 10,
         "InterfaceFlapped": 0, "PendingRebootOverdue": 0, "SourceSilent": 0, "QueueDrops": 0, "LogIngestOverBudget": 0,
-        "NodeDown": 10, "LinkDown": 10, "CauseSeen": 0, "JobMissed": 0, "AlertPathSilent": 0, "Watchdog": 0}
+        "NodeDown": 10, "LinkDown": 10, "CauseSeen": 0, "JobMissed": 0, "AlertPathSilent": 0, "Watchdog": 0,
+        "UnexpectedAdmin": 0}
 # Seconds InterfaceFlapped looks back over the carrier-change counter: six scrapes.
 FLAP_WINDOW = 30
 # Seconds Prometheus waits before it sends a firing alert to Alertmanager again (its --rules.alert.resend-delay,
@@ -47,6 +49,9 @@ RESEND_DELAY = 60
 # Seconds between evaluations of the cause markers (their own rule group), so a cause reaches Alertmanager
 # well inside group_wait of what depends on it.
 CAUSE_EVERY = 1
+# Seconds UnexpectedAdmin stays firing after the account's last accounting line arrived. A login is an event,
+# not a state: the page goes out once, and the alert resolves when that account has been quiet this long.
+ADMIN_WINDOW = 60
 # Seconds between each router's rewrites of its pending-reboot file (agent.sh), which node_exporter reads.
 TEXTFILE_EVERY = 15
 # The flight recorder on every log source (agent.sh, decision 0025): seconds between two triggered dumps at
@@ -108,7 +113,8 @@ def syslog_sources(inv: Inventory) -> list[str]:
 
 
 def log_sources(inv: Inventory) -> list[dict]:
-    """[{node, source, silent_after, within, budget}]: syslog from each node above, and each app's own log.
+    """[{node, source, silent_after, within, budget}]: syslog from each node above, each app's own log, and each
+    NAT router's translation log.
     `within` is the stated bound on SourceSilent reaching the pager after the source's last line arrived:
     twice the heartbeat for syslog (OROS NOT-3's default, which the inventory check holds silent_after to).
     An app's is its silent_after plus the time to evaluate and deliver. `budget` is the bytes a day the
@@ -121,7 +127,33 @@ def log_sources(inv: Inventory) -> list[dict]:
     apps = [{"node": a["host"], "source": a["name"], "silent_after": a["silent_after"], "within": a["silent_after"] + detect,
              "budget": a.get("budget_kb", 0) * 1024}
             for a in inv.logging.get("apps", [])]
-    return syslog + apps
+    # A NAT router's translation log has a heartbeat of its own, so it counts as syslog does (decision 0031).
+    translations = [{"node": r, "source": nat.SOURCE, "silent_after": inv.logging["silent_after"], "within": 2 * inv.logging["heartbeat"],
+                     "budget": budget.get("nat_kb", 0) * 1024}
+                    for r in nat_logs(inv)]
+    return syslog + apps + translations
+
+
+def ingest_sources(inv: Inventory) -> list[dict]:
+    """[{node, source, budget}]: every source whose lines reach the store, each with its daily budget (OROS
+    NOT-5): the log sources above, and each router's command records (decision 0029), which have no heartbeat
+    and so no SourceSilent, but whose lines the store keeps like any other."""
+    budget = inv.logging.get("budget") or {}
+    records = [{"node": r, "source": access.SOURCE, "budget": budget.get("accounting_kb", 0) * 1024}
+               for r in senders(inv)[access.RECORD_PORT]["nodes"]]
+    return [{k: s[k] for k in ("node", "source", "budget")} for s in log_sources(inv)] + records
+
+
+def nat_logs(inv: Inventory) -> list[str]:
+    """Routers we own that translate, each with a translation log at the NOC."""
+    return [r for r in nat.routers(inv) if owned(inv, r)] if inv.monitoring else []
+
+
+def senders(inv: Inventory) -> dict[int, dict]:
+    """{source port: {source, nodes}}: the sources the collector takes only from that port of those nodes, where
+    only root can send from it (decisions 0029 and 0031). Anything else from those nodes is syslog."""
+    return {access.RECORD_PORT: {"source": access.SOURCE, "nodes": [r for r in access.routers(inv) if r in syslog_sources(inv)]},
+            nat.RECORD_PORT: {"source": nat.SOURCE, "nodes": nat_logs(inv)}}
 
 
 def deliver(inv: Inventory) -> int:
@@ -492,6 +524,17 @@ def alert_rules(inv: Inventory) -> list[dict]:
                           {**target_labels(inv, r), "deps": model.label({r})},
                           f"{r} has run an older kernel than it has installed for over {window} s",
                           signal, f"> {window} while node_reboot_required is 1", "node_reboot_required 0"))
+    for r in access.routers(inv):
+        # Every accept, refuse and command line the router's accounting proxy logs sets its account's last-seen
+        # time at the collector (decision 0029). Anyone not on the inventory's list pages, in the group or not.
+        # A shell login that never opens FRR's CLI logs nothing here (RISK-61). Nothing holds it back: a cause
+        # that starts after the login (the router going down) must not hide it.
+        expected = "|".join(access.expected_admins(inv))
+        signal = f'time() - admin_last_seen_seconds{{node="{r}",user!~"{expected}"}}'
+        rules.append(rule(inv, "UnexpectedAdmin", f"max by (node, user) ({signal} < {ADMIN_WINDOW})",
+                          {**target_labels(inv, r), "deps": model.label(set())},
+                          f"{{{{ $labels.user }}}} opened FRR's CLI or ran a command on {r}, and is not an expected admin",
+                          signal, f"< {ADMIN_WINDOW}", "no series: only expected accounts have opened FRR's CLI"))
     for s in log_sources(inv):
         sel = selector(node=s["node"], source=s["source"])
         rules.append(rule(inv, "SourceSilent", f"max by (node, source) (time() - log_last_seen_seconds{sel} > {s['silent_after']}) "
@@ -500,7 +543,7 @@ def alert_rules(inv: Inventory) -> list[dict]:
                           f"no {s['source']} line from {s['node']} has reached the collector for over {s['silent_after']} s",
                           f"time() - log_last_seen_seconds{sel}", f"> {s['silent_after']}, or missing",
                           f"under {s['silent_after']} s"))
-    for s in log_sources(inv):
+    for s in ingest_sources(inv):
         # The licence or storage budget is a day's bytes, so this is the last 24 h's, not a projection: a burst
         # pages only if it really spends the day's budget (decision 0026). It is counted at the collector, so
         # it can't be seen without it.
@@ -642,6 +685,10 @@ def sidecars(inv: Inventory) -> dict[str, dict]:
     out[f"{noc}-mailbox"] = {"netns": noc, "image": images["mailpit"], "binds": [],
                              "cmd": f"--smtp 127.0.0.1:{PORTS['smtp']} --listen 127.0.0.1:{PORTS['mailbox']} "
                                     f"--webhook-url http://127.0.0.1:{PORTS['mail_hook']}/ --quiet"}
+    for r in nat_logs(inv):
+        # conntrack needs CAP_NET_ADMIN in the router's namespace, so this one runs as root (decision 0031).
+        out[f"{r}-nat-log"] = {"netns": r, "image": images["netshoot"], "binds": [f"{r}/natlog.sh:/natlog.sh:ro"],
+                               "cmd": "sh /natlog.sh"}
     for app in inv.logging.get("apps") or []:
         # Not root: the image's default user is, so the node sets nobody's uid and gid.
         out[f"{app['host']}-{app['name']}-forwarder"] = {
@@ -723,13 +770,18 @@ def render(inv: Inventory, env, write, out: Path) -> None:
     write(f"{noc}/rules.yml", dump(rule_groups(inv)))
     write(f"{noc}/blackbox.yml", dump(blackbox_config(inv)))
     ctx = dict(inv=inv, ports=PORTS, collector=collector(inv), logs=logs, addresses=source_addresses(inv),
-               textfile_every=TEXTFILE_EVERY, mon=inv.monitoring, causes=sorted(causes(inv)), flightrec=FLIGHTREC)
+               textfile_every=TEXTFILE_EVERY, mon=inv.monitoring, causes=sorted(causes(inv)), flightrec=FLIGHTREC,
+               senders=senders(inv), accounting_source=access.SOURCE)
     for name in ("alertmanager.yml", "loki.yaml", "vector.yaml"):
         write(f"{noc}/{name}", env.get_template(f"monitoring/{name}.j2").render(**ctx))
     write(f"{noc}/sink.py", (ROOT / "templates" / "monitoring" / "sink.py").read_text())
     write("monitoring/agent.sh", env.get_template("monitoring/agent.sh.j2").render(**ctx))
     # The same kernel rule `make verify` uses, run on each router for its pending-reboot metric.
     write("monitoring/kernel.py", (ROOT / "netlab" / "kernel.py").read_text())
+    for r in nat_logs(inv):
+        write(f"{r}/natlog.sh", env.get_template("monitoring/natlog.sh.j2").render(
+            name=r, address=inv.routers[r]["nat"]["address"], tag=nat.SOURCE, heartbeat=logs["heartbeat"],
+            collector=collector(inv), port=PORTS["syslog"], own_port=nat.RECORD_PORT))
     for app in logs.get("apps") or []:
         write(f"{app['host']}/forwarder.yaml", env.get_template("monitoring/forwarder.yaml.j2").render(
             app=app, cuts=cuts(inv, app), cut_per_line=cut_per_line(inv), **ctx))
