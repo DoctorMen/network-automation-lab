@@ -85,7 +85,9 @@ def test_no_two_causes_hold_each_other_back():
 def test_markers_are_in_alertmanager_before_what_they_hold_back():
     """A cause's marker fires on the evaluation after the scrape that sees it (the probe's own timeout
     included); what depends on it holds its `for` and then group_wait before its first page. The margin
-    between the two is what lets inhibition win, and it is stated here."""
+    between the two is what lets inhibition win, and it is stated here. Rules with no `for` are left out:
+    each fires on a fact that comes later by nature (a flap once the carrier is back, a source silent
+    for silent_after, a job or mail missing for its window)."""
     mon = inv.monitoring
     marker = mon["interval"] + 2 + monitoring.CAUSE_EVERY  # scrape, ping timeout (blackbox icmp 2 s), evaluation
     first_page = min(w for w in monitoring.WAIT.values() if w) + mon["group_wait"]

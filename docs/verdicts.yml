@@ -180,3 +180,36 @@
     - "Every cause's page, r3's and h2's alike, had `keep_firing_for: 75s`, and h2's page is held back only while a cause it lists fires. h2 answers its probe a scrape after r3 does, so its page went on firing a few seconds after r3's ended and was sent then. The Prometheus history of that run was not kept (the lab was rebuilt); the order is read from the rules"
     - "After the fix, the same outage (Prometheus query_range, 1 s step): NodeDown for r3 and for h2 both end at +313 s, while CauseSeen for r3 fires until +389 s, so h2's page ends 76 s inside r3's hold"
   fixed_in: "decision 0021 (commit 2221f20): the markers keep firing 75 s after recovery and no page does; tests/test_dependencies.py::test_a_cause_keeps_holding_back_through_the_slowest_recovery"
+
+- id: V-021
+  opened: 2026-10-16
+  version: prom/prometheus:v2.53.0, prom/alertmanager:v0.27.0, prom/node-exporter:v1.8.2
+  symptom: r1's link to fw1 down for 7 s paged nothing, though InterfaceFlapped fired once the carrier was back
+  verdict: my-config
+  evidence:
+    - "2026-10-16, review of commit 4decaae on lab na10: with r1 eth3 down 7.1 s, Prometheus had InterfaceFlapped firing, LinkDown and NodeDown for fw1 pending, CauseSeen for the link and for fw1 firing, and the pager had received nothing. A 0.3 s flap timed onto a scrape of r1's node_exporter gave the same: the link's marker fired and nothing paged"
+    - "Each InterfaceFlapped listed its own link in deps. The link's marker fires on the first scrape that sees it down and keeps firing 75 s, while LinkDown needs its condition for 10 s, so the flap was held back by a cause whose own page never came"
+    - "2026-10-16, lab na10, with the old deps put back: tests/live/observe/test_outage.py::test_a_link_down_for_seconds_pages_once_as_a_flap failed with \"r1 eth3 down for 7 s did not page\"; with the fix it passed"
+  fixed_in: "decision 0021 (commit 231e6d3): a flap lists its router and what is in front of it, never its own link, and stays quiet for 40 s after LinkDown for its link fired; tests/test_dependencies.py::test_a_flap_is_never_held_back_by_its_own_link"
+
+- id: V-022
+  opened: 2026-10-16
+  version: prom/alertmanager:v0.27.0
+  symptom: Watchdog, routed with repeat_interval 10s, was mailed every 15 s, not every 10 s
+  verdict: normal-behaviour
+  evidence:
+    - "2026-10-16, review of commit 4decaae on lab na10: 168 of 184 gaps between Watchdog mails in Mailpit were 15 s"
+    - "Alertmanager sends a group only when it flushes it, every group_interval (5 s here), and mails a firing group again on a flush only once more than repeat_interval has passed since the last mail: 10 s has not passed at the second flush, so the mail waits for the third"
+    - "2026-10-16, lab na10, repeat_interval 6s: the gaps between the last eight Watchdog mails were all 10.0 s; with 10s put back, tests/live/observe/test_deadman.py::test_a_broken_mail_path_pages_on_the_second_channel failed with \"Watchdog mailed every [15.0, 15.0, 15.0, 15.0] s, not every 10 s\""
+  fixed_in: "decision 0022 (commit 1152e67): repeat_interval is every less group_interval plus 1 s, and the inventory check requires every to be a whole number of group_interval"
+
+- id: V-023
+  opened: 2026-10-16
+  version: prom/prometheus:v2.53.0, prom/alertmanager:v0.27.0
+  symptom: every fresh deploy and every power cycle of the NOC paged AlertPathSilent for about 5 s, though the mail path worked
+  verdict: normal-behaviour
+  evidence:
+    - "2026-10-16, review of commit 4decaae on lab na10, fresh deploy: AlertPathSilent fired 06:49:14 and resolved 06:49:19; Watchdog was active from 06:48:38 but its first mail arrived 06:49:44, and prometheus_notifications_dropped_total was 7. After the power drill's cycle the same, with 7 dropped. A restart of Prometheus alone paged nothing"
+    - "Prometheus drops what it sends before Alertmanager answers, and sends a firing alert again only after its resend delay (--rules.alert.resend-delay, default 1m). AlertPathSilent counted 30 s from the NOC's start"
+    - "2026-10-16, lab na10 at commit 1152e67's rules, fresh labctl up: the first Watchdog mail arrived 68.9 s after the pushgateway started, and the pager had received nothing 3 minutes after the deploy"
+  fixed_in: "decision 0022 (commit 1152e67): AlertPathSilent counts from a minute after the NOC's start; tests/test_jobs.py::test_the_alert_path_is_not_due_before_the_first_resend"

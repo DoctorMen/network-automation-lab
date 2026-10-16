@@ -210,6 +210,13 @@ def test_web_check_on_a_port_nobody_listens_on_is_refused(tmp_path):
     assert "web check h2:8080 has no listener in services" in problems(tmp_path, m)
 
 
+def test_a_heartbeat_between_two_flushes_is_refused(tmp_path):
+    """Alertmanager sends only on a flush, so a heartbeat period that is not a whole number of them can't be kept."""
+    def m(raw):
+        raw["monitoring"]["alert_path"]["every"] = raw["monitoring"]["group_interval"] * 2 + 2
+    assert "must be a multiple of group_interval" in problems(tmp_path, m)
+
+
 def test_monitoring_host_must_be_a_host(tmp_path):
     def m(raw):
         raw["monitoring"]["host"] = "r1"

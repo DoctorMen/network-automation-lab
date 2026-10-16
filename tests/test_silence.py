@@ -20,6 +20,13 @@ def entry(**over):
     return {**e, **over}
 
 
+def problem(e):
+    """The first problem make silence finds with this entry: there has to be one."""
+    found = silence.problems(e, inv, REFS)
+    assert found, f"make silence accepts {e}"
+    return found[0]
+
+
 def test_the_silences_file_is_clean():
     entries = yaml.safe_load((ROOT / "monitoring" / "silences.yml").read_text())["silences"] or []
     assert silence.check(entries, inv, REFS) == []
@@ -34,30 +41,30 @@ def test_one_object_for_two_hours_with_its_reason_passes():
 
 def test_a_silence_wider_than_one_object_is_refused():
     """r1 alone matches all three of r1's interfaces, and a role matches every core router."""
-    assert "picks out 3 of InterfaceFlapped's 10 objects" in silence.problems(entry(labels={"node": "r1"}), inv, REFS)[0]
-    assert "picks out 0" in silence.problems(entry(labels={"role": "core", "device": "eth9"}), inv, REFS)[0]
-    assert "picks out" in silence.problems(entry(labels={"role": "core"}), inv, REFS)[0]
+    assert "picks out 3 of InterfaceFlapped's 10 objects" in problem(entry(labels={"node": "r1"}))
+    assert "picks out 0" in problem(entry(labels={"role": "core", "device": "eth9"}))
+    assert "picks out" in problem(entry(labels={"role": "core"}))
 
 
 def test_a_silence_that_does_not_end_soon_is_refused():
-    assert "lasts over 7 days" in silence.problems(entry(ends=T0 + timedelta(days=8)), inv, REFS)[0]
-    assert "ends before it starts" in silence.problems(entry(ends=T0), inv, REFS)[0]
-    assert "starts and ends must both be" in silence.problems(entry(ends="soon"), inv, REFS)[0]
+    assert "lasts over 7 days" in problem(entry(ends=T0 + timedelta(days=8)))
+    assert "ends before it starts" in problem(entry(ends=T0))
+    assert "starts and ends must both be" in problem(entry(ends="soon"))
     window = {"maintenance": "r3", "starts": T0, "ends": T0 + timedelta(hours=5), "reason": entry()["reason"],
               "ref": "RISK-30", "by": "on-call"}
-    assert "a maintenance window lasts at most 4 h" in silence.problems(window, inv, REFS)[0]
+    assert "a maintenance window lasts at most 4 h" in problem(window)
     assert silence.problems({**window, "ends": T0 + timedelta(hours=3)}, inv, REFS) == []
 
 
 def test_a_silence_without_a_reason_or_a_record_is_refused():
-    assert "needs a reason" in silence.problems(entry(reason="flappy"), inv, REFS)[0]
-    assert "ref 'JIRA' is not" in silence.problems(entry(ref="JIRA"), inv, REFS)[0]
-    assert "ref 'RISK-999' is not" in silence.problems(entry(ref="RISK-999"), inv, REFS)[0]
-    assert "needs `by`" in silence.problems(entry(by=""), inv, REFS)[0]
+    assert "needs a reason" in problem(entry(reason="flappy"))
+    assert "ref 'JIRA' is not" in problem(entry(ref="JIRA"))
+    assert "ref 'RISK-999' is not" in problem(entry(ref="RISK-999"))
+    assert "needs `by`" in problem(entry(by=""))
 
 
 def test_the_alert_path_heartbeat_cannot_be_silenced():
-    assert "is not an alert that pages" in silence.problems(entry(alert="Watchdog", labels={}), inv, REFS)[0]
+    assert "is not an alert that pages" in problem(entry(alert="Watchdog", labels={}))
 
 
 class FakeNoc:

@@ -554,7 +554,7 @@ controls:
 
   # Alert quality (decisions 0020, 0021 and 0022): OROS DEC-1, DEC-4, DEC-5 and NOT-4, in CI's observe job.
   - id: alert-context
-    claim: "Every alert says why it fired (its condition and the signal's value now), what is normal (the usual value and a link to that signal over the last 7 days) and what changed (the last commit `make apply` applied to that router, and when). The 20 or more alerts of one outage each carry all three, filled in by Prometheus"
+    claim: "Every alert says why it fired (its condition and the signal's value now), what is normal (the usual value and a link to that signal over the last 7 days) and what changed (the last commit `make apply` applied to that router, and when). Every alert of one live outage, 20 or more not counting the cause markers and the heartbeat, carries all three, filled in by Prometheus"
     test:
       - tests/live/observe/test_outage.py::test_every_alert_says_why_what_is_normal_and_what_changed
       - tests/test_alert_context.py::test_every_rule_says_why_it_fired_what_is_normal_and_what_changed
@@ -589,10 +589,14 @@ controls:
       alert is silenced live; the checks on the file are offline.
 
   - id: alert-one-page
-    claim: "A router cut off from every link pages once, NodeDown, while the alerts that follow from it (its own exporters, its neighbors' sessions with it, the devices behind it) are held back in Alertmanager. frr_exporter killed beside a healthy router in the same window pages too, and nothing held back pages after both recover. What each alert depends on is computed from the inventory's graph of devices and links"
+    claim: "A router cut off from every link pages once, NodeDown, while the alerts that follow from it (its own exporters, its neighbors' sessions with it, the devices behind it) are held back in Alertmanager. frr_exporter killed beside a healthy router, and that router's link to fw1 cut, in the same window page once each, and nothing held back pages after all three recover. A link down for 7 s, which a scrape sees but which is too short for LinkDown, pages once, as a flap. What each alert depends on is computed from the inventory's graph of devices and links"
     test:
       - tests/live/observe/test_outage.py::test_a_parent_failure_pages_once_and_a_killed_service_pages_again
+      - tests/live/observe/test_outage.py::test_a_link_down_for_seconds_pages_once_as_a_flap
       - tests/test_dependencies.py::test_dependencies_come_from_the_inventory_graph
+      - tests/test_dependencies.py::test_a_flap_is_never_held_back_by_its_own_link
+      - tests/test_monitoring.py::test_flap_rule_uses_the_carrier_counter_on_the_routers_own_interfaces
+      - tests/test_monitoring.py::test_every_scrape_job_has_a_target_down_rule
       - tests/test_dependencies.py::test_every_alert_lists_only_causes_and_every_cause_has_one_inhibit_rule
       - tests/test_dependencies.py::test_no_two_causes_hold_each_other_back
       - tests/test_dependencies.py::test_markers_are_in_alertmanager_before_what_they_hold_back
@@ -603,9 +607,10 @@ controls:
       One failure paging twenty times, so the cause is one page among many (RISK-30), and a second,
       unrelated failure in the same minutes lost in the noise.
     fails_when: >-
-      A real failure behind a cause pages only once the cause has cleared, up to 75 s later (RISK-42).
-      The NOC's own uplink pages as r2, and the NOC's own services are outside the model (RISK-43). One
-      router and one exporter are broken live; the other causes have the same generated rules.
+      A real failure behind a cause pages only once the cause has cleared, up to 75 s later, and a short
+      one behind a cause seen for a single scrape (one lost ping) can go unpaged (RISK-42). The NOC's
+      own uplink pages as r2, and the NOC's own services are outside the model (RISK-43). One router, one
+      exporter and one link are broken live; the other causes have the same generated rules.
 
   - id: alert-deadman
     claim: "Each unattended job (drift, backup, restore drill, power drill) reports its success as its last step, and a job whose last success is older than its window pages. The alert path proves itself: a heartbeat alert is mailed every 10 s, and when mail stops arriving AlertPathSilent pages on the webhook, the second channel"
@@ -630,7 +635,9 @@ controls:
       the outside check at HEARTBEAT_URL, which is not set up yet (RISK-40, RISK-25). The NOC's own
       death raises nothing inside it (RISK-40). A success is the job's own word, kept in the
       pushgateway's memory (RISK-44). Only drift runs live; the other jobs end with the same make line,
-      checked offline.
+      checked offline. The first heartbeat mail after the NOC starts is due only a minute later, when
+      Prometheus resends what Alertmanager missed while starting, so a mail path broken from the start
+      pages after 90 s, not 30 s.
 
   - id: verdict-log
     claim: "Every odd behaviour in the log has one verdict (my config, normal behaviour, platform bug or lab artifact), the version it was seen on, and a fix or workaround. None may stay unclassified past 5 working days"

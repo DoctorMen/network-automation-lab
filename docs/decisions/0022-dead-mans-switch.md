@@ -28,8 +28,14 @@ failure_modes:
     mitigation: every is checked against the workflow's cron
     test: tests/test_jobs.py::test_every_window_matches_the_jobs_schedule
   - mode: the alert mail path breaks and the alarm goes by the same broken path
-    mitigation: Watchdog always fires and is mailed every 10 s; its arrival at the mailbox, not its sending, is the signal, and AlertPathSilent pages over the webhook
+    mitigation: Watchdog always fires and is mailed every 10 s, the gaps measured live; its arrival at the mailbox, not its sending, is the signal, and AlertPathSilent pages over the webhook
     test: tests/live/observe/test_deadman.py::test_a_broken_mail_path_pages_on_the_second_channel
+  - mode: AlertPathSilent pages at every NOC start, because Prometheus sends Watchdog before Alertmanager answers, that send is dropped, and it resends only a minute later
+    mitigation: AlertPathSilent counts from a minute after the NOC's start (Prometheus' resend delay); a fresh deploy left the pager empty (2026-10-16, lab na10)
+    test: tests/test_jobs.py::test_the_alert_path_is_not_due_before_the_first_resend
+  - mode: an outside check that can't be reached fails a job whose work is done, and CI then skips saving the backup it just verified
+    mitigation: A failed ping only warns; the outside check alerts by itself when no ping reaches it
+    test: tests/test_jobs.py::test_a_failed_heartbeat_warns_and_the_job_still_passes
   - mode: GitHub stops running the nightly workflow, and the lab's NOC, which exists only during a run, can't notice
     mitigation: With HEARTBEAT_URL set, each job and the nightly run ping an outside check that alerts when a ping is late, from scheduled runs only; until someone sets it up, nothing does
     test: tests/test_jobs.py::test_only_a_scheduled_run_that_passed_pings_the_outside_check
@@ -46,9 +52,9 @@ OROS NOT-4's pass test: a job that never starts raises an alert, and a broken al
 
 - Each job's make target ends with `python -m netlab.observe success JOB`. It pushes `netlab_job_last_success_timestamp_seconds{job}` to a pushgateway on noc. Without a NOC, as in the lab job's `make deploy-network`, it only warns.
 - The jobs and their windows (every, grace) are listed in the inventory. JobMissed per job is generated from that list.
-- Alertmanager mails every page, and Watchdog every 10 s, to Mailpit on noc. Mailpit's webhook tells the collector of each mail, so the mail path has a last-seen time like any log source.
-- AlertPathSilent pages over the webhook sink when no mail has arrived for 30 s.
-- When HEARTBEAT_URL is set, `success` also pings `$HEARTBEAT_URL/JOB`. That is a check URL at an outside service such as healthchecks.io. A last ci.yml job pings `$HEARTBEAT_URL/nightly` when a scheduled run passed. Only scheduled runs get the URL, so a push or a pull request never stands in for a night that didn't run. Creating those checks and the secret is a person's job: nothing in the repository can.
+- Alertmanager mails every page, and Watchdog every 10 s, to Mailpit on noc. Alertmanager sends only on its 5 s flushes, and mails a firing group again on the first flush after repeat_interval has passed, so repeat_interval is 6 s: 10 s, as it was, mailed every 15 s (V-022). Mailpit's webhook tells the collector of each mail, so the mail path has a last-seen time like any log source.
+- AlertPathSilent pages over the webhook sink when no mail has arrived for 30 s. At the NOC's start it counts from a minute after the start: Prometheus can send Watchdog before Alertmanager answers, and resends a dropped alert only a minute later (V-023).
+- When HEARTBEAT_URL is set, `success` also pings `$HEARTBEAT_URL/JOB`. That is a check URL at an outside service such as healthchecks.io. A last ci.yml job pings `$HEARTBEAT_URL/nightly` when a scheduled run passed. Only scheduled runs get the URL, so a push or a pull request never stands in for a night that didn't run. A failed ping only warns, since the outside check alerts by itself when pings stop. Creating those checks and the secret is a person's job: nothing in the repository can.
 
 ## Consequences
 
