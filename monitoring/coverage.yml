@@ -14,7 +14,7 @@
 platform:
   frr: 8.4.1_git                # inventory/network.yml platform.frr
   frr_exporter: v1.3.1          # collectors: bgp, ospf, bfd (its defaults)
-  node_exporter: v1.8.2         # collectors: netclass, netdev, netstat, textfile
+  node_exporter: v1.8.2         # collectors: netclass, netdev, netstat, qdisc, textfile on routers; netdev, qdisc on h2
   blackbox_exporter: v0.25.0
   vector: 0.40.1
   loki: 3.1.1
@@ -31,12 +31,14 @@ collectors:
               frr_bgp_peer_prefixes_advertised_count_total, frr_ospf_neighbor_adjacencies, frr_bfd_peer_state,
               frr_collector_up]
   node:
-    exporter: node_exporter, a sidecar in each owned router's network namespace
-    reads: /sys/class/net (netclass), /proc/net/dev (netdev), /proc/net/netstat and snmp (netstat), and the
-      pending-reboot file netlab/kernel.py writes (textfile)
+    exporter: node_exporter, a sidecar in each owned router's and server's network namespace
+    reads: /sys/class/net (netclass), /proc/net/dev (netdev), /proc/net/netstat and snmp (netstat), each
+      interface's root qdisc over netlink (qdisc), and the pending-reboot file netlab/kernel.py writes
+      (textfile). On h2 only netdev and qdisc
     metrics: [node_network_up, node_network_carrier, node_network_carrier_changes_total,
               node_network_transmit_errs_total, node_network_transmit_drop_total, node_network_receive_bytes_total,
-              node_network_receive_packets_total, node_netstat_TcpExt_IPReversePathFilter,
+              node_network_receive_packets_total, node_network_transmit_bytes_total, node_qdisc_drops_total,
+              node_qdisc_bytes_total, node_netstat_Udp_RcvbufErrors, node_netstat_TcpExt_IPReversePathFilter,
               node_netstat_TcpExt_TCPMD5Failure, node_netstat_TcpExt_TCPMD5NotFound, node_netstat_TcpExt_TCPMD5Unexpected,
               node_netstat_Udp_OutDatagrams, node_reboot_required, node_reboot_required_since_seconds]
   web:
@@ -56,6 +58,159 @@ collectors:
     reads: whether each scrape above answered
     metrics: [up]
 
+# What each metric above counts (OROS DEC-2, decision 0024): the unit, a counter or a gauge, and for an
+# interface or queue counter its direction and where it counts (before or after the queue). A counter also
+# says when it wraps and when it resets: Prometheus' increase() and rate() read any fall as a reset and
+# count from the new value, so neither ever shows a fall as a spike, and resets() flags each one. The lint
+# fails on a metric without its entry, on a counter an alert rule reads outside increase(), rate(), irate()
+# or resets(), and on a proven_by test that doesn't exist. tests/live/observe/test_loss.py checks each
+# type against what the exporter itself declares. Interfaces in the lab are all veth pairs: no physical
+# port, LAG or sub-interface is in use.
+counts:
+  frr_bgp_peer_state:
+    counts: a BGP session's state, read from bgpd at each scrape. 1 Established, 0 down, 2 administratively down
+    type: gauge
+  frr_bgp_peer_uptime_seconds:
+    counts: seconds since the session last became Established, by bgpd's clock. It falls to 0 each time the session drops
+    type: gauge
+  frr_bgp_peer_prefixes_received_count_total:
+    counts: prefixes the session holds from the peer now (not a running total, despite the name)
+    type: gauge
+  frr_bgp_peer_prefixes_advertised_count_total:
+    counts: prefixes we send the peer now (not a running total, despite the name)
+    type: gauge
+  frr_ospf_neighbor_adjacencies:
+    counts: Full OSPF adjacencies on an interface now
+    type: gauge
+  frr_bfd_peer_state:
+    counts: a BFD session's state now, 1 up and 0 anything else
+    type: gauge
+  frr_collector_up:
+    counts: 1 while the daemon behind one frr_exporter collector answered this scrape
+    type: gauge
+  node_network_up:
+    counts: 1 while the interface's operational state is up
+    type: gauge
+  node_network_carrier:
+    counts: 1 while the interface has carrier, at the moment of the scrape only. A flap between two scrapes is
+      not in it; node_network_carrier_changes_total is
+    type: gauge
+  node_network_carrier_changes_total:
+    counts: carrier changes, each way, so one down and up again is 2
+    type: counter
+    wraps: a 32-bit kernel counter (atomic_t); at one change a second it would take 136 years
+    resets: when the interface is created again, that is when its node restarts
+    proven_by: [tests/live/observe/test_evidence.py::test_a_flap_leaves_a_state_dump_in_the_central_store]
+  node_network_transmit_errs_total:
+    counts: packets the interface failed to send (driver errors), outbound
+    type: counter
+    wraps: a 64-bit kernel counter (rtnl_link_stats64); it does not wrap in the life of a lab
+    resets: when the interface is created again, that is when its node restarts
+  node_network_transmit_drop_total:
+    counts: packets the interface itself dropped on the way out (a veth whose peer could not take them). Not the
+      queue's drops in front of it, which are node_qdisc_drops_total and which this counter never sees
+    type: counter
+    wraps: a 64-bit kernel counter (rtnl_link_stats64); it does not wrap in the life of a lab
+    resets: when the interface is created again, that is when its node restarts
+    proven_by: [tests/live/observe/test_loss.py::test_a_microburst_the_average_hides_is_traced_to_its_queue]
+  node_network_receive_bytes_total:
+    counts: bytes received, inbound, as the interface counts them, so with each frame's 14-byte Ethernet
+      header and without its checksum
+    type: counter
+    wraps: a 64-bit kernel counter (rtnl_link_stats64); it does not wrap in the life of a lab
+    resets: when the interface is created again, that is when its node restarts. Not when node_exporter
+      restarts, since the count is the kernel's
+    proven_by: [tests/live/observe/test_loss.py::test_a_known_byte_count_matches_the_counters_across_an_exporter_restart]
+  node_network_receive_packets_total:
+    counts: packets received, inbound. TCP over a veth arrives in segments of up to 64 KB (GSO), so a packet
+      here is not one frame on a wire
+    type: counter
+    wraps: a 64-bit kernel counter (rtnl_link_stats64); it does not wrap in the life of a lab
+    resets: when the interface is created again, that is when its node restarts
+  node_network_transmit_bytes_total:
+    counts: bytes sent, outbound, with the 14-byte Ethernet header, after the queue (qdisc), so a packet the
+      queue dropped is not in it
+    type: counter
+    wraps: a 64-bit kernel counter (rtnl_link_stats64); it does not wrap in the life of a lab
+    resets: when the interface is created again, that is when its node restarts. Not when node_exporter
+      restarts, since the count is the kernel's
+    proven_by: [tests/live/observe/test_loss.py::test_a_known_byte_count_matches_the_counters_across_an_exporter_restart,
+                tests/live/observe/test_loss.py::test_a_microburst_the_average_hides_is_traced_to_its_queue]
+  node_qdisc_drops_total:
+    counts: packets an interface's root queue (qdisc) dropped, outbound, before the interface; for HTB, the drops
+      of every class under it. Only root qdiscs are exported, so which class dropped is `tc -s class show`
+    type: counter
+    wraps: a 32-bit counter (gnet_stats_queue.drops), so it wraps at 4294967296 drops. A wrap is a fall, which
+      increase() reads as a reset like the one tests/live/observe/test_loss.py makes; it loses at most the drops
+      of one scrape interval
+    resets: when the qdisc is replaced (tc qdisc del and add, or the node restarts)
+    proven_by: [tests/live/observe/test_loss.py::test_a_microburst_the_average_hides_is_traced_to_its_queue,
+                tests/live/observe/test_loss.py::test_a_reset_queue_counter_is_flagged_and_pages_nobody]
+  node_qdisc_bytes_total:
+    counts: bytes an interface's root queue passed on to the interface, outbound
+    type: counter
+    wraps: a 64-bit counter (gnet_stats_basic.bytes); it does not wrap in the life of a lab
+    resets: when the qdisc is replaced (tc qdisc del and add, or the node restarts)
+    proven_by: [tests/live/observe/test_loss.py::test_a_reset_queue_counter_is_flagged_and_pages_nobody]
+  node_netstat_Udp_RcvbufErrors:
+    counts: UDP datagrams this node dropped because the receiving socket's buffer was full
+    type: counter
+    exported_as: untyped
+    wraps: a 64-bit kernel counter (per-CPU SNMP MIB, summed); it does not wrap in the life of a lab
+    resets: when the node restarts
+  node_netstat_TcpExt_IPReversePathFilter:
+    counts: packets the reverse-path filter dropped, on all of the node's interfaces together
+    type: counter
+    exported_as: untyped
+    wraps: a 64-bit kernel counter (per-CPU SNMP MIB, summed); it does not wrap in the life of a lab
+    resets: when the node restarts
+  node_netstat_TcpExt_TCPMD5Failure:
+    counts: TCP segments dropped because their MD5 signature was wrong
+    type: counter
+    exported_as: untyped
+    wraps: a 64-bit kernel counter (per-CPU SNMP MIB, summed); it does not wrap in the life of a lab
+    resets: when the node restarts
+  node_netstat_TcpExt_TCPMD5NotFound:
+    counts: TCP segments dropped because they had no MD5 signature where one was expected
+    type: counter
+    exported_as: untyped
+    wraps: a 64-bit kernel counter (per-CPU SNMP MIB, summed); it does not wrap in the life of a lab
+    resets: when the node restarts
+  node_netstat_TcpExt_TCPMD5Unexpected:
+    counts: TCP segments dropped because they carried an MD5 signature where none was expected
+    type: counter
+    exported_as: untyped
+    wraps: a 64-bit kernel counter (per-CPU SNMP MIB, summed); it does not wrap in the life of a lab
+    resets: when the node restarts
+  node_netstat_Udp_OutDatagrams:
+    counts: UDP datagrams the node sent that its queue took. One the queue dropped is counted under
+      Udp SndbufErrors instead, while the sender's send() still reports success (V-025)
+    type: counter
+    exported_as: untyped
+    wraps: a 64-bit kernel counter (per-CPU SNMP MIB, summed); it does not wrap in the life of a lab
+    resets: when the node restarts
+  node_reboot_required:
+    counts: 1 while a newer kernel is installed than the one running (netlab/kernel.py), as of the textfile's last rewrite
+    type: gauge
+  node_reboot_required_since_seconds:
+    counts: the Unix time the waiting kernel was installed, 0 if none is
+    type: gauge
+  probe_success:
+    counts: 1 if the NOC's last probe of the target (a ping, or a page with the expected content) succeeded
+    type: gauge
+  log_last_seen_seconds:
+    counts: the Unix time, by the collector's clock, at which the last line from a node and source arrived
+      there. Arrival, not when the box wrote it, because busybox sends no year and no zone
+    type: gauge
+  log_lines_total:
+    counts: lines the collector received from a node and source since the collector started
+    type: counter
+    wraps: a 64-bit float in Vector; it does not wrap in the life of a lab
+    resets: when the collector (noc-collector) restarts
+  up:
+    counts: 1 if Prometheus' last scrape of the target answered, 0 if not (Prometheus' own, per target)
+    type: gauge
+
 # Programs that change a device and read nothing from it (the lint counts them as actions, not reads).
 actions: [kill, mkdir, rm, cp, mv, touch, umask, seq, sleep, diff, logger, frr-reload.py, watchfrr.sh]
 
@@ -65,6 +220,8 @@ opaque:
     why: replays h2's rendered tc lines from build/topology.clab.yml to put the QoS back (writes only)
   - where: tests/live/test_verify.py::test_qos_change_confirmed_from_class_counters
     why: replays h2's rendered tc lines from build/topology.clab.yml to put the QoS back (writes only)
+  - where: tests/live/observe/test_loss.py::test_a_reset_queue_counter_is_flagged_and_pages_nobody
+    why: replays h2's rendered tc lines from build/topology.clab.yml to start its queue's counters again (writes only)
 
 reads:
   # --- Routing state: each object's own state, alerted on per object (NOT-1) ---
@@ -196,10 +353,16 @@ reads:
     fallback: node_exporter's sysctl collector is not enabled here. The mode is set by r3's read-only edge.sh,
       and the drops it causes are exported (node_netstat_TcpExt_IPReversePathFilter)
   - read: tc class show
-    value: h2's QoS classes and the bytes each carried
+    value: h2's QoS classes, the bytes each carried and the packets each dropped
     status: gap
-    fallback: h2 runs no exporter, and node_exporter's qdisc collector sees qdiscs, not HTB classes. make
+    fallback: node_exporter's qdisc collector on h2 sees the root HTB qdisc, whose drops page as QueueDrops,
+      and not its classes. Which class dropped is read on h2 itself (docs/runbooks/hidden-loss.md); make
       verify reads the class counters on demand; tests/live/test_qos.py on every CI run
+  - read: tc qdisc show
+    value: an interface's queue, and the packets it dropped
+    status: exported
+    metric: node_qdisc_drops_total, node_qdisc_bytes_total
+    alert: QueueDrops
   # --- Filters ---
   - read: iptables -L
     value: packets each firewall rule matched
@@ -272,6 +435,11 @@ reads:
     status: exported
     logql: '{source="syslog"}'
     metric: log_lines_total
+  - read: cat /var/log/messages.<arg> /var/log/messages
+    value: what a node still keeps of its own log, oldest first (make evidence, before a reset)
+    status: exported
+    logql: '{source="syslog"}'
+    metric: log_lines_total
   - read: tail /var/log/messages
     value: a node's latest log lines
     status: exported
@@ -316,11 +484,24 @@ reads:
   - read: python3 capture.py
     value: ICMP on our hand-off port while r2 pings past it
     status: gap
-    fallback: make finding captures it on demand (decision 0017); flight-recorder capture is a later build (FND-2)
+    fallback: make finding captures it on demand (decision 0017). The flight recorder (decision 0025) dumps
+      state, not packets, when a link fails
   - read: python3 SUPPORT
     value: FRR's support bundle
     status: gap
     fallback: make finding, on demand
+  - read: sh /monitoring/agent.sh dump
+    value: a node's interfaces, counters, queues, filters and routing state, all at one moment
+    status: derived
+    logql: '{source="syslog"} |= "flightrec"'
+    how: each dump also goes to the central store, every line with the dump's id, and the flight recorder
+      sends one by itself when a link fails (decision 0025)
+  - read: python3 BURST
+    value: how many datagrams a test burst sent, and how many of them arrived
+    status: derived
+    metric: node_qdisc_drops_total, node_netstat_Udp_RcvbufErrors
+    how: what was sent and not received was dropped by a queue (QueueDrops) or by a full receive buffer;
+      tests/live/observe/test_loss.py checks the queue's count is exactly the difference
   - read: python3 CLOCK
     value: each device's clock against the host's
     status: gap

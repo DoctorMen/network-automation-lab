@@ -222,11 +222,11 @@ def topology_monitoring(inv: Inventory) -> dict:
     """What the topology template needs to start the NOC's parts: which routers get exporters, which
     nodes run the log agent, each host's app ports, and the sidecars."""
     if not inv.monitoring:
-        return {"exporters": [], "sources": [], "host": None, "apps": {}, "sidecars": {}, "ports": monitoring.PORTS}
+        return {"exporters": [], "servers": [], "sources": [], "host": None, "apps": {}, "sidecars": {}, "ports": monitoring.PORTS}
     apps = {}
     for app in inv.logging.get("apps") or []:
         apps.setdefault(app["host"], {})[app["port"]] = app["name"]
-    return {"exporters": monitoring.exporter_routers(inv), "sources": monitoring.syslog_sources(inv),
+    return {"exporters": monitoring.exporter_routers(inv), "servers": monitoring.servers(inv), "sources": monitoring.syslog_sources(inv),
             "host": monitoring.host(inv), "apps": apps, "sidecars": monitoring.sidecars(inv), "ports": monitoring.PORTS}
 
 

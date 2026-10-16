@@ -91,6 +91,11 @@ topology:
 {% if name == mon.host %}
       # The NOC's webhook sink, Alertmanager's receiver (decision 0018), on 127.0.0.1 only.
 {% endif %}
+{% if name in mon.servers %}
+      # Its node_exporter listens on this host's address, and starts before the exec step below adds it.
+      sysctls:
+        net.ipv4.ip_nonlocal_bind: 1
+{% endif %}
       cmd: -c "{% if name == mon.host %}python3 /noc/sink.py {{ mon.ports.sink }} >/dev/null 2>&1 & {% endif %}{% for port in h.services | default([]) %}python3 -m http.server {{ port }} >/dev/null {% if port in apps %}2>>/applog/{{ apps[port] }}-{{ port }}.log{% else %}2>&1{% endif %} & {% endfor %}sleep infinity"
 {% if name == mon.host or name in mon.sources or apps %}
       binds:
@@ -137,10 +142,12 @@ topology:
       user: "{{ s.user }}"
 {% endif %}
       cmd: {{ s.cmd | tojson }}
+{% if s.binds %}
       binds:
 {% for b in s.binds %}
         - {{ b }}
 {% endfor %}
+{% endif %}
 {% endfor %}
   links:
 {% for link in inv.links %}
