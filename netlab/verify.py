@@ -117,15 +117,23 @@ def report(expected: dict, lab: str, nodes: list[str]) -> list[str]:
     return lines
 
 
+def chosen(argv: list[str] | None, every: list[str]) -> list[str]:
+    """The nodes named on the command line, or all of them when none is. The names are checked after
+    parsing: before Python 3.12, argparse checks an empty nargs='*' list against choices= and refuses it."""
+    p = argparse.ArgumentParser(prog="netlab.verify", description="Is each change in effect, not just installed?")
+    p.add_argument("nodes", nargs="*", metavar="NODE", help=f"a router or a host with QoS: {', '.join(every)} (default: all of them)")
+    nodes = p.parse_args(argv).nodes
+    unknown = [n for n in nodes if n not in every]
+    if unknown:
+        p.error(f"not a router or a host with QoS: {', '.join(unknown)} (choose from {', '.join(every)})")
+    return nodes or every
+
+
 def main(argv: list[str] | None = None) -> int:
     build = ROOT / "build"
     expected = json.loads((build / "expected_state.json").read_text())
     lab = yaml.safe_load((build / "topology.clab.yml").read_text())["name"]
-    every = [*expected["loopbacks"], *expected["qos"]]
-    p = argparse.ArgumentParser(prog="netlab.verify", description="Is each change in effect, not just installed?")
-    p.add_argument("nodes", nargs="*", choices=every, metavar="NODE",
-                   help=f"a router or a host with QoS: {', '.join(every)} (default: all of them)")
-    lines = report(expected, lab, p.parse_args(argv).nodes or every)
+    lines = report(expected, lab, chosen(argv, [*expected["loopbacks"], *expected["qos"]]))
     print("\n".join(lines))
     return 1 if any("not in effect" in line for line in lines) else 0
 

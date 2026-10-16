@@ -93,14 +93,21 @@ def change_intent(changes):
 
 
 def put_back(node, originals):
-    """The original intent back in build/ and on every router. True once the network has settled.
-    Reloaded the way deploy.yml applies, through the redacting vtysh with password lines dropped:
-    plain frr-reload.py would delete r2's BGP password, with it on vtysh's command line and in its log."""
+    """The original intent back in build/ and on every router. Returns what went wrong: each router whose
+    reload failed, and a network that didn't settle; empty when all is back. It never raises, because it
+    runs in a finally, where an error would hide the test's own failure. Reloaded the way deploy.yml
+    applies, through the redacting vtysh with password lines dropped: plain frr-reload.py would delete
+    r2's BGP password, with it on vtysh's command line and in its log."""
     change_intent(originals)
+    problems = []
     for router in originals:
-        node(router).run("env", "NETLAB_PASSWORDS=drop", "/usr/lib/frr/frr-reload.py", "--reload",
-                         "--bindir", VTYSH_DIR, "/etc/frr/frr.conf", check=False)
-    return wait_for(healthy, timeout=90)
+        reload = node(router).run("env", "NETLAB_PASSWORDS=drop", "/usr/lib/frr/frr-reload.py", "--reload",
+                                  "--bindir", VTYSH_DIR, "/etc/frr/frr.conf", check=False)
+        if reload.returncode:
+            problems.append(f"{router}: frr-reload.py exited {reload.returncode} (its log: /var/log/frr/frr-reload.log on {router})")
+    if not wait_for(healthy, timeout=90):
+        problems.append("the network did not settle")
+    return problems
 
 
 def test_failing_canary_rolls_back_and_blocks(node, expected):
@@ -122,8 +129,8 @@ def test_failing_canary_rolls_back_and_blocks(node, expected):
         reached = [r for r in routers if r != first and marker in running(node, r)]
         assert reached == [], f"the change reached {reached} although the canary failed"
     finally:
-        settled = put_back(node, originals)
-    assert settled, "the network did not settle after the test put the intent back"
+        left = put_back(node, originals)
+    assert not left, f"putting the intent back failed, so later tests run on a changed lab: {left}"
     assert md5_sessions(node, expected) == sessions, "a BGP session lost or reset its password during the failed rollout"
 
 
@@ -148,8 +155,8 @@ def test_change_waits_for_window_then_reaches_every_router(node, expected):
         assert files_with_a_password(node, expected) == [], "a BGP password in clear in a fallback or FRR's log"
         assert md5_sessions(node, expected) == sessions, "a BGP session lost or reset its password during the rollout"
     finally:
-        settled = put_back(node, originals)
-    assert settled, "the network did not settle after the test put the intent back"
+        left = put_back(node, originals)
+    assert not left, f"putting the intent back failed, so later tests run on a changed lab: {left}"
 
 
 def test_rollback_keeps_the_bgp_password_and_writes_it_nowhere(node, expected):
@@ -177,5 +184,5 @@ def test_rollback_keeps_the_bgp_password_and_writes_it_nowhere(node, expected):
         assert md5_sessions(node, expected) == sessions, "the rollback deleted or re-set a BGP password"
         assert files_with_a_password(node, expected) == [], "a BGP password in clear in the fallback or FRR's log"
     finally:
-        settled = put_back(node, originals)
-    assert settled, "the network did not settle after the test put the intent back"
+        left = put_back(node, originals)
+    assert not left, f"putting the intent back failed, so later tests run on a changed lab: {left}"

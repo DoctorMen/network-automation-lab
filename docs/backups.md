@@ -51,7 +51,8 @@ the cache the one before saved. Each can be started from the Actions tab (Run wo
    `drill-results` artifact holding `restore-drill.xml`, `power-drill.xml` and
    `single-item-restore.json` (its `seconds` under `limit_seconds`, 300).
 4. **One more CI run**, as in step 2. Its control-status job must be green and end with `every
-   control in docs/controls.yml: latest test green and inside its period (N control tests)`.
+   control in docs/controls.yml: latest test green and inside its period (N control-test pairs, M distinct
+   tests)`.
 
 After a lost cache, do the same four steps. If a broken `restic-` cache is still listed, delete it
 first (Actions > Caches, or `gh cache delete <key>`), or step 1 refuses. The snapshots in the lost

@@ -214,9 +214,11 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         render_all(load(ROOT / "inventory" / "network.yml"), tmp)
         problems = check(entries, Path(tmp), today=date.today())
-        print(summary(entries, scan(Path(tmp))))
+        hits = scan(Path(tmp))
     for p in problems:
         print(f"PROBLEM: {p}", file=sys.stderr)
+    # The summary reads every entry's scores and dates, so an incomplete entry would crash it and hide the problems.
+    print(summary(entries, hits) if not lint(entries) else "No summary until every entry is complete (PROBLEM lines above).")
     return 1 if problems else 0
 
 
