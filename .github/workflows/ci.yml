@@ -76,6 +76,9 @@ jobs:
     # Pinned, so the nightly run doesn't move to a new kernel or Docker without a commit.
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    # control-status reads it: when the scan failed, this run's live results were never uploaded.
+    outputs:
+      secret_scan: ${{ steps.secret-scan.outcome }}
     env:
       CLAB_VERSION: "0.68.0"
     steps:
@@ -114,7 +117,8 @@ jobs:
         # Runs after drift, so it sees every file this run wrote. gitleaks knows the patterns; the
         # grep knows this run's actual password, read from its file (-f), never from a command line.
         # The backup runs only when this passed, so a password that reached backups/ never reaches restic,
-        # and results/, backups/ and the finding bundle are uploaded only when it did not fail.
+        # and results/, backups/ and the finding bundle are uploaded only when it passed: not when it
+        # failed, and not when it was skipped or cancelled, since then nothing scanned them.
         # grep exits 1 for no match, 0 for a match and 2 for an error (it may have matched as well), so
         # only 1 is clean. A folder this run never wrote (drift failed early) is left out, not an error.
         if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
@@ -128,13 +132,16 @@ jobs:
       # created once by hand (drills.yml, input init_backup_repo) and never here: a job that creates
       # its target when none is found can't tell a lost target from a first run. A cache miss fails
       # the step. Pull requests skip it: a PR's cache is scoped to the PR, so main could never use it.
+      # The key names this attempt, which has saved nothing yet, so restore-keys finds the newest
+      # repository. The run id alone would prefix-match an earlier attempt's save and bring back that
+      # older repository, dropping every snapshot saved since.
       - name: Restore the backup repository (fails if it is missing)
         id: backup-repo
         if: ${{ !cancelled() && steps.secret-scan.outcome == 'success' && github.event_name != 'pull_request' }}
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/backup
-          key: restic-${{ github.run_id }}
+          key: restic-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: restic-
           fail-on-cache-miss: true
       - name: Back up configs to restic and verify them at the destination
@@ -178,7 +185,7 @@ jobs:
           docker exec clab-netauto-fw1 iptables -vnL FORWARD || true
           docker exec clab-netauto-r2 sh -c 'iptables -vnL; iptables -t raw -vnL' || true
       - name: Upload test results and config backups
-        if: ${{ always() && steps.secret-scan.outcome != 'failure' }}
+        if: ${{ always() && steps.secret-scan.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: results-and-backups
@@ -188,7 +195,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 90
       - name: Upload the finding bundle (re-run by the reproduce job)
-        if: ${{ always() && steps.secret-scan.outcome != 'failure' }}
+        if: ${{ always() && steps.secret-scan.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: finding-bundle
@@ -207,6 +214,8 @@ jobs:
     needs: offline
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    outputs:
+      secret_scan: ${{ steps.secret-scan.outcome }}
     env:
       CLAB_VERSION: "0.68.0"
     steps:
@@ -276,7 +285,7 @@ jobs:
         if: failure()
         run: make alerts || true
       - name: Upload test results
-        if: ${{ always() && steps.secret-scan.outcome != 'failure' }}
+        if: ${{ always() && steps.secret-scan.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: observe-results
@@ -287,7 +296,7 @@ jobs:
           retention-days: 90
       - name: Upload sizing data
         # Only after a measurement: if it was skipped, the folder still holds the committed file.
-        if: ${{ always() && steps.measure.outcome == 'success' && steps.secret-scan.outcome != 'failure' }}
+        if: ${{ always() && steps.measure.outcome == 'success' && steps.secret-scan.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: sizing-data
@@ -359,3 +368,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: make control-status
+      # A failed scan withholds that job's results, so the check above read an earlier run's in their
+      # place and can be green although this run's live or NOC tests failed.
+      - name: This run's secret scans passed (OROS ACC-4)
+        if: ${{ !cancelled() && (needs.lab.outputs.secret_scan == 'failure' || needs.observe.outputs.secret_scan == 'failure') }}
+        env:
+          LAB_SCAN: ${{ needs.lab.outputs.secret_scan }}
+          OBSERVE_SCAN: ${{ needs.observe.outputs.secret_scan }}
+        run: |
+          echo "::error::ACC-4: this run's secret scan failed (lab job: ${LAB_SCAN:-not run}, observe job: ${OBSERVE_SCAN:-not run}), so that job's results were not uploaded and the check above read an earlier run's in their place"
+          exit 1

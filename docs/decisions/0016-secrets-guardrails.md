@@ -35,7 +35,7 @@ failure_modes:
     mitigation: The pre-push hook refuses it; pushed anyway with --no-verify, the CI scan of the pushed history goes red and names the rule
     test: tests/test_secrets.py::test_marked_file_is_blocked_at_push_and_alerted_by_ci
   - mode: a BGP password in clear in a backup or drift output, which gitleaks' default rules miss
-    mitigation: The redacting vtysh on each router prints a sha256 tag instead; the frr-bgp-neighbor-password rule catches any line still in clear, and the lab job scans backups/, results/ and build/ after drift and uploads results/ and backups/ only when that scan did not fail
+    mitigation: The redacting vtysh on each router prints a sha256 tag instead; the frr-bgp-neighbor-password rule catches any line still in clear, and the lab job scans backups/, results/ and build/ after drift and uploads results/ and backups/ only when that scan passed
     test: tests/test_secrets.py::test_frr_password_rule_catches_what_default_rules_miss
   - mode: the password on a command line, in an environment, a log or a temp file while make apply or make drift runs
     mitigation: vtysh reads it on stdin; the task is no_log; pipelining keeps the module and its arguments off disk on both ends; frr-reload.py never sees a password line
@@ -49,7 +49,7 @@ failure_modes:
   - mode: the rollout's rollback (decision 0010) deletes the password, sets its tag as the password, or saves it in clear on the router
     mitigation: The fallback is saved and reloaded through the redacting vtysh with password lines dropped, like the apply; every task in ansible/ that reads or reloads a running config is checked offline for that
     test: tests/live/test_rollout.py::test_rollback_keeps_the_bgp_password_and_writes_it_nowhere
-  - mode: the rollback of a failed change to a BGP neighbor itself (its remote-as or address) re-creates the neighbor from the fallback, without its password, and the session stays down
+  - mode: the rollback of a failed change to a BGP neighbor itself (its remote-as or address, or the local AS) re-creates the neighbor from the fallback, without its password, and the session stays down
     mitigation: Accepted. The rollout stops naming the router and the session it lost; revert the inventory and run make apply. Setting the passwords again in the rescue would cover a new remote-as but not a renumbered neighbor
     test: none (accepted risk RISK-30 in docs/risks.yml, the fallback holds no password line to restore)
   - mode: MD5 configured on one end only, or not enforced
