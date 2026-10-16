@@ -164,7 +164,7 @@ pip install -r requirements.txt -r requirements-ansible.txt
 pre-commit install   # gitleaks hooks: a secret is refused at commit, a confidential file at push
 bash -c "$(curl -sL https://get.containerlab.dev)"   # installs Containerlab
 
-make test      # offline: inventory, rendering, locate rules, control register and record lints, scorecard (257 tests)
+make test      # offline: inventory, rendering, locate rules, control register and record lints, scorecard (261 tests)
 make review    # the dated reviews: a verdict to classify, or a lever, risk or runbook due for review (4 tests)
 make deploy    # render configs, make this lab's BGP password, start 8 nodes and the NOC's 16 sidecars, set the password
 make live      # 62 live tests against the running network, JUnit in results/live.xml
