@@ -72,3 +72,32 @@ def test_campus_loss_is_not_blamed_on_the_carrier(node, expected):
     assert f["segment"] == "r1-r2", f["segments"]
     assert f["owner"] == expected["owners"]["r2"] == expected["operator"]
     assert all(loss <= THRESHOLD for loss in f["edge"]["loss_pct"].values()), f["edge"]
+
+
+@contextmanager
+def ping_rate_limit(node, device, interface, per_second=10):
+    """The device answers at most `per_second` pings to itself, as routers protect their CPU, and drops the
+    rest. Traffic through it, and its own traceroute replies, are untouched."""
+    accept = ["-i", interface, "-p", "icmp", "--icmp-type", "echo-request", "-m", "limit",
+              "--limit", f"{per_second}/second", "--limit-burst", "5", "-j", "ACCEPT"]
+    drop = ["-i", interface, "-p", "icmp", "--icmp-type", "echo-request", "-j", "DROP"]
+    try:
+        node(device).run("iptables", "-I", "INPUT", *drop)
+        node(device).run("iptables", "-I", "INPUT", *accept)
+        yield
+    finally:
+        node(device).run("iptables", "-D", "INPUT", *accept, check=False)
+        node(device).run("iptables", "-D", "INPUT", *drop, check=False)
+
+
+def test_a_hop_that_rate_limits_pings_is_not_loss_while_real_loss_is_placed(node, expected):
+    """OROS FND-1: r1 answers only 10 of the 50 pings a second each hop gets, and the carrier link loses 20% of
+    ICMP. r1's hop shows loss, but the hop after it is clean, so r1 is called a rate limit and not blamed; the
+    loss is placed on r2-isp, where it was injected, and handed to the carrier."""
+    converged(node, expected)
+    with ping_rate_limit(node, "r1", "eth3"), icmp_loss(node, "isp", "eth1"):
+        f = locate(expected["loopbacks"]["isp"])
+    hop = next(s for s in f["segments"] if s["segment"].endswith("-r1"))
+    assert hop["far_end"] in expected["addresses"]["r1"] and hop["loss_pct"] > THRESHOLD, f"r1 answered every ping: {hop}"
+    assert hop["verdict"].startswith("not loss"), f"r1's rate limit was taken for loss: {hop}"
+    assert f["segment"] == "r2-isp" and f["owner"] == expected["owners"]["isp"], f["segments"]

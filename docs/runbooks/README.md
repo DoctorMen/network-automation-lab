@@ -9,6 +9,7 @@
 | [power-event](power-event.md) | Every node restarted after a power outage |
 | [carrier-loss](carrier-loss.md) | Loss toward the internet: ours or the carrier's? |
 | [ddos-rtbh](ddos-rtbh.md) | A flood on a published host fills the ISP link: blackhole that host at the ISP |
+| [hidden-loss](hidden-loss.md) | Users see loss that graphs, ping and interface counters don't: a queue, or a ping rate limit? |
 
 Each one starts with YAML front matter: `owner` (keeps it right), `coordinator` (runs the incident),
 `comms` (updates stakeholders), `last_reviewed`, `hosts` (every device it acts on) and `written_by`.

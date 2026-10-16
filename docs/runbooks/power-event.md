@@ -67,6 +67,18 @@ and so skips what a real power cut does. `<lab>` below is the `name:` in `build/
 Steps 2 to 8 pass. `make live` runs every check at once, if there is time, and `make observe` the
 NOC's on a lab with the NOC.
 
+## What happened before the cut
+
+A node's own log went with the power, but every line it sent before the cut is in the central store,
+which keeps its data on the lab host's disk ([decision 0025](../decisions/0025-flight-recorder.md)).
+`make logs NODE=r2 MINUTES=15` prints r2's last 15 minutes from there. Each link that failed on the
+way down left a flight-recorder dump (its interfaces, queues, filters and routing at that moment):
+search the store for `{source="syslog"} |= "flightrec"`. For a power-down that is planned, run
+`make evidence` first: it copies every node's dump and own log into `results/evidence/`. If the power
+went twice within about a minute, the store lost what it took in between the two cuts
+([V-027](../verdicts.yml), RISK-46), and a node's lines from before its route to the NOC came up at
+boot never left it.
+
 ## If the lab host itself is gone
 
 Rebuild on a new host: clone the repo, `make deploy`, `make drift`. The routers' last running

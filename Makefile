@@ -56,6 +56,15 @@ silence:         ## Check monitoring/silences.yml (one object, time-boxed, a rea
 # it only when every line before it succeeded, so a job that fails or never starts sends nothing (NOT-4).
 SUCCESS = $(PY) -m netlab.observe success
 
+NODE    ?=
+MINUTES ?= 15
+.PHONY: evidence logs
+evidence:        ## Before a planned reset: each node's state dump and own log, into results/evidence/ and the central store (NODE=r2 for one)
+	$(PY) -m netlab.evidence take $(if $(NODE),--node $(NODE))
+
+logs:            ## A node's last lines from the central store, also after a reset: make logs NODE=r2 MINUTES=15
+	$(PY) -m netlab.evidence show --node "$(NODE)" --minutes "$(MINUTES)"
+
 drift:           ## Back up routers and firewall, fail on drift or on a backup missing running config
 	cd ansible && ansible-playbook drift.yml
 	$(SUCCESS) drift

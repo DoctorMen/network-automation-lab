@@ -640,7 +640,10 @@
   reasoning: >-
     frr_exporter and node_exporter answer plain HTTP on each router's loopback, which OSPF carries to the
     whole campus, so any host that reaches a loopback reads the routing table, BGP peers, interface
-    counters and kernel version. Nothing they serve is a secret (the BGP password is not in any metric),
+    counters and kernel version. h2, on the toy payments segment, answers its own node_exporter (interface
+    and queue counters only) on its LAN address, which fw1 and r2's WAN filter close to every out-of-scope
+    device (tests/live/observe/test_loss.py::test_the_servers_exporter_answers_the_noc_and_nobody_out_of_scope).
+    Nothing they serve is a secret (the BGP password is not in any metric),
     and they can't be written to over HTTP. Prometheus, Alertmanager, blackbox and Loki answer on
     127.0.0.1 inside noc only. The collector's syslog and forwarder ports take lines from anyone on the
     campus (RISK-34). The fix is exporter-toolkit's --web.config.file with TLS and basic auth, and the
@@ -698,19 +701,19 @@
 
 - id: RISK-35
   kind: accepted-risk
-  title: the central log store is one copy inside noc's container
-  detectors: [log-store-in-container]
+  title: the central log store is one copy, on the lab host's disk
+  detectors: [log-store-one-copy]
   likelihood: 3
   impact: 2
   reasoning: >-
-    Loki keeps its chunks and index in /loki inside the noc-loki container, with nothing bound from the
-    host and nothing copied off it. A redeploy or `make destroy` starts it empty, and a disk fault loses
-    the 720 h it keeps. For a lab that is rebuilt on every CI run that is the normal life of the store;
-    a real NOC would keep it on durable storage, replicated, and longer than 720 h if PCI DSS 10.5.1's
-    12 months applied (decision 0013 keeps that scope a toy). The boxes keep only 16 KB and one rotated
-    file each, by design, so the store is the only history.
-  compensating_control: none (nothing backs the store up; the boxes' own rotated copy is the only other history)
-  compensates: nothing; while noc is up, it holds every line the boxes have already rotated away
+    Loki keeps its chunks, index and write-ahead log in build/noc/loki on the lab host, bound into the
+    noc-loki container (decision 0025), so a redeploy or a power cut of the lab finds it again. It is still
+    one copy: nothing replicates it or backs it up, deleting build/ or losing the host's disk loses the 720 h
+    it keeps, and a CI runner's copy ends with the run. A real NOC would keep it on durable storage,
+    replicated, and longer than 720 h if PCI DSS 10.5.1's 12 months applied (decision 0013 keeps that scope
+    a toy). The boxes keep only 16 KB and one rotated file each, by design, so the store is the only history.
+  compensating_control: tests/live/test_power_event.py::test_evidence_outlives_a_power_cut
+  compensates: a power cut or redeploy of the whole lab, the NOC included, keeps every line the store had; not the loss of the host's disk
   owner: DoctorMen
   review_by: 2027-01-15
   presented_to: pending
@@ -823,6 +826,51 @@
     and the window then counts from the NOC's start: a job that never ran since pages one window later.
   compensating_control: tests/test_jobs.py::test_every_job_reports_success_as_its_last_step
   compensates: each job's success line is the last line of its make target, so a failed step sends nothing
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-45
+  kind: accepted-risk
+  title: the central log store's folder on the lab host is writable by every user
+  detectors: [store-world-writable]
+  likelihood: 1
+  impact: 2
+  reasoning: >-
+    Loki runs as its image's user (uid 10001), not as whoever renders the lab, so render makes
+    build/noc/loki mode 0777 for Loki to write there (decision 0025). Any user with a shell on the lab
+    host can then add to, change or delete the store's files, and with them the logs and flight-recorder
+    dumps a later investigation would rely on. The lab host is a single-user machine or a CI runner, and
+    the store holds no secret (tests/live/observe/test_central_store.py::test_no_secret_in_the_central_store).
+    The fix on a shared host is a folder owned by uid 10001, made once by an administrator, or a Docker
+    volume.
+  compensating_control: tests/test_monitoring.py::test_the_central_store_keeps_its_data_on_the_lab_host
+  compensates: nothing about who writes there; it shows the folder is the store's and that render never empties it
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-46
+  kind: accepted-risk
+  title: lines the central store takes in during the minute after it restarts are lost if it crashes again in that minute
+  detectors: [store-checkpoint-window]
+  likelihood: 1
+  impact: 2
+  reasoning: >-
+    Loki 3.1.1 starts each stream's count of lines again after it replays its write-ahead log, and the next
+    replay drops what was counted since as duplicates until a new checkpoint is written (V-027). Loki
+    checkpoints every 30 s here, so its first checkpoint after a start is done about a minute later (57 s
+    in one run here). A second power cut inside that minute loses every line the store took in since the
+    first, the flight-recorder dumps included; the nodes' own copies went with the same cuts. Two cuts a
+    minute apart are a failing supply or a breaker being tried, the case where the evidence matters most.
+    The fix is a Loki release that keeps the counts across a replay, or a store that writes each line
+    through before it answers.
+  compensating_control: tests/live/test_power_event.py::test_evidence_outlives_a_power_cut
+  compensates: it shows lines survive a cut once the first checkpoint after a restart is written, not inside the minute before it
   owner: DoctorMen
   review_by: 2027-01-15
   presented_to: pending

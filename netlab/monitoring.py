@@ -35,7 +35,7 @@ EXPORTERS = {"frr": "frr_exporter", "node": "node_exporter"}
 # it only has to be in Alertmanager before what depends on it (decision 0021). A missed job and a silent alert
 # path are settled facts too, and Watchdog always fires.
 WAIT = {"TargetDown": 15, "BGPSessionDown": 10, "OSPFNeighborDown": 10, "BFDPeerDown": 10, "WebContentWrong": 10,
-        "InterfaceFlapped": 0, "PendingRebootOverdue": 0, "SourceSilent": 0,
+        "InterfaceFlapped": 0, "PendingRebootOverdue": 0, "SourceSilent": 0, "QueueDrops": 0,
         "NodeDown": 10, "LinkDown": 10, "CauseSeen": 0, "JobMissed": 0, "AlertPathSilent": 0, "Watchdog": 0}
 # Seconds InterfaceFlapped looks back over the carrier-change counter: six scrapes.
 FLAP_WINDOW = 30
@@ -44,6 +44,9 @@ FLAP_WINDOW = 30
 CAUSE_EVERY = 1
 # Seconds between each router's rewrites of its pending-reboot file (agent.sh), which node_exporter reads.
 TEXTFILE_EVERY = 15
+# The flight recorder on every log source (agent.sh, decision 0025): seconds between two triggered dumps at
+# most, seconds it waits before sending one, and the longest line it sends.
+FLIGHTREC = {"every": 30, "delay": 3, "width": 200}
 # node_exporter's own default netstat fields, plus TcpExt_IPReversePathFilter: the packets a strict
 # reverse-path filter dropped, which tests/live/test_edge.py reads with nstat, and the three TCP MD5
 # counters the BGP-down runbook reads to tell a wrong password from a missing one (monitoring/coverage.yml).
@@ -75,6 +78,22 @@ def loopback(inv: Inventory, router: str) -> str:
 def exporter_routers(inv: Inventory) -> list[str]:
     """Routers we own: each gets frr_exporter and node_exporter. The carrier's isp is watched from our side."""
     return [r for r in inv.routers if owned(inv, r)]
+
+
+def servers(inv: Inventory) -> list[str]:
+    """Hosts with services we own, except the NOC: each gets a node_exporter for its own interfaces and
+    queues (decision 0023). h2's HTB is where a burst into LAN-B's server is queued and dropped."""
+    return [h for h, v in inv.hosts.items() if v.get("services") and owned(inv, h) and h != host(inv)]
+
+
+def exporter_nodes(inv: Inventory) -> list[str]:
+    """Every node with a node_exporter: the routers we own and the servers."""
+    return [*exporter_routers(inv), *servers(inv)]
+
+
+def node_exporter_address(inv: Inventory, device: str) -> str:
+    """Where a node's node_exporter listens: a router's loopback, a server's own address."""
+    return loopback(inv, device) if device in inv.routers else probe_address(inv, device)
 
 
 def syslog_sources(inv: Inventory) -> list[str]:
@@ -348,8 +367,9 @@ def alert_rules(inv: Inventory) -> list[dict]:
             link = next(l for l in inv.links if link_id(l) == cid)
             rules.append(rule(inv, "LinkDown", c["expr"], {**c["labels"], "cause": cid, "deps": model.label(model.link_objects(link), own=cid)},
                               c["summary"], c["signal"], c["condition"], c["normal"]))
-    for r in exporter_routers(inv):
-        for job in EXPORTERS:
+    # Each exporter: both on a router we own, node_exporter alone on a server (decision 0023).
+    for r in exporter_nodes(inv):
+        for job in (EXPORTERS if r in inv.routers else ["node"]):
             cid = f"{job}@{r}"
             signal = f"up{selector(job=job, node=r)}"
             labels = {**target_labels(inv, r), "job": job, **({"cause": cid} if cid in model.causes else {}), "deps": model.label({r})}
@@ -406,6 +426,13 @@ def alert_rules(inv: Inventory) -> list[dict]:
                                "deps": model.label({r, *model.link_objects(link_at(inv, r, ep.interface))})},
                               f"{r} {ep.interface} lost carrier in the last {FLAP_WINDOW} s", signal,
                               "> 0 with the carrier back up", "0"))
+    for d in exporter_nodes(inv):
+        # A queue's drop counter catches a burst far shorter than a scrape, which a 5-minute average of the
+        # interface's traffic hides, and which the interface's own drop counter never sees (decision 0023).
+        signal = f"increase(node_qdisc_drops_total{selector(node=d)}[1m])"
+        rules.append(rule(inv, "QueueDrops", f"{signal} > 0", {**target_labels(inv, d), "deps": model.label({d})},
+                          f"{d} {{{{ $labels.device }}}} ({{{{ $labels.kind }}}} queue) dropped packets in the last minute",
+                          signal, "> 0", "0"))
     window = mon["reboot_window"]
     for r in exporter_routers(inv):
         signal = f"time() - node_reboot_required_since_seconds{selector(node=r)}"
@@ -473,8 +500,9 @@ def web_module(check: dict) -> str:
 
 def prometheus_config(inv: Inventory) -> dict:
     interval = f"{inv.monitoring['interval']}s"
-    jobs = [{"job_name": job, "static_configs": [{"targets": [f"{loopback(inv, r)}:{PORTS[job]}"], "labels": target_labels(inv, r)}
-                                                for r in exporter_routers(inv)]} for job in EXPORTERS]
+    jobs = [{"job_name": job, "static_configs": [{"targets": [f"{node_exporter_address(inv, d)}:{PORTS[job]}"], "labels": target_labels(inv, d)}
+                                                for d in (exporter_nodes(inv) if job == "node" else exporter_routers(inv))]}
+            for job in EXPORTERS]
     web = [blackbox_job("web", web_module(w), [{"targets": [f"http://{probe_address(inv, w['host'])}:{w['port']}/"],
                                                 "labels": target_labels(inv, w["host"])}])
            for w in inv.monitoring.get("web") or []]
@@ -515,9 +543,14 @@ def sidecars(inv: Inventory) -> dict[str, dict]:
                                     "cmd": f"--web.listen-address={lo}:{PORTS['frr']} --frr.socket.dir-path=/var/run/frr"}
         out[f"{r}-node-exporter"] = {"netns": r, "image": images["node_exporter"], "binds": [f"{r}/textfile:/textfile:ro"],
                                      "cmd": f"--web.listen-address={lo}:{PORTS['node']} --collector.disable-defaults "
-                                            "--collector.netclass --collector.netdev --collector.netstat "
+                                            "--collector.netclass --collector.netdev --collector.netstat --collector.qdisc "
                                             f"--collector.netstat.fields={NETSTAT_FIELDS} "
                                             "--collector.textfile --collector.textfile.directory=/textfile"}
+    for h in servers(inv):
+        # Only what the server's own interfaces and queues count: no process, file or other host data.
+        out[f"{h}-node-exporter"] = {"netns": h, "image": images["node_exporter"], "binds": [],
+                                     "cmd": f"--web.listen-address={node_exporter_address(inv, h)}:{PORTS['node']} "
+                                            "--collector.disable-defaults --collector.netdev --collector.qdisc"}
     out[f"{noc}-prometheus"] = {"netns": noc, "image": images["prometheus"],
                                 "binds": [f"{noc}/prometheus.yml:/etc/prometheus/prometheus.yml:ro", f"{noc}/rules.yml:/etc/prometheus/rules.yml:ro"],
                                 "cmd": f"--config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus "
@@ -530,7 +563,9 @@ def sidecars(inv: Inventory) -> dict[str, dict]:
                                          f"--web.listen-address=127.0.0.1:{PORTS['alertmanager']} --cluster.listen-address="}
     out[f"{noc}-blackbox"] = {"netns": noc, "image": images["blackbox"], "binds": [f"{noc}/blackbox.yml:/etc/blackbox/blackbox.yml:ro"],
                               "cmd": f"--config.file=/etc/blackbox/blackbox.yml --web.listen-address=127.0.0.1:{PORTS['blackbox']}"}
-    out[f"{noc}-loki"] = {"netns": noc, "image": images["loki"], "binds": [f"{noc}/loki.yaml:/etc/loki/loki.yaml:ro"],
+    # Loki's data is on the lab host's disk (build/noc/loki), not in the container, so the store outlives a
+    # power cut or a redeploy of noc itself (decision 0025).
+    out[f"{noc}-loki"] = {"netns": noc, "image": images["loki"], "binds": [f"{noc}/loki.yaml:/etc/loki/loki.yaml:ro", f"{noc}/loki:/loki"],
                           "cmd": "-config.file=/etc/loki/loki.yaml"}
     out[f"{noc}-collector"] = {"netns": noc, "image": images["vector"], "binds": [f"{noc}/vector.yaml:/etc/vector/vector.yaml:ro"],
                                "cmd": "--config /etc/vector/vector.yaml"}
@@ -560,6 +595,7 @@ def expected(inv: Inventory) -> dict:
         "collector": collector(inv),
         "interval": inv.monitoring["interval"],
         "exporters": {r: {"address": loopback(inv, r), "ports": [PORTS[j] for j in EXPORTERS]} for r in exporter_routers(inv)},
+        "servers": {h: {"address": node_exporter_address(inv, h), "port": PORTS["node"]} for h in servers(inv)},
         "bgp_peers": bgp_peers(inv),
         "ospf_neighbors": ospf_neighbors(inv),
         "bfd_peers": bfd_peers(inv),
@@ -567,6 +603,7 @@ def expected(inv: Inventory) -> dict:
         "reboot_window": inv.monitoring["reboot_window"],
         "sources": log_sources(inv),
         "heartbeat": inv.logging["heartbeat"],
+        "flightrec": FLIGHTREC,
         "on_box": inv.logging["on_box"],
         "apps": inv.logging.get("apps") or [],
         "sidecars": sorted(sidecars(inv)),
@@ -609,7 +646,7 @@ def render(inv: Inventory, env, write, out: Path) -> None:
     write(f"{noc}/rules.yml", dump(rule_groups(inv)))
     write(f"{noc}/blackbox.yml", dump(blackbox_config(inv)))
     ctx = dict(inv=inv, ports=PORTS, collector=collector(inv), logs=logs, addresses=source_addresses(inv),
-               textfile_every=TEXTFILE_EVERY, mon=inv.monitoring, causes=sorted(causes(inv)))
+               textfile_every=TEXTFILE_EVERY, mon=inv.monitoring, causes=sorted(causes(inv)), flightrec=FLIGHTREC)
     for name in ("alertmanager.yml", "loki.yaml", "vector.yaml"):
         write(f"{noc}/{name}", env.get_template(f"monitoring/{name}.j2").render(**ctx))
     write(f"{noc}/sink.py", (ROOT / "templates" / "monitoring" / "sink.py").read_text())
@@ -625,3 +662,8 @@ def render(inv: Inventory, env, write, out: Path) -> None:
             (out / r / d).mkdir(parents=True, exist_ok=True)
     for app in logs.get("apps") or []:
         (out / app["host"] / "applog").mkdir(parents=True, exist_ok=True)
+    # Loki runs as its image's user (uid 10001), not as whoever rendered, so its folder must be writable by
+    # any user. It is on the lab host only, and never emptied here: it is the central store's history.
+    store = out / noc / "loki"
+    store.mkdir(parents=True, exist_ok=True)
+    store.chmod(0o777)

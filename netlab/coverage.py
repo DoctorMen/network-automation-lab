@@ -12,7 +12,10 @@ what each one reads, marked exported, derived or gap:
 
 It fails on a read the list doesn't have, an entry nothing reads any more, an entry without its metric,
 query or fallback, a Prometheus job that coverage.yml doesn't name as a collector (an unlisted scraper),
-and a metric an alert rule uses that no collector lists. A command that only changes the device is
+and a metric an alert rule uses that no collector lists. Under `counts` it fails on a collector's metric
+that doesn't say what it counts, a counter that doesn't say when it wraps and resets, a counter an alert
+rule reads outside increase(), rate(), irate() or resets() (where a reset or a wrap would read as a fall),
+and a proven_by test that doesn't exist (OROS DEC-2, decision 0024). A command that only changes the device is
 named in `actions` (its program) or recognised as a write (vtysh conf t, iptables -I, ip link set).
 A command built at run time that can't be read from the source is listed under `opaque` by file and
 function, with why. tests/live/observe/test_coverage.py checks the listed metrics exist on the NOC.
@@ -46,7 +49,9 @@ ARG = "<arg>"
 DEVICE_PROGRAMS = {"vtysh", "show", "ip", "iptables", "iptables-save", "tc", "ping", "traceroute", "netstat", "nstat"}
 PROMQL_WORDS = {"absent", "and", "or", "unless", "on", "by", "without", "increase", "rate", "time", "sum", "count", "max", "min",
                 "min_over_time", "max_over_time", "ignoring", "group_left", "group_right", "bool", "offset", "vector",
-                "topk", "bottomk"}
+                "topk", "bottomk", "irate", "resets"}
+# The only functions an alert rule may read a counter through: each reads a fall as a reset, not a drop.
+COUNTER_SAFE = ("increase", "rate", "irate", "resets")
 
 
 def normalize(text: str) -> str:
@@ -69,6 +74,8 @@ def classify(tokens: list[str]) -> list[tuple[str, str]]:
     args = tokens[1:]
     if prog in ("sh", "bash") and len(args) >= 2 and args[0].startswith("-") and "c" in args[0]:
         return script(args[1])
+    if prog == "sh" and args[:2] == ["/monitoring/agent.sh", "dump"]:
+        return [("read", "sh /monitoring/agent.sh dump")]  # the flight recorder's state dump, on demand
     if prog in ("unshare", "env", "timeout"):
         rest = [i for i, a in enumerate(args) if not a.startswith("-") and "=" not in a and not a.isdigit()]
         return classify(args[rest[0]:]) if rest else [("action", prog)]
@@ -188,6 +195,10 @@ def _script_name(call: ast.Call) -> str:
     for a in call.args:
         if isinstance(a, ast.Name) and a.id.isupper():
             return a.id
+        if isinstance(a, (ast.List, ast.Tuple)):  # [..., "python3", "-c", BURST, ...]
+            for flag, name in zip(a.elts, a.elts[1:]):
+                if isinstance(flag, ast.Constant) and flag.value == "-c" and isinstance(name, ast.Name) and name.id.isupper():
+                    return name.id
         for c in ast.walk(a):
             if isinstance(c, ast.Constant) and isinstance(c.value, str) and c.value.endswith(".py"):
                 return c.value
@@ -381,6 +392,38 @@ def rule_metrics(inv) -> set[str]:
     return names - {"node"}
 
 
+def counts_problems(coverage: dict, inv, root: Path = ROOT) -> list[str]:
+    """What each metric counts (OROS DEC-2): every collector's metric says so, a counter says when it wraps and
+    resets, no alert rule reads a counter raw, and every test named as proof exists."""
+    problems, counts = [], coverage.get("counts") or {}
+    listed = {m for c in (coverage.get("collectors") or {}).values() for m in c.get("metrics") or []}
+    problems += [f"metric {m} says nothing under counts in monitoring/coverage.yml about what it counts"
+                 for m in sorted(listed - set(counts))]
+    problems += [f"counts: {m} is in no collector's metrics" for m in sorted(set(counts) - listed)]
+    for m, c in counts.items():
+        if not c.get("counts"):
+            problems.append(f"counts: {m} says nothing about what it counts")
+        if c.get("type") not in ("counter", "gauge"):
+            problems.append(f"counts: {m} is neither a counter nor a gauge")
+        if c.get("type") == "counter":
+            problems += [f"counts: {m} is a counter, and doesn't say when it {k}" for k in ("wraps", "resets") if not c.get(k)]
+        for test in c.get("proven_by") or []:
+            path, _, name = test.partition("::")
+            f = root / path
+            if not name or not f.is_file() or not re.search(rf"^def {re.escape(name)}\(", f.read_text(), re.M):
+                problems.append(f"counts: {m} is proven by {test}, which does not exist")
+    counters = sorted(m for m, c in counts.items() if c.get("type") == "counter")
+    raw = set()
+    for r in monitoring.alert_rules(inv):
+        for m in counters:
+            for hit in re.finditer(rf"(?<![\w:]){re.escape(m)}(?!\w)", r["expr"]):
+                if not r["expr"][:hit.start()].rstrip().endswith(tuple(f + "(" for f in COUNTER_SAFE)):
+                    raw.add((r["alert"], m))
+    problems += [f"alert {a} reads the counter {m} outside {', '.join(COUNTER_SAFE)}: a reset or a wrap would read as a fall"
+                 for a, m in sorted(raw)]
+    return problems
+
+
 def check(coverage: dict, reads: dict, odd: list, inv) -> list[str]:
     problems = []
     entries = {e["read"]: e for e in coverage.get("reads") or []}
@@ -430,7 +473,7 @@ def check(coverage: dict, reads: dict, odd: list, inv) -> list[str]:
         for m in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", re.sub(r"\{[^}]*\}", "", str(e.get("metric") or ""))):
             if m.startswith(("frr_", "node_", "probe_", "log_")) and m not in listed:
                 problems.append(f"`{key}`: metric {m} is not in its collector's metrics")
-    return problems
+    return problems + counts_problems(coverage, inv)
 
 
 def main(argv: list[str] | None = None) -> int:
