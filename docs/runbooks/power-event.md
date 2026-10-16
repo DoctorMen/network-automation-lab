@@ -43,9 +43,12 @@ and so skips what a real power cut does. `<lab>` below is the `name:` in `build/
    On r2, `docker exec clab-<lab>-r2 vtysh -c "show bgp summary"`: 198.51.100.1 shows a prefix count.
    OSPF needs about 10 to 20 s after the nodes start (routing was back 10.8 to 20.2 s after the cut over four drills here).
    A router whose zebra or bgpd crashed as it started (V-011 in [verdicts.yml](../verdicts.yml): `ps` lists
-   no zebra or bgpd, and its `docker logs` may say `crashed in startup` or nothing) is back about a
-   minute later, when watchfrr starts the daemon again. Wait for it; on the full lab routing was back
-   73.9 and 83.7 s after the cut over two drills here.
+   no zebra or bgpd, and its `docker logs` may say `crashed in startup` or nothing) is back seconds
+   later, when watchfrr starts the daemon again: it waits 5 s, doubling for each restart in a row up to
+   60 s, as the router's daemons file sets it. On a throwaway router zebra was back 5.8 to 15.7 s after
+   one crash and 10.7 to 20.9 s after the next, over 15 runs. Wait for it. Before the daemons file set
+   this, watchfrr waited 60 s, and on the full lab routing was back 73.9 and 83.7 s after the cut over
+   two drills here.
 4. **The firewall loaded its policy.** `docker exec clab-<lab>-fw1 iptables -vnL FORWARD`: policy
    `DROP`, five rules and `default-drop`. If the chain is empty with policy `ACCEPT`, the start
    script didn't run: `docker exec clab-<lab>-fw1 sh /firewall.sh`.

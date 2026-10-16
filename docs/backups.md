@@ -89,15 +89,19 @@ backup` still exited 0, and only the read-back showed `ciphertext verification f
 ## The restore drill (`make restore-drill`, weekly)
 
 For each router, `restic dump` its file from the newest snapshot (from the destination, not from
-`backups/`) and boot it as the startup config of a throwaway FRR container: same image, sysctls and
-daemons file as the real node (read from `build/topology.clab.yml`), `--network none`, and only the
-capabilities zebra and bgpd need (`NET_ADMIN`, `NET_RAW`, `SYS_ADMIN`; without them only watchfrr and
-staticd start). When FRR has finished loading, `frr-reload.py --test` must find no difference, and
-`ip -o link` must show only `lo`. The live routers' running configs are hashed before and after.
-Measured here: about 7 s for all four routers, 16 s for the whole drill. About 1 boot in 20, zebra or
-bgpd crashes as it starts and watchfrr starts it again 60 s later; that drill takes about 75 s. So the
-drill waits until every daemon on watchfrr's command line runs, for up to 120 s, not only for zebra
-(V-011 in [verdicts.yml](verdicts.yml)).
+`backups/`) and boot it as the startup config of a throwaway FRR container: same image, start command,
+sysctls and daemons file as the real node (read from `build/topology.clab.yml`), `--network none`, and
+only the capabilities zebra and bgpd need (`NET_ADMIN`, `NET_RAW`, `SYS_ADMIN`; without them only
+watchfrr and staticd start). When FRR has finished loading, `frr-reload.py --test` must find no
+difference, and `ip -o link` must show only `lo`. The live routers' running configs are hashed before
+and after. Measured here: about 7 s for all four routers, 16 s for the whole drill. About 1 boot in 20,
+zebra or bgpd crashes as it starts. When the throwaway routers started watchfrr with its defaults, it
+started the daemon again 60 s later and that drill took about 75 s. Now each runs its node's own start
+command, which gives watchfrr the daemons file's restart interval: 5 s, doubling for each restart in a
+row up to 60 s. On a throwaway router zebra was back 10.2, 10.6 and 20.1 s after three crashes in a
+row, and `tests/live/test_startup_crash.py` checks it is back within 30 s after each of two. The drill
+waits until every daemon on watchfrr's command line runs, for up to 120 s, not only for zebra (V-011 in
+[verdicts.yml](verdicts.yml)).
 
 `test_drill_notices_a_bad_backup` boots a copy of r2's backup that kept `show running-config`'s header,
 the format the collection pass used to save. FRR starts and loads the lines after the header, so a

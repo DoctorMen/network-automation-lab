@@ -52,7 +52,9 @@ authentication on both ends, then that h1 reaches h2:80 through fw1 and `drift.y
 apply` takes about 40 s with the canary rollout); routing back 10.8 to 20.2 s after the cut. On the
 full lab with the NOC (two runs on 2026-10-16), where the drill also waits for the NOC to settle:
 148.3 and 187.3 s for the test, routing back 73.9 and 83.7 s after the cut, about a minute later,
-as when a daemon crashes as it starts and watchfrr starts it again (V-011).
+as when a daemon crashes as it starts and watchfrr starts it again (V-011). In those runs watchfrr
+still waited its default 60 s before starting a crashed daemon again; each router's daemons file now
+sets 5 s, doubling for each restart in a row up to 60 s (V-011).
 
 ## Consequences
 
