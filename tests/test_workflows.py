@@ -174,9 +174,10 @@ def test_uploads_wait_for_the_secret_scan_and_the_measurement():
             want = ("${{ always() && steps.measure.outcome == 'success' && steps.secret-scan.outcome == 'success' }}" if measured
                     else "${{ always() && steps.secret-scan.outcome == 'success' }}")
             assert i > scan and s["if"] == want, f"{job}: {s['name']} is published when the secret scan did not pass"
+            grep_reads = re.search(r'sudo -n grep -rlF -f "\$f" \$\(ls -d ([^)]*?) 2>/dev/null\)', steps[scan]["run"])[1].split()
             for path in s["with"]["path"].split():
                 folder = path.split("*")[0].rstrip("/")
-                assert path.startswith(("results/", "backups/", "build/")) or folder in steps[scan]["run"], \
+                assert folder in grep_reads or any(path.startswith(d + "/") for d in grep_reads), \
                     f"{job}: the password grep never reads {path}"
             if measured:
                 assert any(s.get("id") == "measure" for s in steps), f"{job}: a skipped measurement would upload the committed reading as this run's"
