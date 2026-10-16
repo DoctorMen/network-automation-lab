@@ -81,7 +81,7 @@ def test_a_parent_failure_pages_once_and_a_killed_service_pages_again(outage, mo
     o, parent, healthy = outage, outage["parent"], outage["healthy"]
     assert o["parent_page"], f"NodeDown {parent} did not page"
     assert o["service_page"], f"TargetDown for frr_exporter on {healthy}, a healthy router, did not page"
-    paged = sorted((x["labels"]["alertname"], x["labels"].get("node"), x["labels"].get("cause")) for x in o["pages"])
+    paged = sorted((x["labels"]["alertname"], x["labels"].get("node") or "", x["labels"].get("cause") or "") for x in o["pages"])
     assert paged == [("NodeDown", parent, parent), ("TargetDown", healthy, f"frr@{healthy}")], f"pages for this outage: {paged}"
     held = [a for a in o["held"] if a["status"]["inhibitedBy"]]
     pages = {("NodeDown", parent), ("TargetDown", healthy)}
