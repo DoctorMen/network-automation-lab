@@ -2,8 +2,9 @@
 that a backup saved to the cache is checked there, and a re-run restores the newest one; that the NOC's
 tests run in three jobs that cover every test file once; that only what each job's own secret scan passed is
 published, the false-positive review's upload included; and that control-status fails when a scan withheld
-this run's live or NOC results. Every job in any workflow that holds a run's BGP password scans after a failed
-test, and uploads nothing its scan did not pass."""
+this run's live or NOC results. Every job in any workflow that holds a run's BGP password scans (gitleaks, and
+the password grep as root) after a failed test and after every step that writes what it reads, and uploads
+nothing its scan did not pass."""
 import os
 import re
 import subprocess
@@ -298,16 +299,36 @@ def password_jobs():
                 yield path.name, job, steps
 
 
+# The make targets whose output a job's scan must see: each writes into results/ (the JUnit files, the evidence,
+# the finding bundle, the review's notifications), backups/ (drift) or docs/sizing/data (measure).
+WRITERS = ("live", "observe", "restore-drill", "power-drill", "fp-review", "drift", "evidence", "finding", "measure")
+
+
+def make_targets(run: str) -> list[str]:
+    return re.findall(r"\bmake\s+([a-z][\w-]*)", run)
+
+
 def test_every_job_holding_a_run_password_scans_after_a_failed_test_and_before_it_uploads(tmp_path):
     """A job that creates a run's BGP password has a secret scan, which runs after a failed test (only a cancelled
     run or a failed deploy skips it: with success() a failed test would skip it, its upload would be withheld and
     control-status would read an earlier run's results), and every upload in the job comes after it and waits for
-    it to pass. The drills job's scan finds this run's password in its results."""
+    it to pass. The scan runs gitleaks and the password grep as root (as the runner user, grep exits 2 on FRR's
+    root-only files in build/), after every step that writes what it must read. The drills job's scan finds this
+    run's password in its results."""
+    makefile = (ROOT / "Makefile").read_text()
+    assert all(re.search(rf"^{t}:", makefile, re.M) for t in WRITERS), "a writer this test names is not a make target"
     found = {}
     for workflow, job, steps in password_jobs():
         scan = next((i for i, s in enumerate(steps) if s.get("id") == "secret-scan"), None)
         assert scan is not None, f"{workflow} {job} holds this run's password and uploads with no secret scan"
         found[(workflow, job)] = steps[scan].get("if")
+        run = steps[scan]["run"]
+        assert "gitleaks" in make_targets(run), f"{workflow} {job}: the scan runs no make gitleaks"
+        assert 'sudo -n grep -rlF -f "$f" $(ls -d backups results build' in run, f"{workflow} {job}: the password grep is not run as root over backups, results and build"
+        writers = [i for i, s in enumerate(steps) if set(make_targets(s.get("run", ""))) & set(WRITERS)]
+        assert writers, f"{workflow} {job}: no step writes results, so this test checks no order"
+        late = [steps[i].get("name", steps[i]["run"]) for i in writers if i > scan]
+        assert not late, f"{workflow} {job}: {late} write what the scan reads, after it ran"
         for i, s in enumerate(steps):
             if s.get("uses", "").startswith("actions/upload-artifact@"):
                 assert i > scan and s["if"].startswith("${{ always() && ") and "steps.secret-scan.outcome == 'success'" in s["if"], \
