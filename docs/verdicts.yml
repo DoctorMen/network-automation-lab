@@ -169,3 +169,14 @@
     - "Prometheus history for that run (query_range, 1 s step, times from BFD going down): frr_bfd_peer_state{node=\"r1\",peer=\"10.0.12.1\"} missing from about +3 s to +14 s, then 0; frr_ospf_neighbor_adjacencies{iface=\"eth1\"} 0 at +4 s, 1 at +14 s; ALERTS pending from +8 s to +17 s, then a second pending series from +18 s, firing at +28 s. FRR deletes the session when OSPF drops the adjacency and adds it back, still down, when OSPF re-forms"
     - "The rule was `frr_bfd_peer_state{...} != 1 or absent(...)`: the series half keeps the target's labels (job, instance, owner, role), absent() gives node and peer only, so the alert changed identity when the series came back and its 10 s `for` started again"
   fixed_in: "decision 0018 (build/w2base, not yet committed): every per-object rule is `max by (<the object's keys>) (... ) or absent(...)`, so both halves label the alert alike, and owner and role are rule labels; tests/test_monitoring.py::test_an_alert_keeps_its_identity_while_its_series_comes_and_goes"
+
+- id: V-020
+  opened: 2026-10-16
+  version: prom/prometheus:v2.53.0, prom/alertmanager:v0.27.0, FRR 8.4.1_git
+  symptom: With r3 cut off and frr_exporter killed beside r1, the pager got three pages instead of two, NodeDown for h2 (behind r3) as well, in one full live run of three; the same test alone had passed
+  verdict: my-config
+  evidence:
+    - "2026-10-16, lab na10, full `pytest -v tests/live` at commit 500ab80, tests/live/observe/test_outage.py::test_a_parent_failure_pages_once_and_a_killed_service_pages_again: \"pages for this outage: [('NodeDown', 'h2', 'h2'), ('NodeDown', 'r3', 'r3'), ('TargetDown', 'r1', 'frr@r1')]\""
+    - "Every cause's page, r3's and h2's alike, had `keep_firing_for: 75s`, and h2's page is held back only while a cause it lists fires. h2 answers its probe a scrape after r3 does, so its page went on firing a few seconds after r3's ended and was sent then. The Prometheus history of that run was not kept (the lab was rebuilt); the order is read from the rules"
+    - "After the fix, the same outage (Prometheus query_range, 1 s step): NodeDown for r3 and for h2 both end at +313 s, while CauseSeen for r3 fires until +389 s, so h2's page ends 76 s inside r3's hold"
+  fixed_in: "decision 0021 (commit 2221f20): the markers keep firing 75 s after recovery and no page does; tests/test_dependencies.py::test_a_cause_keeps_holding_back_through_the_slowest_recovery"

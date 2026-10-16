@@ -60,7 +60,7 @@ OROS DEC-5 asks that dependent alerts sit behind the causal one (host, uplink, s
 - Every alert carries `deps`, written `/a/b/`: the causes its objects depend on, themselves included, plus the collector it is read through. A cause's own page leaves itself, and what depends on it, out.
 - Each cause has a marker, CauseSeen, with no `for`, in a rule group evaluated every second and routed nowhere. Alertmanager has one inhibit rule per cause: while anything labelled `cause=X` fires, every alert whose deps list X is held back.
 - group_wait is 5 s, so a dependent waits its `for` (10 s or more) plus 5 s, while its cause's marker is in Alertmanager within about 8 s.
-- A cause's marker keeps firing 75 s after it recovers, so dependents that clear late stay held back. A log source's SourceSilent clears only on its next heartbeat, the slowest. The marker holds, not the page: in a full live run, h2's page (itself a cause, behind r3) kept firing as long as r3's and answered one scrape later, so it outlasted r3's hold and paged.
+- A cause's marker keeps firing 75 s after it recovers, so dependents that clear late stay held back. A log source's SourceSilent clears only on its next heartbeat, the slowest. The marker holds, not the page: in a full live run, h2's page (itself a cause, behind r3) kept firing as long as r3's and answered one scrape later, so it outlasted r3's hold and paged (V-020).
 - InterfaceFlapped is now one rule per interface, firing once the carrier is back. A link still down is LinkDown's page.
 
 ## Consequences
