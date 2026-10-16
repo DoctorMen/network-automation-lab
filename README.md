@@ -96,7 +96,7 @@ flowchart LR
 | Every claim in this table, and every fw1 rule, is in a control register with what it defends against, how it fails, the test that proves it and how often that test must pass | [`docs/controls.yml`](docs/controls.yml), linted by [`tests/test_controls.py`](tests/test_controls.py) |
 | Every control in the register has its latest test green and inside its period. `make control-status` reads the dated JUnit results of this run and earlier runs on `main`, newest first, and fails naming any control whose latest result is red, missing or too old. A CI job is set up to run it on `main` | `make control-status` in CI ([`netlab/control_status.py`](netlab/control_status.py)), proven on fixture JUnit files by [`tests/test_control_status.py`](tests/test_control_status.py) |
 
-CI runs every test each night as well as on every push to `main` and every pull request; the restore and power-event drills are set to run weekly in their own workflow ([`drills.yml`](.github/workflows/drills.yml)). Every job keeps its JUnit results (offline, live and drills, each timestamped) as a run artifact for 90 days, so every claim has a dated pass or fail. The register says how old the latest pass may be (31 days, 90 for the restore drill), and on `main` a control-status job is set up to fail when a control's latest result is red, missing or older than that.
+CI runs every test each night as well as on every push to `main` and every pull request; the restore and power-event drills are set to run weekly in their own workflow ([`drills.yml`](.github/workflows/drills.yml)). Every job keeps its JUnit results (offline, review, live and drills, each timestamped) as a run artifact for 90 days, so every claim has a dated pass or fail. The four checks that compare a record's date with today run in their own job, which the lab job doesn't wait for, so a review falling due turns that job red without stopping the live tests or the nightly backup. The register says how old the latest pass may be (31 days, 90 for the restore drill), and on `main` a control-status job is set up to fail when a control's latest result is red, missing or older than that.
 
 ## Scored against what operators actually need
 
@@ -132,7 +132,8 @@ pip install -r requirements.txt -r requirements-ansible.txt
 pre-commit install   # gitleaks hooks: a secret is refused at commit, a confidential file at push
 bash -c "$(curl -sL https://get.containerlab.dev)"   # installs Containerlab
 
-make test      # offline: inventory, rendering, locate rules, control register and record lints, scorecard (125 tests)
+make test      # offline: inventory, rendering, locate rules, control register and record lints, scorecard (122 tests)
+make review    # the dated reviews: a verdict to classify, or a lever, risk or runbook due for review (4 tests)
 make deploy    # render configs, make this lab's BGP password, start 7 containers, set the password
 make live      # 47 live tests against the running network, JUnit in results/live.xml
 make drift     # back up routers and firewall, fail on drift or an incomplete backup

@@ -115,8 +115,9 @@
 
 - id: V-011
   opened: 2026-10-15
-  version: frrouting/frr:v8.4.1 (FRR 8.4.1_git), throwaway restore-drill routers (--network none) in the sandbox, 4 CPUs shared with another lab
-  symptom: in about 1 throwaway boot in 20, zebra or bgpd crashes as it starts and only comes back about 60 s later, so the restore drill's 60 s boot wait timed out once, and its zebra-only boot check let a drill run while bgpd was down
+  version: frrouting/frr:v8.4.1 (FRR 8.4.1_git), throwaway restore-drill routers (--network none) in the sandbox, 4 CPUs shared with another lab; the lab's own routers on containerlab 0.68.0, GitHub ubuntu-24.04
+  symptom: in about 1 throwaway boot in 20, zebra or bgpd crashes as it starts and only comes back about 60 s later, so the restore drill's 60 s boot wait timed out once, and its zebra-only boot check let a drill run while bgpd was down; on GitHub, make apply's first wait (30 s) ran out with zebra down
+  verdict: platform-bug
   evidence:
     - "2026-10-15, 15 rounds of 4 throwaway routers booted at once (r1, r2, r3, isp): in 3 rounds one router had no /usr/lib/frr/zebra process at 12 s; each round finished booting at 66.9 to 67.5 s, the rest at 1.1 to 1.5 s"
     - "the same day, docker logs of one such router (round 18 of a second sample): watchfrr reports ospfd, staticd and bfdd 'state -> up' but never zebra, after 'watchfrr.sh restart all' printed 'Cannot stop zebra: pid file not found'; /var/run/frr/zebra.pid and zserv.api exist, the process does not"
@@ -126,7 +127,10 @@
     - "the same day, another throwaway's stderr: 'zebra crashed in startup, signal 11'"
     - "with bgpd killed in a booted throwaway, the old check returned in 0.45 s and frr-reload listed 17 missing lines; the new one waited 4.3 s for watchfrr to start bgpd again, then 0 problems"
     - "after the change: 15 drills (60 boots), two boots hit a zebra crash and booted at 62.0 and 66.4 s, 0 problems"
-  workaround: Scratch.wait_booted waits until every daemon on watchfrr's command line runs and no start script is left, up to 120 s, which covers one watchfrr restart; the drill then passes, slower
+    - "CI runs 38831236871 (commit ab99116) and 38832072246 (commit 413aa15), containerlab 0.68.0 on GitHub ubuntu-24.04: make apply's first task ('Wait until every routing daemon answers', 15 tries 2 s apart) failed with zebra not running. In 38832072246 zebra was down on all four routers at 38 s; r1's docker logs: 'watchfrr.sh restart all', 'Cannot stop zebra: pid file not found', 'zebra crashed in startup, signal 11', 'Failed to start zebra!'; r3's and isp's: 'vtysh: error reading from zebra: Connection reset by peer' during the config load. Runs 38823881987 and 38831606745 deployed cleanly, so 2 of the first 4 GitHub deploys of this change hit it"
+    - "it never showed on main: there `make deploy` ran no make apply, and the live tests' 120 s settle wait covered one watchfrr restart"
+    - "2026-10-16, classified platform-bug by the build (Claude) from the evidence above, not by a person: signal 11 is a segmentation fault in FRR's own zebra and bgpd as they start, on the shared sandbox and on GitHub's runners alike, and nothing in this config or the container setup is known to cause it. No core dump was taken and no upstream bug report is linked, so the class rests on the crash signal; a cause traced to our config or to running in containers would make it my-config or lab-artifact"
+  workaround: Scratch.wait_booted waits until every daemon on watchfrr's command line runs and no start script is left, up to 120 s, which covers one watchfrr restart; the drill then passes, slower. deploy.yml's first task now waits the same way (up to 120 s, until no start script is left)
 
 - id: V-012
   opened: 2026-10-15

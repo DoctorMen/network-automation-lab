@@ -6,7 +6,7 @@ LAB_ENV ?= local
 NOTE    ?=
 
 .PHONY: help validate render test deploy live drift apply locate measure destroy all
-.PHONY: secrets gitleaks finding risks
+.PHONY: secrets gitleaks finding risks review
 
 help:            ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-15s %s\n", $$1, $$2}'
@@ -17,8 +17,13 @@ validate:        ## Check the inventory for addressing mistakes
 render: validate ## Generate configs, topology and expected state into build/
 	$(PY) -m netlab render
 
-test:            ## Offline tests (no lab needed)
-	$(PY) -m pytest -q tests --ignore=tests/live --junitxml=results/offline.xml
+test:            ## Offline tests (no lab needed), except the dated reviews (make review)
+	$(PY) -m pytest -q tests --ignore=tests/live -m "not review" --junitxml=results/offline.xml
+
+# Kept out of `make test`, which CI's lab job waits for: a review falling due is a job for a person,
+# so it turns its own CI job red by name and never stops the live tests, the drift check or the backup.
+review:          ## Dated reviews: a verdict unclassified past 5 working days, a lever, risk or runbook past its review date
+	$(PY) -m pytest -q tests --ignore=tests/live -m review --junitxml=results/review.xml
 
 deploy: render secrets ## Render, start the lab with Containerlab, then set what isn't rendered (BGP passwords)
 	$(CLAB) deploy -t $(TOPO) --reconfigure
@@ -60,7 +65,7 @@ gitleaks:        ## Scan every commit, then backups/, results/ and build/ if pre
 destroy:         ## Tear the lab down
 	$(CLAB) destroy -t $(TOPO) --cleanup
 
-all: test deploy live drift ## Everything CI does
+all: test deploy live drift review ## Everything CI does
 
 # Backups (OROS REC-1, REC-3). BACKUP_REPO is the destination: a restic repository on a disk or share
 # that outlives this machine. If it isn't mounted, `make backup` fails; it never creates one.

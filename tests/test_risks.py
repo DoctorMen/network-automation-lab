@@ -26,6 +26,7 @@ def without(risk_id):
     return [e for e in ENTRIES if e["id"] != risk_id]
 
 
+@pytest.mark.review
 def test_every_risky_config_line_has_a_risk_record(build):
     """Each risky line in the rendered configs, the Ansible files and the inventory maps to a register entry, every entry is complete, and no review is overdue."""
     assert check(ENTRIES, build, today=date.today()) == []

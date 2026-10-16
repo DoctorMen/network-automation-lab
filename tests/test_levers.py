@@ -3,6 +3,7 @@ list, checked within the sheet's cycle (OROS REC-7). The DDoS lever is the black
 from datetime import timedelta
 from pathlib import Path
 
+import pytest
 import yaml
 
 from netlab import levers
@@ -10,6 +11,8 @@ from netlab.inventory import load
 
 ROOT = Path(__file__).resolve().parent.parent
 SHEET = yaml.safe_load(levers.SHEET.read_text())
+# The newest check date on the sheet, so a test that breaks one field never also fails on the date.
+CHECKED = max(e["checked"] for e in SHEET["levers"])
 
 
 def sheet_with(tmp_path, change):
@@ -21,6 +24,7 @@ def sheet_with(tmp_path, change):
     return path
 
 
+@pytest.mark.review
 def test_contact_sheet_lints_clean():
     """Every entry has a holder, a contact and an evidence list, checked within cycle_days of today."""
     assert levers.lint() == []
@@ -28,8 +32,8 @@ def test_contact_sheet_lints_clean():
 
 def test_entry_without_evidence_or_contact_is_reported(tmp_path):
     threat = SHEET["levers"][0]["threat"]
-    assert levers.lint(sheet_with(tmp_path, lambda e: e.update(evidence=[]))) == [f"{threat}: no evidence"]
-    assert levers.lint(sheet_with(tmp_path, lambda e: e.pop("contact"))) == [f"{threat}: no contact"]
+    assert levers.lint(sheet_with(tmp_path, lambda e: e.update(evidence=[])), CHECKED) == [f"{threat}: no evidence"]
+    assert levers.lint(sheet_with(tmp_path, lambda e: e.pop("contact")), CHECKED) == [f"{threat}: no contact"]
 
 
 def test_stale_check_is_reported():

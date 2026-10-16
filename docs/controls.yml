@@ -10,9 +10,12 @@
 #   fails_when  how it stops working, or what it never covered
 #
 # Schedule: .github/workflows/ci.yml runs every test nightly (cron 23 4 * * *), on every push to
-# main and on every pull request. It keeps results/live.xml and results/offline.xml (JUnit, with a
-# timestamp) as run artifacts for 90 days; .github/workflows/drills.yml runs the restore and power
-# drills weekly and keeps theirs the same way. The control-status job in ci.yml reads them all.
+# main and on every pull request. It keeps results/offline.xml, results/review.xml and
+# results/live.xml (JUnit, with a timestamp) as run artifacts for 90 days; .github/workflows/drills.yml
+# runs the restore and power drills weekly and keeps theirs the same way. The control-status job in
+# ci.yml reads them all. The four tests that compare a record's date with today (in verdict-log,
+# outside-levers, risk-register and runbooks) run in ci.yml's review job, which the lab job doesn't
+# wait for, so a review falling due turns that job red without stopping the live tests or the backup.
 # GitHub disables scheduled runs in a public repo after 60 days with no repository activity,
 # so a quiet repo can miss its period without any test going red.
 #
@@ -445,7 +448,8 @@ controls:
       on it, or a platform bug is worked around forever without anyone knowing.
     fails_when: >-
       It lints what is written. An odd behaviour nobody logs is never checked, and the verdict
-      itself is only as right as its evidence.
+      itself is only as right as its evidence. The 5-day limit is checked in CI's review job, which
+      the lab job doesn't wait for, so an overdue entry turns only that job red.
 
   - id: decision-records
     claim: "Every design decision has a record naming the constraint, the alternatives (doing nothing included), an outside source, the stake and who decides"
@@ -497,7 +501,8 @@ controls:
       It knows only the risky line kinds in netlab/risks.py; a new kind of shortcut needs a new
       detector, and a gap with no config line (RISK-9, RISK-10, RISK-12, RISK-20) is tied to nothing. RISK-15's
       detector reads the hosts' lines in the topology, so collecting the hosts won't flag it stale by
-      itself. Every review_by is 2027-01-15, so the whole register goes red on 2027-01-16 by design.
+      itself. Every review_by is 2027-01-15, so CI's review job goes red on 2027-01-16 by design; the
+      lab job doesn't wait for it.
       It can record who an entry was shown to, but not prove the meeting happened.
 
   - id: sizing
@@ -765,6 +770,7 @@ controls:
       answers. The ISP contact is a lab stand-in; the others are public channels (RDAP abuse contacts,
       ICANN's registrar duties, IC3) checked by reading their published pages on 2026-10-15, not by
       contacting anyone. No payment processor or scrubbing vendor is listed: the lab has neither.
+      The 90-day check runs in CI's review job, which the lab job doesn't wait for.
 
   - id: backup-at-destination
     claim: "A backup is judged where it lands. `make backup` sends every router's config and the firewall's and edge routers' rules, as `make drift` captured them, to a restic repository, then reads the snapshot back from there: one file per config and ruleset, each with the capture's sha256, and `restic check --read-data` clean. Data rotted at the destination fails the job, although `restic backup` itself exits 0"
@@ -888,7 +894,8 @@ controls:
     fails_when: >-
       It checks the front matter and the device names, not that the steps work; only someone running
       the runbook finds that out, and docs/runbooks/dry-runs.yml has no run yet. Devices are found in
-      clab-<lab>-X names, --limit and SRC=, so a device named only in prose is not checked.
+      clab-<lab>-X names, --limit and SRC=, so a device named only in prose is not checked. The
+      180-day check runs in CI's review job, which the lab job doesn't wait for.
 
   - id: control-status
     claim: "Every control in the register has its latest test green and inside its period. `make control-status` reads the dated JUnit results of this run and earlier runs on `main`, newest first, and fails naming any control whose latest result is red, missing or too old. A CI job is set up to run it on `main`"
