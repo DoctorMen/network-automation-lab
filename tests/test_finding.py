@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from netlab.finding import (CITATIONS, HERE, finding_env, finding_md, icmp_counts, method_md, prepare,
+from netlab.finding import (CITATIONS, HERE, copy_lab, finding_env, finding_md, icmp_counts, method_md, prepare,
                             support_procs, verify, write_sums)
 
 OURS, CARRIER = "campus NOC", "AS65100 carrier NOC"
@@ -174,3 +174,31 @@ def test_only_an_earlier_bundle_is_ever_deleted(tmp_path):
     with pytest.raises(FileExistsError, match="holds no finding bundle"):
         prepare(keep)
     assert (keep / "todo.txt").read_text() == "mine\n"
+
+
+def test_the_bundled_lab_carries_every_bind_and_no_hidden_file(tmp_path):
+    """copy_lab keeps the network's nodes and drops the NOC's sidecars; every bind a kept node names is in the
+    bundle, a bound folder as a folder; and no path in it is hidden, because actions/upload-artifact leaves
+    hidden files out by default and the reproduce job's containerlab then refuses the missing bind."""
+    build = tmp_path / "build"
+    for d in ("r1/run", "h2/applog"):
+        (build / d).mkdir(parents=True)
+    (build / "r1" / "frr.conf").write_text("hostname r1\n")
+    (build / "r1" / "run" / "zserv.api").write_text("")
+    topo = {"name": "netauto", "topology": {"nodes": {
+        "r1": {"kind": "linux", "image": "frrouting/frr:v8.4.1", "binds": ["r1/frr.conf:/etc/frr/frr.conf:ro", "r1/run:/var/run/frr"]},
+        "h2": {"kind": "linux", "image": "alpine:3.20", "binds": ["h2/applog:/applog"]},
+        "r1-frr-exporter": {"kind": "linux", "image": "exporter:1", "network-mode": "container:r1", "binds": ["r1/run:/var/run/frr:ro"]},
+    }}}
+    (build / "topology.clab.yml").write_text(yaml.safe_dump(topo))
+    dest = tmp_path / "bundle" / "lab"
+    images = copy_lab(build / "topology.clab.yml", dest)
+    assert images == ["alpine:3.20", "frrouting/frr:v8.4.1"]
+    kept = yaml.safe_load((dest / "topology.clab.yml").read_text())["topology"]["nodes"]
+    assert sorted(kept) == ["h2", "r1"]
+    assert (dest / "r1" / "frr.conf").read_text() == "hostname r1\n"
+    for d in ("r1/run", "h2/applog"):
+        assert (dest / d).is_dir() and any((dest / d).iterdir()), f"{d} would be dropped as an empty folder"
+    assert not (dest / "r1" / "run" / "zserv.api").exists(), "a live socket's folder starts empty"
+    hidden = [str(p.relative_to(dest)) for p in dest.rglob("*") if any(part.startswith(".") for part in p.relative_to(dest).parts)]
+    assert not hidden, f"upload-artifact would leave these out: {hidden}"

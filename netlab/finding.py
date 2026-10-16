@@ -161,8 +161,9 @@ def copy_lab(topology: Path, dest: Path) -> list[str]:
 
     The network's own nodes only: the NOC's sidecars (nodes in another node's network namespace, decision
     0018) take no part in a path, and would make whoever re-runs the bundle pull their images. A folder a
-    node binds (a router's run/, which holds its live sockets) is recreated empty, with a .keep file so an
-    upload that drops empty folders still carries it: containerlab refuses a bind whose source is missing."""
+    node binds (a router's run/, which holds its live sockets, or h2's applog/) is recreated empty but for
+    an EMPTY file, so an upload that drops empty folders still carries it: containerlab refuses a bind
+    whose source is missing. Not a dot file: actions/upload-artifact leaves hidden files out by default."""
     topo = yaml.safe_load(topology.read_text())
     dest.mkdir(parents=True)
     nodes = {n: c for n, c in topo["topology"]["nodes"].items()
@@ -176,7 +177,7 @@ def copy_lab(topology: Path, dest: Path) -> list[str]:
     for src in sorted({b.split(":", 1)[0] for node in nodes.values() for b in node.get("binds") or []}):
         if (topology.parent / src).is_dir():
             (dest / src).mkdir(parents=True, exist_ok=True)
-            (dest / src / ".keep").write_text("")
+            (dest / src / "EMPTY").write_text("A node binds this folder; it starts empty (netlab/finding.py copy_lab).\n")
             continue
         (dest / src).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(topology.parent / src, dest / src)
