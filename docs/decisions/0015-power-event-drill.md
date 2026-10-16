@@ -60,5 +60,7 @@ as when a daemon crashes as it starts and watchfrr starts it again (V-011).
   deploy --reconfigure` is the cut (not `make deploy`, which sets the password again itself), then the
   runbook's steps. A run by someone other than its author goes in
   `docs/runbooks/dry-runs.yml`.
-- CI time for the redeploy on a GitHub runner is not measured yet; the drills job has its own
-  20-minute limit.
+- On a GitHub runner the power-event drill's step took 133 s (07:48:58 to 07:51:11 UTC) in drills.yml run
+  38869378128 (main, 3d3770c), inside the drills job's own 20-minute limit. The restore drill in that
+  run failed in 2 s, because the backup repository then held no snapshot; the backup start order's
+  step 1, which creates the repository, ran next, in run 38869409916.
