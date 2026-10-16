@@ -49,8 +49,8 @@ collectors:
     metrics: [probe_success]
   logs:
     exporter: vector (the collector on noc)
-    reads: its own count and last-seen time of the lines each source sent
-    metrics: [log_last_seen_seconds, log_lines_total]
+    reads: its own count, size and last-seen time of the lines each source sent
+    metrics: [log_last_seen_seconds, log_lines_total, log_bytes_total]
   up:
     exporter: Prometheus itself
     reads: whether each scrape above answered
@@ -272,6 +272,12 @@ reads:
     status: exported
     logql: '{source="syslog"}'
     metric: log_lines_total
+  - read: cat /applog/<arg>-<arg>.log
+    value: every line h2's web server wrote, before its forwarder cut any
+    status: derived
+    logql: '{source="http"} |= "netlab-cut: "'
+    how: each line of a kind the forwarder cuts is counted in its count lines (decision 0026); every other
+      line is in the store as the app wrote it
   - read: tail /var/log/messages
     value: a node's latest log lines
     status: exported

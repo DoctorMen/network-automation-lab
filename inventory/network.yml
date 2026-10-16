@@ -204,11 +204,20 @@ logging:
   on_box: { size_kb: 16, rotated: 1 }
   # How long Loki keeps every line (hours).
   retention: 720
+  # Ingest budget (OROS NOT-5, decision 0026): KB a day each source may send the store, counted at the
+  # collector. LogIngestOverBudget pages once a source's last 24 h passes its budget. netlab validate
+  # fails if every source at its full budget for the whole retention would not fit store_mb, the disk
+  # the NOC sets aside for raw lines.
+  budget:
+    store_mb: 200
+    syslog_kb: 1024       # each router, firewall and server's syslog
   # Apps whose own log is forwarded as the app writes it, by a forwarder that doesn't run as root.
-  # h2's web server writes an access line per request; the NOC's web check requests a page every
-  # interval, so that log's normal gap is the interval.
+  # h2's web server writes an access line per request. `cut` names the kinds of line its forwarder drops
+  # before they leave the host (decision 0026): web-check is the NOC's own successful check of this app
+  # (the check's GET from the NOC, answered 200), a line every interval and 90% of this log. The forwarder
+  # counts what it cuts and sends one line per heartbeat's worth, so that log's normal gap is the heartbeat.
   apps:
-    - { host: h2, name: http, port: 80, silent_after: 30 }
+    - { host: h2, name: http, port: 80, silent_after: 90, budget_kb: 256, cut: [web-check] }
 
 # Point-to-point and LAN links. Each endpoint is device:interface@address.
 links:

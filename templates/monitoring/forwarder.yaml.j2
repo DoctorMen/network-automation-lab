@@ -17,9 +17,37 @@ transforms:
     source: |
       .node = "{{ app.host }}"
       .source = "{{ app.name }}"
+{% if cuts %}
+      # The named kinds of line cut here, before they leave the host (decision 0026). Anything else, the
+      # same request from a user or a check that failed included, goes on exactly as the app wrote it.
+{% for c in cuts %}
+      # {{ c.name }}: {{ c.request }} from {{ c.client }}, answered {{ c.status }}
+      if match(string!(.message), r'{{ c.pattern }}') { .cut = "{{ c.name }}"; .lines = 1 }
+{% endfor %}
+  kind:
+    type: route
+    inputs: [label]
+    route:
+      cut: exists(.cut)
+  # What was cut is still counted: one line per {{ cut_per_line }} cut lines of a kind (a heartbeat's worth of
+  # the NOC's checks), or fewer once that kind has been quiet for 30 s. It is this log's proof of life.
+  count:
+    type: reduce
+    inputs: [kind.cut]
+    group_by: [cut]
+    max_events: {{ cut_per_line }}
+    expire_after_ms: 30000
+    merge_strategies: { lines: sum }
+  counted:
+    type: remap
+    inputs: [count]
+    source: |
+      .message = "netlab-cut: " + to_string!(.lines) + " " + string!(.cut) + " lines"
+      .timestamp = now()
+{% endif %}
 sinks:
   collector:
     type: vector
-    inputs: [label]
+    inputs: [{% if cuts %}kind._unmatched, counted{% else %}label{% endif %}]
     address: {{ collector }}:{{ ports.forward }}
     healthcheck: { enabled: false }

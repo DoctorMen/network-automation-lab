@@ -6,7 +6,7 @@ LAB_ENV ?= local
 NOTE    ?=
 
 .PHONY: help validate render test deploy live drift apply locate measure destroy all
-.PHONY: secrets gitleaks finding risks deploy-network observe coverage testevent alerts
+.PHONY: secrets gitleaks finding risks deploy-network observe coverage testevent alerts ingest
 
 help:            ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-15s %s\n", $$1, $$2}'
@@ -42,6 +42,9 @@ testevent:       ## Send a marked line from every log source and show where it a
 
 alerts:          ## What is firing now, and what the NOC's pager (the webhook sink) has received
 	$(PY) -m netlab.observe alerts
+
+ingest:          ## Each log source's last 24 h at the collector against its daily budget; fails if one is over
+	$(PY) -m netlab.observe ingest
 
 drift:           ## Back up routers and firewall, fail on drift or on a backup missing running config
 	cd ansible && ansible-playbook drift.yml

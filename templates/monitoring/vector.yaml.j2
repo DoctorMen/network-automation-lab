@@ -28,6 +28,8 @@ transforms:
     inputs: [syslog_node, forwarders]
     source: |
       .seen = to_unix_timestamp(now())
+      # Each line's size as it goes to the store: the ingest each source's budget is held to (decision 0026).
+      .bytes = strlen(string!(.message))
   last_seen:
     type: log_to_metric
     inputs: [seen]
@@ -39,6 +41,11 @@ transforms:
       - type: counter
         field: message
         name: log_lines_total
+        tags: { node: "{% raw %}{{ node }}{% endraw %}", source: "{% raw %}{{ source }}{% endraw %}" }
+      - type: counter
+        field: bytes
+        increment_by_value: true
+        name: log_bytes_total
         tags: { node: "{% raw %}{{ node }}{% endraw %}", source: "{% raw %}{{ source }}{% endraw %}" }
 sinks:
   loki:
