@@ -36,4 +36,4 @@ One Vector on noc receives every syslog line (UDP 514) and every forwarder's (TC
 
 ## Consequences
 
-The collector's last-seen time is the arrival proof, so it must not be the sender's: Vector stamps it on arrival. Its own Prometheus endpoint keeps a series for a day after its last line (flush_period_secs), so a silent source's age keeps growing instead of the series vanishing. Syslog stays UDP from busybox, with no queue or authentication (accepted as RISK-28 in docs/risks.yml); the forwarder to collector link is plain TCP (RISK-26).
+The collector's last-seen time is the arrival proof, so it must not be the sender's: Vector stamps it on arrival. Its own Prometheus endpoint keeps a series for a day after its last line (flush_period_secs), so a silent source's age keeps growing instead of the series vanishing. Syslog stays UDP from busybox, with no queue or authentication (accepted as RISK-33 in docs/risks.yml); the forwarder to collector link is plain TCP (RISK-31).

@@ -39,4 +39,4 @@ Prometheus scrapes the routers' exporters and the NOC's probes every 5 s and eva
 
 ## Consequences
 
-Two more images on the runner, and their RAM (docs/sizing/README.md). Every endpoint is plain HTTP inside noc's namespace or on a router's loopback (accepted as RISK-26 in docs/risks.yml). Prometheus' data lives in the container and is lost on a redeploy; that is fine for state checks and is the reason history goes to Loki instead (decision 0019). The sink is not a pager: nobody is woken up by it.
+Two more images on the runner, and their RAM (docs/sizing/README.md). Every endpoint is plain HTTP inside noc's namespace or on a router's loopback (accepted as RISK-31 in docs/risks.yml). Prometheus' data lives in the container and is lost on a redeploy; that is fine for state checks and is the reason history goes to Loki instead (decision 0019). The sink is not a pager: nobody is woken up by it.

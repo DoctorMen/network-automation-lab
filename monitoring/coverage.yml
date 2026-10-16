@@ -37,6 +37,7 @@ collectors:
     metrics: [node_network_up, node_network_carrier, node_network_carrier_changes_total,
               node_network_transmit_errs_total, node_network_transmit_drop_total, node_network_receive_bytes_total,
               node_network_receive_packets_total, node_netstat_TcpExt_IPReversePathFilter,
+              node_netstat_TcpExt_TCPMD5Failure, node_netstat_TcpExt_TCPMD5NotFound, node_netstat_TcpExt_TCPMD5Unexpected,
               node_netstat_Udp_OutDatagrams, node_reboot_required, node_reboot_required_since_seconds]
   web:
     exporter: blackbox_exporter on noc
@@ -82,6 +83,17 @@ reads:
     status: exported
     metric: frr_bfd_peer_state
     alert: BFDPeerDown
+  - read: vtysh show bfd peers brief
+    value: each BFD peer is up (the link-failure runbook's first look)
+    status: exported
+    metric: frr_bfd_peer_state
+    alert: BFDPeerDown
+  - read: vtysh show bgp ipv4 unicast neighbors <arg> advertised-routes
+    value: r2 sends the carrier our aggregate
+    status: derived
+    metric: frr_bgp_peer_prefixes_advertised_count_total{node="r2"}
+    how: the count of what r2 advertises; 1 is the aggregate alone. Which prefix it is comes from the
+      intended config, and make drift fails on any change to it
   - read: vtysh show bgp neighbors <arg>
     value: the session's state, whether TCP MD5 is on, and how often it dropped
     status: derived
@@ -139,6 +151,11 @@ reads:
     fallback: no exporter carries a config. make drift backs up and diffs every router and the firewall
       every night (REC-2). FRR's `log commands` would put each vtysh line in the central store, and with it
       the BGP password lines make apply sends; it is left off on purpose (decision 0019)
+  - read: vtysh show interface description
+    value: which neighbor an interface faces
+    status: gap
+    fallback: no exporter carries an interface's description. It is rendered from the inventory's links into
+      the read-only intent (make drift), and OSPFNeighborDown and BFDPeerDown already name the neighbor
   - read: vtysh show version
     value: the FRR release running
     status: gap
@@ -149,6 +166,10 @@ reads:
     value: an edge port's TX errors and drops (ours or the carrier's?), RX bytes and packets (a flood?)
     status: exported
     metric: node_network_transmit_errs_total, node_network_transmit_drop_total, node_network_receive_bytes_total, node_network_receive_packets_total
+  - read: nstat -az TcpExtTCPMD5Failure TcpExtTCPMD5NotFound TcpExtTCPMD5Unexpected
+    value: whether the carrier signs BGP with another password, with none, or r2 has none
+    status: exported
+    metric: node_netstat_TcpExt_TCPMD5Failure, node_netstat_TcpExt_TCPMD5NotFound, node_netstat_TcpExt_TCPMD5Unexpected
   - read: ip link show
     value: an interface is up
     status: exported

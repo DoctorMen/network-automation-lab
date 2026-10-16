@@ -314,9 +314,12 @@ def yaml_reads(files: list[Path]):
             if task.get("delegate_to") == "localhost":
                 continue  # runs on the control host (netlab's own tools, scanned as Python)
             mod = next(k for k in ("ansible.builtin.command", "ansible.builtin.shell", "ansible.builtin.raw") if k in task)
-            cmd = task[mod]["cmd"] if isinstance(task[mod], dict) else task[mod]
-            cmd = re.sub(r"\{\{[^}]*\}\}", ARG, str(cmd))
+            spec = task[mod]
             line = next((i for i, l in enumerate(text.splitlines(), 1) if task["name"] in l), 0)
+            if isinstance(spec, dict) and "argv" in spec:  # already split, as the command module runs it
+                yield path, line, task["name"], classify([re.sub(r"\{\{[^}]*\}\}", ARG, str(a)) for a in spec["argv"]])
+                continue
+            cmd = re.sub(r"\{\{[^}]*\}\}", ARG, str(spec["cmd"] if isinstance(spec, dict) else spec))
             yield path, line, task["name"], script(cmd) if "shell" in mod else classify(shlex.split(cmd))
 
 

@@ -49,13 +49,13 @@ failure_modes:
     test: tests/test_coverage.py::test_an_unlisted_read_fails
   - mode: the NOC goes blind with the network, because its checks travel the campus links they watch
     mitigation: Accepted. An unreachable exporter raises TargetDown, and per-object rules fire on absent(); dependency inhibition (one page per cause) is a later build (OROS DEC-5)
-    test: none (accepted risk RISK-25 in docs/risks.yml)
+    test: none (accepted risk RISK-30 in docs/risks.yml)
   - mode: anyone on the campus reads the exporters or the NOC's endpoints
     mitigation: Accepted. Exporters answer only on the router's loopback and the NOC's services on 127.0.0.1; neither has TLS or a password
-    test: none (accepted risk RISK-26 in docs/risks.yml)
+    test: none (accepted risk RISK-31 in docs/risks.yml)
   - mode: frr_exporter, holding FRR's vty sockets, changes the router's config
     mitigation: Accepted. The image is pinned by digest and the drift check would see a change
-    test: none (accepted risk RISK-27 in docs/risks.yml)
+    test: none (accepted risk RISK-32 in docs/risks.yml)
 ---
 
 ## Context
@@ -77,4 +77,4 @@ CI's lab job deploys the network alone (`make deploy-network`: containerlab --no
 
 ## Consequences
 
-Seven more images on the observe runner, and the RAM they take (docs/sizing/README.md). The pager is a sink, not a person: a real NOC points the webhook at its pager. Checks travel the campus links, so a dead link blinds the NOC to whatever is behind it (RISK-25): each check fires on its own, and grouping them into one page per cause is DEC-5's job. The carrier's isp is watched only from r2's side of the session. Interval 5 s suits CI; a real NOC would run 30 to 60 s and longer `for`.
+Seven more images on the observe runner, and the RAM they take (docs/sizing/README.md). The pager is a sink, not a person: a real NOC points the webhook at its pager. Checks travel the campus links, so a dead link blinds the NOC to whatever is behind it (RISK-30): each check fires on its own, and grouping them into one page per cause is DEC-5's job. The carrier's isp is watched only from r2's side of the session. Interval 5 s suits CI; a real NOC would run 30 to 60 s and longer `for`.

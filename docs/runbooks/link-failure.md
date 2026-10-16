@@ -42,8 +42,9 @@ to confirm that, find the link, fix it and see traffic fail back. `<lab>` below 
      flat while the router is sending: discarded on the box itself. In the lab that is a drop rule,
      shown by `docker exec clab-<lab>-r1 iptables -vnL INPUT` and the same with `OUTPUT`.
 4. **Fix it.** In the lab: `docker exec clab-<lab>-r1 ip link set eth2 up`, or delete the drop rule
-   with the same `iptables` line and `-D`. In a real network: a ticket to whoever owns the cable
-   or the far end, with the interface, both ends' counters from step 3, and the time it started.
+   with the same iptables line, `-D` in place of `-I`. In a real network: a ticket to whoever owns
+   the cable or the far end, with the interface, both ends' counters from step 3, and the time it
+   started.
 5. **See it fail back.** Step 1 again: both neighbors `Full`, both BFD peers `up`. OSPF needs a
    few hello intervals (measured 4.5 to 16.8 s). `show ip route 10.20.20.0/24` on r1 goes back to
    its own eth2 (via 10.0.13.1).

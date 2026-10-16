@@ -36,4 +36,4 @@ frr_exporter v1.3.1, with its default collectors (bgp, ospf, bfd), reads each da
 
 ## Consequences
 
-The vty socket is the same one vtysh uses, so the exporter could send configuration commands as well as read; the mount's :ro does not stop a socket write (accepted as RISK-27 in docs/risks.yml). It is a one-maintainer project: the image is pinned by digest, and the fallback is the same JSON read by our own code. Route-table state is not exported (frr_exporter v1.3.1 has no route collector), a gap listed in monitoring/coverage.yml.
+The vty socket is the same one vtysh uses, so the exporter could send configuration commands as well as read; the mount's :ro does not stop a socket write (accepted as RISK-32 in docs/risks.yml). It is a one-maintainer project: the image is pinned by digest, and the fallback is the same JSON read by our own code. Route-table state is not exported (frr_exporter v1.3.1 has no route collector), a gap listed in monitoring/coverage.yml.

@@ -37,4 +37,4 @@ node_exporter runs in each owned router's network namespace as a sidecar, listen
 
 ## Consequences
 
-node_exporter reads /proc/net and /sys in the router's namespace; it has no access to FRR. The textfile is rewritten every 15 s, so a reboot's alert can lag that much more (expected_state.json alert_within). h2 runs no exporter: its QoS classes are a listed gap (monitoring/coverage.yml). The exporters answer plain HTTP on the loopback (RISK-26).
+node_exporter reads /proc/net and /sys in the router's namespace; it has no access to FRR. The textfile is rewritten every 15 s, so a reboot's alert can lag that much more (expected_state.json alert_within). h2 runs no exporter: its QoS classes are a listed gap (monitoring/coverage.yml). The exporters answer plain HTTP on the loopback (RISK-31).

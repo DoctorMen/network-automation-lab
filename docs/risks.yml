@@ -584,7 +584,7 @@
   presented_evidence: null
 
 # The NOC (decision 0018) and the central log store (decision 0019).
-- id: RISK-25
+- id: RISK-30
   kind: accepted-risk
   title: the NOC watches in band, so a dead link blinds it to what is behind
   likelihood: 3
@@ -604,7 +604,7 @@
   presented_on: null
   presented_evidence: null
 
-- id: RISK-26
+- id: RISK-31
   kind: accepted-risk
   title: the exporters and the NOC's endpoints have no TLS and no password
   detectors: [exporter-plain-http]
@@ -616,7 +616,7 @@
     counters and kernel version. Nothing they serve is a secret (the BGP password is not in any metric),
     and they can't be written to over HTTP. Prometheus, Alertmanager, blackbox and Loki answer on
     127.0.0.1 inside noc only. The collector's syslog and forwarder ports take lines from anyone on the
-    campus (RISK-28). The fix is exporter-toolkit's --web.config.file with TLS and basic auth, and the
+    campus (RISK-33). The fix is exporter-toolkit's --web.config.file with TLS and basic auth, and the
     same on Prometheus' scrape configs.
   compensating_control: tests/live/test_management_plane.py::test_router_daemons_listen_on_localhost_only
   compensates: each router answers on the campus only for BGP and its two exporters on its loopback, and noc only on its sources' ports (test_noc_listens_on_the_campus_only_for_its_sources)
@@ -626,7 +626,7 @@
   presented_on: null
   presented_evidence: null
 
-- id: RISK-27
+- id: RISK-32
   kind: accepted-risk
   title: frr_exporter holds FRR's vty sockets, which accept config commands
   detectors: [vty-socket-shared]
@@ -648,7 +648,7 @@
   presented_on: null
   presented_evidence: null
 
-- id: RISK-28
+- id: RISK-33
   kind: accepted-risk
   title: syslog crosses the campus as clear UDP, so lines can be lost or forged
   detectors: [syslog-udp]
@@ -669,7 +669,7 @@
   presented_on: null
   presented_evidence: null
 
-- id: RISK-29
+- id: RISK-34
   kind: accepted-risk
   title: the central log store is one copy inside noc's container
   detectors: [log-store-in-container]
@@ -690,7 +690,7 @@
   presented_on: null
   presented_evidence: null
 
-- id: RISK-30
+- id: RISK-35
   kind: accepted-risk
   title: h1, a user's machine, sends no logs
   likelihood: 2

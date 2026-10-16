@@ -33,9 +33,11 @@ WAIT = {"TargetDown": 15, "BGPSessionDown": 10, "OSPFNeighborDown": 10, "BFDPeer
 # Seconds between each router's rewrites of its pending-reboot file (agent.sh), which node_exporter reads.
 TEXTFILE_EVERY = 15
 # node_exporter's own default netstat fields, plus TcpExt_IPReversePathFilter: the packets a strict
-# reverse-path filter dropped, which tests/live/test_edge.py reads with nstat (monitoring/coverage.yml).
+# reverse-path filter dropped, which tests/live/test_edge.py reads with nstat, and the three TCP MD5
+# counters the BGP-down runbook reads to tell a wrong password from a missing one (monitoring/coverage.yml).
 NETSTAT_FIELDS = ("^(.*_(InErrors|InErrs)|Ip_Forwarding|Ip(6|Ext)_(InOctets|OutOctets)|Icmp6?_(InMsgs|OutMsgs)|"
-                  "TcpExt_(Listen.*|Syncookies.*|TCPSynRetrans|TCPTimeouts|TCPOFOQueue|IPReversePathFilter)|"
+                  "TcpExt_(Listen.*|Syncookies.*|TCPSynRetrans|TCPTimeouts|TCPOFOQueue|IPReversePathFilter|"
+                  "TCPMD5Failure|TCPMD5NotFound|TCPMD5Unexpected)|"
                   "Tcp_(ActiveOpens|InSegs|OutSegs|OutRsts|PassiveOpens|RetransSegs|CurrEstab)|"
                   "Udp6?_(InDatagrams|OutDatagrams|NoPorts|RcvbufErrors|SndbufErrors))")
 # (No closing $: Containerlab expands $ in a topology file as an environment variable.)

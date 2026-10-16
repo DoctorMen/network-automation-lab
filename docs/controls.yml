@@ -88,7 +88,7 @@ controls:
       r2's edge filter (wan-filter). UDP listeners (BFD) are not checked. The vtys have no password: anyone with
       `docker exec` on the host is root on every node, and that is the real management path. The exporters'
       addresses come from expected_state.json; they answer plain HTTP to anyone who reaches the loopback
-      (RISK-26), and frr_exporter holds the vty sockets (RISK-27).
+      (RISK-31), and frr_exporter holds the vty sockets (RISK-32).
 
   - id: users-reach-web-and-internet
     claim: "Users can reach the web server and the internet"
@@ -456,7 +456,7 @@ controls:
       "down" (0) alone.
     fails_when: >-
       The NOC sees the routers over the campus links it watches, so a dead link behind r2 blinds it to
-      what is behind (RISK-25): each object pages on its own, and one page per cause is a later build
+      what is behind (RISK-30): each object pages on its own, and one page per cause is a later build
       (OROS DEC-5). The pager is a webhook sink on noc, not a person. Only the first BGP session and the
       first OSPF adjacency are broken live; the rest have the same generated rule. isp, the carrier's, is
       watched only from r2's side. A 5 s scrape and evaluation suit CI; a real NOC would run longer.
@@ -513,7 +513,7 @@ controls:
       A router, firewall or server that stopped logging, found during the incident that needed its logs;
       a sender's own counters saying all is well while nothing arrives.
     fails_when: >-
-      Syslog is UDP with no queue or authentication (RISK-28): a whole stream lost pages, but a single
+      Syslog is UDP with no queue or authentication (RISK-33): a whole stream lost pages, but a single
       lost line or a forged one is not detected. h2's app log's bound is stated (its silent_after plus
       evaluation), not twice its 5 s gap, because that would page on one late scrape. Only r1's export is
       blocked live; the others have the same generated rule.
@@ -531,8 +531,8 @@ controls:
       The line that explains an incident rotated off the box hours ago, or never left the daemon (V-005);
       an app nobody may change logging only to its own host.
     fails_when: >-
-      The store is one copy inside noc's container and a redeploy starts it empty (RISK-29). h1, a user's
-      machine, sends nothing (RISK-30), and isp, the carrier's, logs only on its own box. Lines keep
+      The store is one copy inside noc's container and a redeploy starts it empty (RISK-34). h1, a user's
+      machine, sends nothing (RISK-35), and isp, the carrier's, logs only on its own box. Lines keep
       busybox's local time and no hostname; the source is named by its address.
 
   - id: noc-platform
@@ -550,7 +550,7 @@ controls:
     fails_when: >-
       The digest is checked against what Docker reports for the pulled image, so it trusts the local
       daemon. Answering only on two ports is not authentication: anyone on the campus can send the
-      collector a line naming any router (RISK-28), and the exporters have no TLS (RISK-26).
+      collector a line naming any router (RISK-33), and the exporters have no TLS (RISK-31).
 
   - id: verdict-log
     claim: "Every odd behaviour in the log has one verdict (my config, normal behaviour, platform bug or lab artifact), the version it was seen on, and a fix or workaround. None may stay unclassified past 5 working days"
