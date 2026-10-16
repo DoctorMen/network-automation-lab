@@ -153,6 +153,9 @@ topology:
 {% if s.user is defined %}
       user: "{{ s.user }}"
 {% endif %}
+{% if s.cap_add is defined %}
+      cap-add: {{ s.cap_add | tojson }}
+{% endif %}
       cmd: {{ s.cmd | tojson }}
 {% if s.binds %}
       binds:

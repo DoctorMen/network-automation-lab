@@ -240,6 +240,12 @@ counts:
       passed its gate (netlab.observe applied); one series per router and commit, with the commit and its subject
       as labels. The pushgateway keeps it in memory only, so a redeploy of the NOC starts it empty
     type: gauge
+  netlab_job_last_success_timestamp_seconds:
+    counts: the Unix time, by the lab host's clock, at which an unattended job (drift, backup, restore drill, power
+      drill) last pushed its success as its last step (netlab.observe success); one series per job, with the job's
+      name as its job label. JobMissed compares its age with the job's schedule and grace. The pushgateway keeps it
+      in memory only, so a redeploy of the NOC starts it empty (RISK-44)
+    type: gauge
   process_start_time_seconds:
     counts: the Unix time at which the exporter's process started; on the pushgateway, the moment it started
       empty, from which JobMissed and AlertPathSilent count when nothing has arrived since
@@ -480,10 +486,14 @@ reads:
     status: exported
     logql: '{source="syslog"}'
     metric: log_lines_total
+  # On a router we own the same file holds its accounting proxy's records too; the proxy sends each one to the
+  # store from its own port as it writes it, and tests/live/observe/test_accounting.py shows the central copy
+  # is whole after root deletes the box's.
   - read: cat /var/log/messages.<arg> /var/log/messages
-    value: what a node still keeps of its own log, oldest first (make evidence, before a reset)
+    value: what a node still keeps of its own log, oldest first (make evidence, before a reset), and on a router
+      we own its accounting proxy's records
     status: exported
-    logql: '{source="syslog"}'
+    logql: '{source=~"syslog|accounting"}'
     metric: log_lines_total
   - read: cat /applog/<arg>-<arg>.log
     value: every line h2's web server wrote, before its forwarder cut any
@@ -584,12 +594,6 @@ reads:
     value: only the CM tool's account can write its scratch folders
     status: gap
     fallback: set by access.sh at deploy; tests/live/test_access.py on every CI run
-  - read: cat /var/log/messages.<arg> /var/log/messages
-    value: the router's own copy of its accounting proxy's records
-    status: derived
-    logql: '{source="accounting"} |= "vty-aaa"'
-    how: the proxy sends each record to the central store from its own port as it writes it;
-      tests/live/observe/test_accounting.py shows the central copy is whole after root deletes the box's
   - read: ls /var/log/messages
     value: only root can change the router's own copy of its records
     status: gap

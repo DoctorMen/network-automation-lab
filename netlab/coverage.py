@@ -400,7 +400,8 @@ def counts_problems(coverage: dict, inv, root: Path = ROOT) -> list[str]:
     """What each metric counts (OROS DEC-2): every collector's metric says so, a counter says when it wraps and
     resets, no alert rule reads a counter raw, and every test named as proof exists."""
     problems, counts = [], coverage.get("counts") or {}
-    listed = {m for c in (coverage.get("collectors") or {}).values() for m in c.get("metrics") or []}
+    # A metric only there once a job pushed it (after_push) says what it counts like any other.
+    listed = {m for c in (coverage.get("collectors") or {}).values() for m in [*(c.get("metrics") or []), *(c.get("after_push") or [])]}
     problems += [f"metric {m} says nothing under counts in monitoring/coverage.yml about what it counts"
                  for m in sorted(listed - set(counts))]
     problems += [f"counts: {m} is in no collector's metrics" for m in sorted(set(counts) - listed)]
@@ -431,6 +432,9 @@ def counts_problems(coverage: dict, inv, root: Path = ROOT) -> list[str]:
 def check(coverage: dict, reads: dict, odd: list, inv) -> list[str]:
     problems = []
     entries = {e["read"]: e for e in coverage.get("reads") or []}
+    # One entry per read: a second one for the same read would hide the first's status from this check.
+    listed = [e["read"] for e in coverage.get("reads") or []]
+    problems += [f"monitoring/coverage.yml lists `{key}` {listed.count(key)} times" for key in sorted(set(listed)) if listed.count(key) > 1]
     actions = set(coverage.get("actions") or [])
     opaque = {o["where"]: o for o in coverage.get("opaque") or []}
     for key, where in sorted(reads.items()):

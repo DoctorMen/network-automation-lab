@@ -82,6 +82,9 @@ def test_render_all_writes_a_consistent_lab(tmp_path):
     assert set(topo["topology"]["nodes"]) == set(inv.devices) | set(monitoring.sidecars(inv))
     for name, cfg in monitoring.sidecars(inv).items():
         assert topo["topology"]["nodes"][name]["network-mode"] == f"container:{cfg['netns']}"
+    # conntrack reads the router's translations only with CAP_NET_ADMIN, which the topology asks for by name.
+    caps = {name: n["cap-add"] for name, n in topo["topology"]["nodes"].items() if "cap-add" in n}
+    assert caps == {f"{r}-nat-log": ["NET_ADMIN"] for r in monitoring.nat_logs(inv)} and caps, caps
     assert topo["topology"]["defaults"]["image"] == inv.platform["image"]
     assert len(topo["topology"]["links"]) == len(inv.links)
     for node in topo["topology"]["nodes"].values():

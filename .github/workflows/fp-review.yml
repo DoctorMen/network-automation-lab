@@ -11,6 +11,8 @@ on:
   # repository activity (RISK-25).
   schedule:
     - cron: "17 6 1 * *"
+  # By hand from the Actions tab: only the repository owner can start it (an app given this repository's
+  # contents gets 403 on a dispatch).
   workflow_dispatch:
 
 permissions:
@@ -47,10 +49,23 @@ jobs:
       - name: The review (make fp-review), on this clean checkout
         id: review
         run: make fp-review LAB_ENV=github-runner
-      - name: Upload the review, the table and every notification the pager received
-        # Only once the review has counted: the notifications file is written then, so an artifact never
-        # carries the committed review in place of this run's.
+      - name: Secret scan of what this run uploads (the review, the table, the notifications) and build/
+        id: secret-scan
+        # As in ci.yml: nothing from a run is uploaded until its own scan passed (OROS ACC-4). gitleaks scans
+        # the history and backups/, results/ and build/, and here also monitoring/ and docs/, where the review
+        # rewrote fp-review.yml and detections.md; the grep looks for this run's actual password, as root, and
+        # only its exit 1 (no match) is clean. It runs once the review has counted (the notifications file).
         if: ${{ !cancelled() && hashFiles('results/fp-review-notifications.json') != '' }}
+        run: |
+          make gitleaks SCAN_DIRS="backups results build monitoring docs"
+          for f in "$NETLAB_SECRETS"/*; do
+            rc=0; sudo -n grep -rlF -f "$f" $(ls -d backups results build monitoring/fp-review.yml docs/detections.md 2>/dev/null) || rc=$?
+            if [ "$rc" != 1 ]; then echo "::error::this run's BGP password is in the files above, or a file could not be read (grep exit $rc)"; exit 1; fi
+          done
+      - name: Upload the review, the table and every notification the pager received
+        # Only once the review has counted (the notifications file is written then, so an artifact never
+        # carries the committed review in place of this run's), and only when this run's secret scan passed.
+        if: ${{ always() && steps.secret-scan.outcome == 'success' && hashFiles('results/fp-review-notifications.json') != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: fp-review

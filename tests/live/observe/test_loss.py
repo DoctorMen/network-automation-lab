@@ -276,12 +276,17 @@ def test_the_servers_exporter_answers_the_noc_and_nobody_out_of_scope(node, mon,
 def test_each_metric_is_the_type_its_exporter_declares(noc):
     """monitoring/coverage.yml says each metric is a counter or a gauge; the exporters' own TYPE lines, as Prometheus
     read them, agree. node_exporter's netstat collector declares its kernel counters untyped, and the file says so."""
-    counts = yaml.safe_load((ROOT / "monitoring" / "coverage.yml").read_text())["counts"]
+    cov = yaml.safe_load((ROOT / "monitoring" / "coverage.yml").read_text())
+    counts = cov["counts"]
+    # Only there once a job has pushed it since the NOC started; its type is checked whenever it is.
+    after_push = {m for c in cov["collectors"].values() for m in c.get("after_push") or []}
     declared = noc.get(monitoring.PORTS["prometheus"], "/api/v1/metadata")["data"]
     wrong = []
     for metric, c in counts.items():
         if metric in ("up", "ALERTS"):
             continue  # Prometheus' own, with no TYPE line to compare
+        if metric in after_push and metric not in declared:
+            continue
         types = {m["type"] for m in declared.get(metric, [])}
         # Prometheus' metadata calls an untyped metric "unknown".
         want = {"untyped": "unknown"}.get(c.get("exported_as"), c.get("exported_as")) or c["type"]

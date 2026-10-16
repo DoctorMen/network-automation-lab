@@ -41,6 +41,14 @@ def test_a_read_nobody_makes_any_more_fails():
     assert "monitoring/coverage.yml lists `vtysh show ip nht`, which nothing reads any more" in coverage.check(cov, reads, odd, inv)
 
 
+def test_a_read_listed_twice_fails():
+    """Two entries for one read (two builds each adding theirs) would leave the lint checking only the last."""
+    reads, odd = coverage.found()
+    cov = listed()
+    cov["reads"].append(copy.deepcopy(cov["reads"][0]))
+    assert f"monitoring/coverage.yml lists `{cov['reads'][0]['read']}` 2 times" in coverage.check(cov, reads, odd, inv)
+
+
 def test_every_entry_is_exported_derived_or_gap_with_its_evidence():
     reads, odd = coverage.found()
     for change, expect in ((dict(status="unknown"), "is not one of"), (dict(status="exported", metric=None), "names no metric"),

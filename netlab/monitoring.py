@@ -686,9 +686,11 @@ def sidecars(inv: Inventory) -> dict[str, dict]:
                              "cmd": f"--smtp 127.0.0.1:{PORTS['smtp']} --listen 127.0.0.1:{PORTS['mailbox']} "
                                     f"--webhook-url http://127.0.0.1:{PORTS['mail_hook']}/ --quiet"}
     for r in nat_logs(inv):
-        # conntrack needs CAP_NET_ADMIN in the router's namespace, so this one runs as root (decision 0031).
+        # conntrack needs CAP_NET_ADMIN in the router's namespace, so this one runs as root (decision 0031), and
+        # the topology asks for that capability by name. Containerlab 0.68.0 starts every node privileged, a
+        # node sharing another's namespace included (its runtime/docker/docker.go), so there it has it anyway.
         out[f"{r}-nat-log"] = {"netns": r, "image": images["netshoot"], "binds": [f"{r}/natlog.sh:/natlog.sh:ro"],
-                               "cmd": "sh /natlog.sh"}
+                               "cmd": "sh /natlog.sh", "cap_add": ["NET_ADMIN"]}
     for app in inv.logging.get("apps") or []:
         # Not root: the image's default user is, so the node sets nobody's uid and gid.
         out[f"{app['host']}-{app['name']}-forwarder"] = {

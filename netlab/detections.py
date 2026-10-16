@@ -63,6 +63,11 @@ def metrics(expr: str) -> set[str]:
     return {w for w in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", expr) if w not in PROMQL_WORDS} - {"node"}
 
 
+def reads_of(collector: dict) -> list[str]:
+    """A collector's metrics, with those it has only once a job pushed them (after_push)."""
+    return [*(collector.get("metrics") or []), *(collector.get("after_push") or [])]
+
+
 def collectors(rules: list[dict], coverage: dict) -> list[str]:
     """The collectors (monitoring/coverage.yml) whose metrics the rules read. A metric two collectors share
     (blackbox's probe_success) belongs to the job the expression names."""
@@ -70,7 +75,7 @@ def collectors(rules: list[dict], coverage: dict) -> list[str]:
     for r in rules:
         jobs = set(re.findall(r'job="([^"]+)"', r["expr"]))
         for m in sorted(metrics(r["expr"])):
-            have = [c for c, v in coverage["collectors"].items() if m in (v.get("metrics") or [])]
+            have = [c for c, v in coverage["collectors"].items() if m in reads_of(v)]
             out += [c for c in (have if len(have) == 1 else [c for c in have if c in jobs]) if c not in out]
     return out
 
@@ -104,6 +109,8 @@ def watches(inv: Inventory, rules: list[dict], used: list[str]) -> str:
     named = [r["labels"] for r in rules if r["labels"].get("node")]
     jobs = [r["labels"]["job"] for r in rules if not r["labels"].get("node") and r["labels"].get("job") in config]
     if not named and not jobs:
+        if not used:
+            return ""  # no object and no metric (Watchdog): its entry in monitoring/detections.yml says what it watches
         if "up" in used:
             return (f"every scrape target, on {', '.join(scraped_nodes(inv, used))}: each probe's scrape is "
                     f"blackbox's own answer, on {monitoring.host(inv)}, not the probed device's")
@@ -123,7 +130,7 @@ def watches(inv: Inventory, rules: list[dict], used: list[str]) -> str:
 def data(rules: list[dict], used: list[str], coverage: dict) -> str:
     """The metrics the rules read, each with its collector."""
     names = sorted({m for r in rules for m in metrics(r["expr"])})
-    return ", ".join(f"`{m}` ({c})" for m in names for c in used if m in (coverage["collectors"][c].get("metrics") or []))
+    return ", ".join(f"`{m}` ({c})" for m in names for c in used if m in reads_of(coverage["collectors"][c]))
 
 
 def sensor(used: list[str], coverage: dict) -> str:
@@ -140,7 +147,8 @@ def looks_back(rules: list[dict]) -> int:
     for r in rules:
         spans.append(int(r["for"].removesuffix("s")))
         spans += [int(n) * SECONDS[u] for n, u in re.findall(r"\[(\d+)([smhd])\]", r["expr"])]
-        spans += [int(n) for n in re.findall(r"time\(\) - \w+(?:\{[^}]*\})? > (\d+)", r["expr"])]
+        # An age: time() minus a series, or minus a bracketed expression (JobMissed's last success or the NOC's start).
+        spans += [int(n) for n in re.findall(r"time\(\) - (?:\w+(?:\{[^}]*\})?|\(.*\)) > (\d+)", r["expr"])]
     return max(spans)
 
 
@@ -174,9 +182,9 @@ def rows(inv: Inventory, spec: dict, review: dict | None, coverage: dict) -> lis
         out.append([
             name,
             str(entry.get("detects") or ""),
-            data(rules, used, coverage),
-            sensor(used, coverage),
-            watches(inv, rules, used),
+            data(rules, used, coverage) or str(entry.get("reads") or ""),
+            sensor(used, coverage) or str(entry.get("sensor") or ""),
+            watches(inv, rules, used) or str(entry.get("watches") or ""),
             "<br>".join(str(b) for b in entry.get("blind_spots") or [] if str(b).strip()),
             false_positives(name, rules, entry, review),
         ])

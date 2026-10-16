@@ -27,7 +27,10 @@ def test_table_has_a_full_row_for_every_deployed_rule_and_a_current_review():
 
 def test_every_alert_the_rules_raise_is_a_row():
     assert detections.detections_in(TABLE.read_text()) == list(rules_by_detection(inv))
-    assert sorted(detections.detections_in(TABLE.read_text())) == monitoring.expected(inv)["alerts"]
+    # Every alert the rules raise but the cause markers, which Alertmanager routes nowhere (decision 0021).
+    markers = {r["alert"] for r in monitoring.cause_rules(inv)}
+    assert markers == {"CauseSeen"}
+    assert sorted(detections.detections_in(TABLE.read_text())) == [a for a in monitoring.expected(inv)["alerts"] if a not in markers]
 
 
 def test_a_rule_without_a_row_fails():
