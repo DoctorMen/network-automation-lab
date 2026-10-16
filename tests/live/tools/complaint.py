@@ -1,6 +1,6 @@
 """The far end of an abuse complaint: a server on the internet that notes who connected to it, and when.
 
-Runs inside a lab node, fed on stdin: docker exec -i <node> python3 - ADDRESS PORT COUNT TIMEOUT < complaint.py
+Runs inside a lab node, given on python3's command line: docker exec <node> python3 -c "$(cat complaint.py)" ADDRESS PORT COUNT TIMEOUT
 Listens on ADDRESS:PORT, prints "listening" once it does, then for each of up to COUNT connections one line,
 "PEER_ADDRESS PEER_PORT UNIX_TIME": the address and port the connection came from, as this end saw them,
 which is all a complaint from outside can give. Stops after COUNT connections, or TIMEOUT seconds.

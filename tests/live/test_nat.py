@@ -17,10 +17,10 @@ COMPLAINT = (Path(__file__).parent / "tools" / "complaint.py").read_text()
 def far_end(node, device, address, port, count=1, timeout=20):
     """A server on the internet (tools/complaint.py on `device`) that notes who connects. Yields a function
     that returns [(peer address, peer port, time)] once `count` connections came or `timeout` passed."""
-    proc = subprocess.Popen(["docker", "exec", "-i", node(device).container, "python3", "-", address, str(port), str(count), str(timeout)],
-                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    proc.stdin.write(COMPLAINT)
-    proc.stdin.close()
+    # The script goes on python3's command line (-c), so the helper has no stdin to close: communicate() on
+    # Python 3.12 flushes a stdin it was given even when it is closed, and fails.
+    proc = subprocess.Popen(["docker", "exec", node(device).container, "python3", "-c", COMPLAINT, address, str(port), str(count), str(timeout)],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
         assert proc.stdout.readline().strip() == "listening", proc.stderr.read()
 

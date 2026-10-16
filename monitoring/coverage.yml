@@ -537,6 +537,11 @@ reads:
     value: a forged mid-stream ACK is dropped by fw1
     status: gap
     fallback: tests/live/test_controls.py on every CI run
+  - read: python3 COMPLAINT
+    value: the address and port a connection from inside arrives from at the carrier, all an abuse complaint from outside can give
+    status: gap
+    fallback: tests/live/test_nat.py on every CI run; which inside host held that address and port at a time is
+      make whois, from r2's translation log in the central store (decision 0031)
   - read: python3 <arg>
     value: web latency during a bulk copy (tests/live/tools/web_latency.py and backup.py)
     status: gap
