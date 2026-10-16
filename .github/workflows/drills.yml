@@ -70,9 +70,11 @@ jobs:
       - run: pip install -r requirements.txt -r requirements-ansible.txt
       - name: Install Containerlab
         run: bash -c "$(curl -sL https://get.containerlab.dev)" -- -v "$CLAB_VERSION"
-      - name: Pull router and backup images
+      - name: Pull every image the full lab runs, and the backup image
+        # The drills run on the full lab, the NOC's sidecars included, so the power cut is drilled on
+        # everything a real one would hit (the sidecars must come back after their nodes).
         run: |
-          docker pull frrouting/frr:v8.4.1
+          python3 -m netlab images | xargs -n1 docker pull
           docker pull restic/restic:0.16.4
       - name: Create this run's BGP password
         # No GitHub secret exists, so every run gets a new random one, 0600 in a 0700 folder outside
@@ -83,7 +85,7 @@ jobs:
           # Masked: if a value ever reached this log, GitHub would print *** instead. echo is a shell
           # builtin, so the value is on no command line.
           for f in "$RUNNER_TEMP"/netlab-secrets/*; do echo "::add-mask::$(cat "$f")"; done
-      - name: Deploy
+      - name: Deploy (network and NOC)
         id: deploy
         run: make deploy
       - name: Restore the backup repository (fails if it is missing)

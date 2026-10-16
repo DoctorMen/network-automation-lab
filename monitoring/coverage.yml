@@ -330,8 +330,8 @@ reads:
     value: no BGP password in FRR's logs or scratch files
     status: derived
     logql: '{source="syslog"} |= "password"'
-    how: router logs are in the central store too, so tests/live/observe/test_logs.py searches every line there
-      for the password itself; this query is the line an operator would search first
+    how: router logs are in the central store too, so tests/live/observe/test_central_store.py searches every
+      line there for the password itself; this query is the line an operator would search first
   - read: grep /tmp/rollback /var/log/frr
     value: no BGP password in a rollback file
     status: gap

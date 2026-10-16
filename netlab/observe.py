@@ -100,6 +100,18 @@ class Noc:
         except subprocess.TimeoutExpired:
             return False
 
+    def settled(self, sources: list[dict]) -> bool:
+        """The NOC as a fresh deploy leaves it: Loki ready, every scrape answering, every log source
+        (expected_state.json's monitoring.sources) heard from, and nothing firing. A NOC still starting
+        (Prometheus not answering yet) is not settled."""
+        try:
+            targets = self.targets()
+            heard = {(s["node"], s["source"]) for s in self.query("log_last_seen_seconds")}
+            return bool(self.ready() and targets and all(t["health"] == "up" for t in targets)
+                        and all((s["node"], s["source"]) in heard for s in sources) and not self.alerts())
+        except (RuntimeError, ValueError, subprocess.TimeoutExpired):
+            return False
+
 
 def lab_name(build: Path = ROOT / "build") -> str:
     return yaml.safe_load((build / "topology.clab.yml").read_text())["name"]

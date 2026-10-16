@@ -28,15 +28,9 @@ def noc(lab_name, mon):
     if subprocess.run(["docker", "inspect", sidecar], capture_output=True).returncode:
         pytest.skip(f"{sidecar} is not running: the NOC's tests need the full lab (make deploy), not make deploy-network")
     n = Noc(lab_name, mon["host"])
-
-    def settled():
-        targets = n.targets()
-        heard = {(s["node"], s["source"]) for s in n.query("log_last_seen_seconds")}
-        return (n.ready() and targets and all(t["health"] == "up" for t in targets)
-                and all((s["node"], s["source"]) in heard for s in mon["sources"]) and not n.alerts())
     # Right after a deploy the first heartbeat may have gone out before OSPF had a route to the NOC; the
     # next one is a heartbeat later. If it never settles, the tests say what is wrong.
-    wait_for(settled, timeout=mon["heartbeat"] + 60, interval=3)
+    wait_for(lambda: n.settled(mon["sources"]), timeout=mon["heartbeat"] + 60, interval=3)
     return n
 
 

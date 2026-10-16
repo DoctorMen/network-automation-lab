@@ -1,6 +1,8 @@
 """Power-event drill (OROS REC-6, docs/runbooks/power-event.md): the whole lab loses power and comes back
 from startup config by itself. It redeploys every node, so it runs with `make power-drill` (weekly in
-.github/workflows/drills.yml) and is skipped in a plain `make live`."""
+.github/workflows/drills.yml, on the full lab) and is skipped in a plain `make live`. On the full lab the
+NOC must come back too: its sidecars share their nodes' network namespaces, so each is started again
+after its node, and the NOC starts with no history (RISK-34)."""
 import json
 import os
 import shlex
@@ -10,6 +12,8 @@ import uuid
 from datetime import datetime, timezone
 
 import pytest
+
+from netlab.observe import Noc
 
 from .conftest import ROOT, wait_for
 from .test_collection import playbook
@@ -51,8 +55,16 @@ def has_mark(r2, mark: str) -> bool:
     return mark in r2.run("vtysh", "-c", "show running-config", check=False).stdout
 
 
-def test_power_event_recovers_from_startup_config(node, expected):
-    """After a whole-lab power cycle every node comes back by itself: an unsaved change is gone, OSPF, BFD and BGP are up; once make apply has set the BGP password again, users reach the web server and nothing has drifted."""
+def noc_running(lab_name, expected) -> bool:
+    """Is this the full lab (make deploy), with the NOC's sidecars, or the network alone (make deploy-network)?"""
+    sidecars = expected.get("monitoring", {}).get("sidecars") or []
+    return bool(sidecars) and subprocess.run(["docker", "inspect", f"clab-{lab_name}-{sidecars[0]}"],
+                                             capture_output=True).returncode == 0
+
+
+def test_power_event_recovers_from_startup_config(node, expected, lab_name):
+    """After a whole-lab power cycle every node comes back by itself: an unsaved change is gone, OSPF, BFD and BGP are up; once make apply has set the BGP password again, users reach the web server, nothing has drifted, and on the full lab the NOC scrapes every target and hears every log source again, with nothing firing."""
+    with_noc = noc_running(lab_name, expected)
     r2 = node("r2")
     mark = f"unsaved-{uuid.uuid4().hex[:8]}"
     r2.run("vtysh", "-c", "conf t", "-c", "interface eth1", "-c", f"description {mark}")  # never saved
@@ -84,7 +96,17 @@ def test_power_event_recovers_from_startup_config(node, expected):
     assert reached, "h1 can't reach the web server through fw1 after the power cycle"
     drift = playbook("drift.yml")
     assert drift.returncode == 0, "a node came back different from its intended config:\n" + drift.stdout
+    noc_back = None
+    if with_noc:
+        # A sidecar left in its node's old namespace would answer nothing, so its target stays down. The
+        # first heartbeat can leave before OSPF has a route to the NOC; the next is a heartbeat later.
+        mon = expected["monitoring"]
+        noc = Noc(lab_name, mon["host"])
+        assert noc_running(lab_name, expected), "the power cycle did not bring the NOC's sidecars back"
+        settled = wait_for(lambda: noc.settled(mon["sources"]), timeout=mon["heartbeat"] + 60, interval=3)
+        assert settled, "the NOC did not come back with every target up, every source heard and nothing firing (see make alerts)"
+        noc_back = round(time.monotonic() - began, 1)
     (ROOT / "results").mkdir(exist_ok=True)
     (ROOT / "results" / "power-drill.json").write_text(json.dumps({
         "date": datetime.now(timezone.utc).isoformat(), "power_cycle": POWER_CYCLE,
-        "seconds_to_routing_up": recovered}, indent=2) + "\n")
+        "seconds_to_routing_up": recovered, "seconds_to_noc_settled": noc_back}, indent=2) + "\n")

@@ -82,7 +82,9 @@ all: test deploy live observe drift ## Everything CI does (CI's lab job runs liv
 # that outlives this machine. If it isn't mounted, `make backup` fails; it never creates one.
 BACKUP_REPO     ?= /mnt/backup/netlab-restic
 BACKUP_PASSWORD ?= $(HOME)/.config/netlab/restic-password
-# The power cut for `make power-drill`: every node stopped and started again from its rendered files.
+# The power cut for `make power-drill`: every node stopped and started again from its rendered files,
+# each NOC sidecar after the node whose network namespace it shares. That is the full lab (make deploy);
+# on a lab from make deploy-network, add the same --node-filter, or the cut starts the sidecars too.
 POWER_CYCLE     ?= $(CLAB) deploy -t $(TOPO) --reconfigure
 
 .PHONY: backup backup-init restore-drill power-drill control-status
@@ -96,7 +98,7 @@ backup-init:     ## Create the restic repository at BACKUP_REPO, once, by hand (
 restore-drill:   ## Boot every router's latest backup on throwaway routers, and restore one stanza on its own
 	BACKUP_REPO="$(BACKUP_REPO)" BACKUP_PASSWORD="$(BACKUP_PASSWORD)" $(PY) -m pytest -v tests/live/test_restore.py --junitxml=results/restore-drill.xml
 
-power-drill:     ## Power-cycle the whole lab and check it comes back by itself from startup config
+power-drill:     ## Power-cycle the whole lab and check it comes back by itself from startup config, the NOC too
 	POWER_CYCLE="$(POWER_CYCLE)" $(PY) -m pytest -v tests/live/test_power_event.py --junitxml=results/power-drill.xml
 
 control-status:  ## Fail if any control's latest test is red or older than its period (reads CI runs with gh)

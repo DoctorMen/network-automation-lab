@@ -106,17 +106,20 @@ def test_render_is_deterministic(tmp_path):
 def test_ci_pulls_the_image_the_inventory_names():
     """CI deploys the images the inventory records, so the live version checks test the real thing: the lab
     job the router image, the observe job every image the full lab runs (`netlab images`). The drills
-    workflow pulls the router image too, and exactly the restic image netlab.backup runs."""
+    workflow, which runs on the full lab too, pulls the same list, and exactly the restic image
+    netlab.backup runs."""
     ci = yaml.safe_load((INVENTORY.parents[1] / ".github" / "workflows" / "ci.yml").read_text())
     steps = [step for job in ci["jobs"].values() for step in job["steps"]]
     pulls = [step["run"].split()[-1] for step in steps if step.get("run", "").startswith("docker pull")]
     drills = yaml.safe_load((INVENTORY.parents[1] / ".github" / "workflows" / "drills.yml").read_text())["jobs"]
     drill_pulls = {job: [line.split()[-1] for step in drills[job]["steps"] for line in step.get("run", "").splitlines()
                          if line.strip().startswith("docker pull")] for job in drills}
-    assert drill_pulls == {"backup-init": [RESTIC_IMAGE], "drills": [inv.platform["image"], RESTIC_IMAGE]}
+    assert drill_pulls == {"backup-init": [RESTIC_IMAGE], "drills": [RESTIC_IMAGE]}
     assert pulls == [inv.platform["image"]]
     observe = [step["run"] for step in ci["jobs"]["observe"]["steps"] if "netlab images" in step.get("run", "")]
     assert observe and "docker pull" in observe[0], "the observe job doesn't pull what `netlab images` lists"
+    drill_images = [line for step in drills["drills"]["steps"] for line in step.get("run", "").splitlines() if "netlab images" in line]
+    assert drill_images and "docker pull" in drill_images[0], "the drills job doesn't pull what `netlab images` lists"
 
 
 def test_canary_goes_first_with_the_rollout_settings(tmp_path):

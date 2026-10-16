@@ -4,6 +4,10 @@ import os
 import stat
 import sys
 from datetime import datetime, timedelta, timezone
+from fnmatch import fnmatch
+from pathlib import Path
+
+import yaml
 
 from netlab import control_status
 
@@ -97,3 +101,16 @@ def test_fetch_reads_newest_runs_first_and_stops_when_every_test_has_a_result(tm
     downloads = [line.split()[2] for line in (tmp_path / "calls.log").read_text().splitlines() if line.startswith("run download")]
     assert downloads == ["3", "2"]
     assert control_status.check(REGISTER, control_status.collect(evidence), NOW)[1] == []
+
+
+def test_control_status_waits_for_every_job_whose_results_it_reads():
+    """ci.yml's control-status job needs every job that uploads an artifact its pattern downloads (the NOC's
+    observe job included), and no two jobs upload under one name, which would make a run's upload fail."""
+    ci = yaml.safe_load((Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml").read_text())["jobs"]
+    uploads = [(job, step["with"]["name"]) for job, spec in ci.items() for step in spec["steps"]
+               if step.get("uses", "").startswith("actions/upload-artifact@")]
+    names = [name for _, name in uploads]
+    assert len(names) == len(set(names)), f"artifact names used twice: {sorted({n for n in names if names.count(n) > 1})}"
+    readers = {job for job, name in uploads if fnmatch(name, control_status.ARTIFACTS)}
+    assert {"offline", "lab", "observe"} <= readers
+    assert readers <= set(ci["control-status"]["needs"]), f"control-status doesn't wait for {sorted(readers - set(ci['control-status']['needs']))}"

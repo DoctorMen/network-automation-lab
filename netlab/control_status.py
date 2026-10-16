@@ -1,10 +1,11 @@
 """Is every claimed control's latest test green, and inside the control's period? (OROS 0.3 ATT-4)
 
 docs/controls.yml names, for every control, the tests that prove it and how often they must pass.
-The proof is CI's dated JUnit files (pytest --junitxml): offline-results, results-and-backups and
-drill-results, kept 90 days as run artifacts. This reads them newest first, this run's own results
-included, and for each test takes its latest result that ran (a skip is not a result). That result
-must be a pass, and younger than the period. Any other answer fails, naming the control and test.
+The proof is CI's dated JUnit files (pytest --junitxml): offline-results, results-and-backups,
+observe-results and drill-results, kept 90 days as run artifacts. This reads them newest first, this
+run's own results included, and for each test takes its latest result that ran (a skip is not a
+result). That result must be a pass, and younger than the period. Any other answer fails, naming the
+control and test.
 
 python -m netlab.control_status [--evidence build/evidence] [--repo OWNER/NAME] [--offline]
 Without --offline it fetches older runs on main with the GitHub CLI (`gh`, needs actions: read).
@@ -26,7 +27,7 @@ from . import controls
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS = ("ci.yml", "drills.yml")  # the workflows that run the register's tests
-ARTIFACTS = "*results*"               # offline-results, results-and-backups, drill-results
+ARTIFACTS = "*results*"               # offline-results, results-and-backups, observe-results, drill-results
 
 
 @dataclass(frozen=True)

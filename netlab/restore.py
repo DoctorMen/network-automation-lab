@@ -3,7 +3,8 @@
 A backup nobody has restored is a hope. The drill restores from the destination (the restic
 repository), never from backups/, into containers with no network, so it can't touch the live lab.
 Each throwaway router is built like the real one from the rendered topology: same image, sysctls
-and daemons file, with the restored backup as its startup config. (OROS 0.3 REC-3.)
+and daemons file, with the restored backup as its startup config, and none of the folders the real
+one shares with its NOC sidecars. (OROS 0.3 REC-3.)
 """
 from __future__ import annotations
 
@@ -78,8 +79,12 @@ class Scratch:
         for key, value in (node.get("sysctls") or {}).items():
             cmd += ["--sysctl", f"{key}={value}"]
         for bind in node.get("binds") or []:
-            src, dst = bind.split(":")[:2]
-            if dst != FRR_CONF:  # every bind as deployed, except the startup config: that is the restore
+            src, dst, *mode = bind.split(":")
+            # Every read-only bind as deployed (the rendered intent: daemons, vtysh.conf, edge.sh), except
+            # the startup config, which is the restore. A writable bind is the live router's own state,
+            # shared with its sidecars: its FRR sockets and pid files (run/) and its pending-reboot metric.
+            # Mounted read-only, FRR can't start in the throwaway; writable, it would overwrite the live one's.
+            if dst != FRR_CONF and mode == ["ro"]:
                 cmd += ["--mount", f"type=bind,src={(build / src).resolve()},dst={dst},readonly"]
         cmd += ["--mount", f"type=bind,src={config.resolve()},dst={FRR_CONF},readonly"]
         self.cmd = [*cmd, node.get("image", topo["topology"]["defaults"]["image"])]

@@ -117,3 +117,19 @@ def test_stanza_is_one_top_level_block():
     assert "  aggregate-address 10.0.0.0/8 summary-only" in item and "router ospf" not in item
     assert restore.stanza(R2, "router rip") == ""
 
+
+
+def test_a_throwaway_router_shares_nothing_with_the_live_one(tmp_path):
+    """The restore drill's throwaway router mounts the rendered intent read-only, and none of the folders the
+    live router shares with its NOC sidecars: its FRR sockets and pid files, and its pending-reboot metric."""
+    inv = backup.load(ROOT / "inventory" / "network.yml")
+    render_all(inv, tmp_path)
+    config = tmp_path / "restored.conf"
+    config.write_text(R2)
+    cmd = restore.Scratch(tmp_path, "r2", config).cmd
+    mounts = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--mount"]
+    targets = {m.split(",dst=")[1].split(",")[0] for m in mounts}
+    assert {"/etc/frr/frr.conf", "/etc/frr/daemons", "/etc/frr/vtysh.conf"} <= targets
+    assert all(m.endswith(",readonly") for m in mounts)
+    assert not targets & {"/var/run/frr", "/textfile"}, f"the throwaway mounts the live router's {sorted(targets)}"
+    assert f"type=bind,src={config.resolve()},dst=/etc/frr/frr.conf,readonly" in mounts

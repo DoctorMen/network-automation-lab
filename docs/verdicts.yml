@@ -61,7 +61,7 @@
     - "throwaway: with log commands on, 'show interface brief' never appeared in docker logs; after 'log file /tmp/frr.log informational' it did, in the file"
     - "2026-10-15, lab na6 after the fix: Loki on noc holds '{node=\"r1\",source=\"syslog\"} ospfd[32]: AdjChg: Nbr 10.255.0.2(default) on eth1:10.0.12.0: Full -> Deleted (KillNbr)' and r2's 'bgpd[34]: %ADJCHANGE: neighbor 198.51.100.1(isp) in vrf default Up'; tests/live/observe/test_central_store.py::test_router_daemons_log_to_the_central_store clears an adjacency and finds ospfd's line there"
   workaround: "'log file <path>' works (throwaway above); superseded by the fix"
-  fixed_in: "decision 0019 (build/w2base, not yet committed): frr.conf says 'log syslog informational', with log-adjacency-changes and bgp log-neighbor-changes; busybox syslogd keeps a copy on the box and forwards every line to the NOC"
+  fixed_in: "decision 0019 (wave 2's base build): frr.conf says 'log syslog informational', with log-adjacency-changes and bgp log-neighbor-changes; busybox syslogd keeps a copy on the box and forwards every line to the NOC"
 
 - id: V-006
   opened: 2026-10-15
@@ -168,4 +168,4 @@
     - "2026-10-16, lab na6, tests/live/observe/test_state.py::test_bfd_peer_down_while_ospf_and_ping_stay_up: 'paged 28.0 s after BFD went down'"
     - "Prometheus history for that run (query_range, 1 s step, times from BFD going down): frr_bfd_peer_state{node=\"r1\",peer=\"10.0.12.1\"} missing from about +3 s to +14 s, then 0; frr_ospf_neighbor_adjacencies{iface=\"eth1\"} 0 at +4 s, 1 at +14 s; ALERTS pending from +8 s to +17 s, then a second pending series from +18 s, firing at +28 s. FRR deletes the session when OSPF drops the adjacency and adds it back, still down, when OSPF re-forms"
     - "The rule was `frr_bfd_peer_state{...} != 1 or absent(...)`: the series half keeps the target's labels (job, instance, owner, role), absent() gives node and peer only, so the alert changed identity when the series came back and its 10 s `for` started again"
-  fixed_in: "decision 0018 (build/w2base, not yet committed): every per-object rule is `max by (<the object's keys>) (... ) or absent(...)`, so both halves label the alert alike, and owner and role are rule labels; tests/test_monitoring.py::test_an_alert_keeps_its_identity_while_its_series_comes_and_goes"
+  fixed_in: "decision 0018 (wave 2's base build): every per-object rule is `max by (<the object's keys>) (... ) or absent(...)`, so both halves label the alert alike, and owner and role are rule labels; tests/test_monitoring.py::test_an_alert_keeps_its_identity_while_its_series_comes_and_goes"

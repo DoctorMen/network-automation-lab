@@ -122,14 +122,18 @@ jobs:
         with:
           path: ${{ runner.temp }}/backup
           key: restic-${{ github.run_id }}
-      - name: Show routing tables on failure
+      - name: Show routing tables, processes and FRR's logs on failure
         if: failure()
         run: |
           for r in r1 r2 r3 isp; do
             echo "=== $r"; docker exec clab-netauto-$r vtysh -c "show ip route" -c "show ip ospf neighbor" -c "show bfd peers brief" -c "show bgp summary" || true
-            # FRR logs to stdout (`log stdout` in frr.conf), so a daemon that crashed or never started says why here.
-            echo "--- $r processes and FRR log"; docker exec clab-netauto-$r ps -o pid,args || true
-            docker logs --tail 60 clab-netauto-$r 2>&1 || true
+            echo "--- $r processes"; docker exec clab-netauto-$r ps -o pid,args || true
+            # The container's own output is FRR's start script: frrcommon.sh says there when a daemon
+            # crashed in startup or failed to start (V-011). The daemons' own lines go to syslog
+            # (`log syslog informational` in frr.conf, decision 0019), and busybox syslogd keeps them in
+            # /var/log/messages on every router, whether or not a NOC is there to forward them to.
+            echo "--- $r start script (docker logs)"; docker logs --tail 60 clab-netauto-$r 2>&1 || true
+            echo "--- $r FRR's daemons (/var/log/messages)"; docker exec clab-netauto-$r tail -n 80 /var/log/messages || true
           done
           docker exec clab-netauto-fw1 iptables -vnL FORWARD || true
           docker exec clab-netauto-r2 sh -c 'iptables -vnL; iptables -t raw -vnL' || true
@@ -191,16 +195,10 @@ jobs:
         if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: make testevent
       - name: Config drift check (Ansible)
-        # The observe tests put back everything they break; drift proves it.
+        # The observe tests put back everything they break; drift proves it. Its captures stay in backups/
+        # for this run's artifact only: the restic backup is the lab job's, and this job never touches it.
         if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: make drift
-      - name: Secret scan of this run's results and build/
-        if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
-        run: |
-          make gitleaks
-          for f in "$NETLAB_SECRETS"/*; do
-            if grep -rlF -f "$f" backups results build; then echo "::error::this run's BGP password is in the files above"; exit 1; fi
-          done
       - name: Measure RAM (raw data for docs/sizing)
         continue-on-error: true  # a sizing reading is evidence, not a network test
         run: |
@@ -208,6 +206,27 @@ jobs:
           rm -f docs/sizing/data/*-github-runner.json
           make measure LAB_ENV=github-runner NOTE="GitHub ubuntu-24.04, containerlab $CLAB_VERSION, full lab with the NOC, idle right after make observe and make drift"
           cat docs/sizing/data/*-github-runner.json
+      - name: Secret scan of this run's results, backups, sizing data, build/ and the central log store
+        # Last, so it sees every file this job uploads and every line it sent to Loki, drift's included.
+        if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
+        run: |
+          make gitleaks
+          for f in "$NETLAB_SECRETS"/*; do
+            if grep -rlF -f "$f" backups results build docs/sizing/data; then echo "::error::this run's BGP password is in the files above"; exit 1; fi
+          done
+          python3 -m pytest -q -p no:cacheprovider tests/live/observe/test_central_store.py::test_no_secret_in_the_central_store
+      - name: Show routing tables, processes and FRR's logs on failure
+        if: failure()
+        run: |
+          for r in r1 r2 r3 isp; do
+            echo "=== $r"; docker exec clab-netauto-$r vtysh -c "show ip route" -c "show ip ospf neighbor" -c "show bfd peers brief" -c "show bgp summary" || true
+            echo "--- $r processes"; docker exec clab-netauto-$r ps -o pid,args || true
+            # As in the lab job: the start script's own output, then the daemons' syslog lines on the box.
+            echo "--- $r start script (docker logs)"; docker logs --tail 60 clab-netauto-$r 2>&1 || true
+            echo "--- $r FRR's daemons (/var/log/messages)"; docker exec clab-netauto-$r tail -n 80 /var/log/messages || true
+          done
+          docker exec clab-netauto-fw1 iptables -vnL FORWARD || true
+          docker exec clab-netauto-r2 sh -c 'iptables -vnL; iptables -t raw -vnL' || true
       - name: What the NOC fired and paged, on failure
         if: failure()
         run: make alerts || true
@@ -270,7 +289,8 @@ jobs:
 
   control-status:
     name: Every control's latest test is green and inside its period
-    needs: [offline, lab]
+    # The NOC's controls are proven by the observe job's JUnit file alone (results/observe.xml).
+    needs: [offline, lab, observe]
     # Main's claims, proven by main's runs. A pull request's run tests other code, so it is skipped.
     if: ${{ always() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-24.04
