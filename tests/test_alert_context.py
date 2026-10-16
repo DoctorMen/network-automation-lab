@@ -32,7 +32,7 @@ def test_every_rule_says_why_it_fired_what_is_normal_and_what_changed():
         # changes: the last commit `make apply` pushed, for this router when the alert is about one.
         node = r["labels"].get("node")
         sel = f'{{node="{node}"}}' if node in inv.routers else ""
-        assert f"query `bottomk(1, time() - {monitoring.APPLIED}{sel})`" in a["changes"], r["alert"]
+        assert f"query `topk(1, {monitoring.APPLIED}{sel})`" in a["changes"], r["alert"]
         assert links(a["changes"]) == [monitoring.APPLIED + sel]
 
 

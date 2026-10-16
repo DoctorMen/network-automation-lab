@@ -283,8 +283,9 @@ def context(inv: Inventory, signal: str, condition: str, normal: str, node: str 
     now = "{{ with query `" + signal + "` }}{{ range . }}{{ .Value }} {{ end }}{{ else }}no series{{ end }}"
     sel = selector(node=node) if node in inv.routers else ""
     scope = f"to {node}" if sel else "to the lab's routers"
-    last = ("{{ with query `bottomk(1, time() - " + APPLIED + sel + ")` }}{{ range . }}commit {{ .Labels.commit }} "
-            "({{ .Labels.subject }}) applied to {{ .Labels.node }} {{ .Value | humanizeDuration }} ago{{ end }}"
+    # A time, not an age: Prometheus resends a firing alert's annotations only once a minute.
+    last = ("{{ with query `topk(1, " + APPLIED + sel + ")` }}{{ range . }}commit {{ .Labels.commit }} "
+            "({{ .Labels.subject }}) applied to {{ .Labels.node }} at {{ .Value | humanizeTimestamp }}{{ end }}"
             "{{ else }}no config apply recorded " + scope + "{{ end }}")
     return {"why_fired": f"{signal} {condition}; now: {now}",
             "baseline": f"normally {normal}; this signal over the last 7 days: {graph_link(signal)}",
