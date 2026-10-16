@@ -4,7 +4,8 @@ tests run in three jobs that cover every test file once; that only what each job
 published, the false-positive review's upload included; and that control-status fails when a scan withheld
 this run's live or NOC results. Every job in any workflow that holds a run's BGP password scans (gitleaks, and
 the password grep as root) after a failed test and after every step that writes what it reads, and uploads
-nothing its scan did not pass."""
+nothing its scan did not pass. Each of those scan steps is run here, and fails on this run's password in its
+results and on a failed gitleaks."""
 import os
 import re
 import subprocess
@@ -117,8 +118,8 @@ def test_a_rerun_restores_the_newest_repository_not_its_own_earlier_save():
 
 def scan_step(tmp_path, *fake_tools, steps=None):
     """Run a job's secret scan step (the lab job's unless steps are given), under the shell flags GitHub uses,
-    in a folder holding this run's password in its own file. `make` (so gitleaks) is a no-op here; fake_tools
-    are (name, script)."""
+    in a folder holding this run's password in its own file. `make` (so gitleaks) passes here unless fake_tools,
+    each (name, script), give another."""
     step = next(s for s in steps or JOBS["lab"]["steps"] if s.get("id") == "secret-scan")
     bindir = tmp_path / "bin"
     bindir.mkdir(parents=True)
@@ -161,7 +162,7 @@ def test_every_password_grep_reads_as_root():
 
 
 def test_uploads_wait_for_the_secret_scan_and_the_measurement():
-    """In the lab job and each NOC job, results, backups, the finding bundle and the sizing data are published only when that job's secret scan passed (not when it failed, was skipped or was cancelled), and sizing data only after the job measured."""
+    """In the lab job and each NOC job, results, backups, the finding bundle and the sizing data are published only when that job's secret scan passed (not when it failed, was skipped or was cancelled), and sizing data only after the job measured. Every uploaded path is in a folder that job's password grep reads: make gitleaks reads the commits and backups/, results/ and build/, so for the sizing data the grep is the only scan."""
     scanned_uploads = {}
     for job in scanned_jobs():
         steps = JOBS[job]["steps"]
@@ -173,6 +174,10 @@ def test_uploads_wait_for_the_secret_scan_and_the_measurement():
             want = ("${{ always() && steps.measure.outcome == 'success' && steps.secret-scan.outcome == 'success' }}" if measured
                     else "${{ always() && steps.secret-scan.outcome == 'success' }}")
             assert i > scan and s["if"] == want, f"{job}: {s['name']} is published when the secret scan did not pass"
+            for path in s["with"]["path"].split():
+                folder = path.split("*")[0].rstrip("/")
+                assert path.startswith(("results/", "backups/", "build/")) or folder in steps[scan]["run"], \
+                    f"{job}: the password grep never reads {path}"
             if measured:
                 assert any(s.get("id") == "measure" for s in steps), f"{job}: a skipped measurement would upload the committed reading as this run's"
     measured = [job for job in noc_jobs() if "make measure" in commands(job)]
@@ -300,8 +305,10 @@ def password_jobs():
 
 
 # The make targets whose output a job's scan must see: each writes into results/ (the JUnit files, the evidence,
-# the finding bundle, the review's notifications), backups/ (drift) or docs/sizing/data (measure).
-WRITERS = ("live", "observe", "restore-drill", "power-drill", "fp-review", "drift", "evidence", "finding", "measure")
+# the finding bundle, the review's notifications), backups/ (drift) or docs/sizing/data (measure). testevent sends
+# a line from every log source into the central log store, which each NOC job's scan reads.
+WRITERS = ("live", "observe", "restore-drill", "power-drill", "fp-review", "drift", "evidence", "finding", "measure",
+           "testevent")
 
 
 def make_targets(run: str) -> list[str]:
@@ -313,8 +320,9 @@ def test_every_job_holding_a_run_password_scans_after_a_failed_test_and_before_i
     run or a failed deploy skips it: with success() a failed test would skip it, its upload would be withheld and
     control-status would read an earlier run's results), and every upload in the job comes after it and waits for
     it to pass. The scan runs gitleaks and the password grep as root (as the runner user, grep exits 2 on FRR's
-    root-only files in build/), after every step that writes what it must read. The drills job's scan finds this
-    run's password in its results."""
+    root-only files in build/), after every step that writes what it must read. Each job's scan step is also run
+    here: it passes on clean files, and fails on this run's password in results/, on a failed gitleaks and, in a
+    NOC job, on a failed check of the central store (python3 stands in for that check, which needs a live NOC)."""
     makefile = (ROOT / "Makefile").read_text()
     assert all(re.search(rf"^{t}:", makefile, re.M) for t in WRITERS), "a writer this test names is not a make target"
     found = {}
@@ -333,8 +341,14 @@ def test_every_job_holding_a_run_password_scans_after_a_failed_test_and_before_i
             if s.get("uses", "").startswith("actions/upload-artifact@"):
                 assert i > scan and s["if"].startswith("${{ always() && ") and "steps.secret-scan.outcome == 'success'" in s["if"], \
                     f"{workflow} {job}: {s['name']} is published when the secret scan did not pass"
+        where, store_ok = tmp_path / workflow / job, ("python3", "exit 0")
+        work, scan_run = scan_step(where / "clean", store_ok, steps=steps)
+        assert scan_run() == 0, f"{workflow} {job}: the scan fails on clean files"
+        (work / "results" / "test.xml").write_text("<failure>password 0123456789abcdef0123456789abcdef</failure>")
+        assert scan_run() == 1, f"{workflow} {job}: this run's password in results/ passed the scan"
+        _, scan_run = scan_step(where / "gitleaks-failed", store_ok, ("make", "exit 1"), steps=steps)
+        assert scan_run() != 0, f"{workflow} {job}: the scan passed although gitleaks failed"
+        if "test_no_secret_in_the_central_store" in run:
+            _, scan_run = scan_step(where / "store-failed", ("python3", "exit 1"), steps=steps)
+            assert scan_run() != 0, f"{workflow} {job}: the scan passed although the central store check failed"
     assert found == SCAN_WHEN
-    work, run = scan_step(tmp_path, steps=next(steps for w, j, steps in password_jobs() if (w, j) == ("drills.yml", "drills")))
-    assert run() == 0
-    (work / "results" / "power-drill.xml").write_text("<failure>password 0123456789abcdef0123456789abcdef</failure>")
-    assert run() == 1, "this run's password in the drill results passed the drills job's scan"
