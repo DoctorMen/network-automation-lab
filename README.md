@@ -139,7 +139,7 @@ inventory/network.yml ──► netlab validate ──► netlab render ──�
 
 ## Run it yourself
 
-You need Linux (or WSL2 on Windows) with Docker. The lab is small: measured at 319.1 MiB for all 20 nodes in the `sandbox` environment, the 8 network nodes and the NOC's 12 sidecars, of which Loki and Prometheus take a third. Before the NOC, the network was measured at 90.5 MiB for all 7 nodes in the `github-runner` environment, a GitHub-hosted runner with real Containerlab ([sizing and raw data](docs/sizing/README.md)).
+You need Linux (or WSL2 on Windows) with Docker. The lab is small: measured at 358.5 MiB for all 22 nodes in the `sandbox` environment, the 8 network nodes and the NOC's 14 sidecars, of which Loki and Prometheus take a quarter. Before the NOC, the network was measured at 90.5 MiB for all 7 nodes in the `github-runner` environment, a GitHub-hosted runner with real Containerlab ([sizing and raw data](docs/sizing/README.md)).
 
 ```bash
 git clone https://github.com/DoctorMen/network-automation-lab && cd network-automation-lab
