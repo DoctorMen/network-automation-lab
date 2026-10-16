@@ -1,4 +1,4 @@
-"""What the NOC sees, read from the host (decisions 0018 to 0022).
+"""What the NOC sees, read from the host (decisions 0018 to 0022, 0026 and 0031).
 
 python -m netlab.observe alerts         what Prometheus has firing, and what the pager (the sink) received
 python -m netlab.observe testevent      a marked line from every log source over its real path, and when

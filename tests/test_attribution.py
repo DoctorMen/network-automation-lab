@@ -387,3 +387,13 @@ def test_the_outside_port_names_the_inside_host_that_held_it_then():
     assert nat.holders(LOG, "198.51.100.64", 41999, 1792129626) == []
     assert len(nat.holders(LOG, "198.51.100.64", 41999, 1792129626, skew=who.SKEW)) == 1
     assert nat.holders(LOG, "198.51.100.65", 41999, 1792129700) == []
+
+
+def test_a_password_keyword_the_routers_dont_run_yet_is_hidden_too():
+    """isisd, which no router here starts, takes its secrets after area-password and domain-password: any word with
+    password in it hides the rest of its command, so starting isisd one day leaks nothing into the records."""
+    secret = token_hex(8)  # made here, so no secret is ever written in this file
+    vty = proxy()
+    for word in ("area-password", "domain-password"):
+        assert vty.record(f"{word} clear {secret}".encode()) == f"{word} <hidden>"
+        assert vty.record(f"{word} md5 {secret}".encode()) == f"{word} <hidden>"

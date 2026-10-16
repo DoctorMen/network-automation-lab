@@ -79,7 +79,7 @@ def class_drops(host, interface):
 
 
 def burst(node, server, gateway, count=3000, size=200, sockets=16):
-    """`count` datagrams from the server to its gateway in a few milliseconds, as many as it can queue at
+    """`count` datagrams from the server to its gateway as fast as it can send them, as many as it can queue at
     once: (what the sender sent and how long it took, what reached the gateway)."""
     rx = receive(node(gateway).container, 2)
     sent = burst_tool(node(server).container, "send", inv.hosts[server]["gateway"], str(PORT), str(count), str(size), str(sockets))
@@ -94,7 +94,7 @@ LINK = f'{{node="{SERVER}",device="{SHAPED["interface"]}"}}'
 
 
 def test_a_microburst_the_average_hides_is_traced_to_its_queue(node, mon, noc):
-    """3000 datagrams from h2 to its gateway in a few milliseconds overflow the bulk class of h2's HTB. QueueDrops
+    """3000 datagrams from h2 to its gateway in under a second overflow the bulk class of h2's HTB. QueueDrops
     pages for h2's queue, and its drop count is exactly what was sent and never arrived; `tc -s class` names the
     bulk class. h2 eth1's byte counter counts after the queue: what arrived, not what the queue dropped. Meanwhile
     the 5-minute average of h2's traffic stays under 5% of the link, the interface's own drop counter stays at 0,

@@ -48,6 +48,19 @@ def test_a_flap_is_never_held_back_by_its_own_link():
         assert deps(r) == deps(rules("NodeDown", node=r["labels"]["node"])[0]) | {r["labels"]["node"]}, r["labels"]
 
 
+def test_a_queue_drop_is_never_held_back_by_its_own_node():
+    """A burst that fills h2's queue also drops the NOC's ping of h2, whose marker holds back for 75 s, longer than
+    QueueDrops keeps firing after a burst (its one-minute window): a queue's drops behind their own node would page
+    nothing. Each QueueDrops lists what is in front of its node, as that node's NodeDown does, and not the node."""
+    queues = rules("QueueDrops")
+    assert {r["labels"]["node"] for r in queues} == set(monitoring.exporter_nodes(inv))
+    for r in queues:
+        node = r["labels"]["node"]
+        assert node not in deps(r), r["labels"]
+        assert deps(r) == deps(rules("NodeDown", node=node)[0]), r["labels"]
+    assert monitoring.keep_firing(inv) > 60, "the marker no longer outlasts a burst's QueueDrops, so this test's reason is gone"
+
+
 def test_every_alert_lists_only_causes_and_every_cause_has_one_inhibit_rule(tmp_path):
     render_all(inv, tmp_path)
     am = yaml.safe_load((tmp_path / monitoring.host(inv) / "alertmanager.yml").read_text())

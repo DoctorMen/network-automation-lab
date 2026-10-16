@@ -108,14 +108,15 @@ def test_every_metric_says_what_it_counts():
 
 def test_a_rule_reading_a_counter_raw_fails(monkeypatch):
     """A rule that compares a counter itself, not its increase(), would page on a reset or a 32-bit wrap as a fall
-    of the count; the lint names the rule and the counter."""
+    of the count; the lint names the rule and the counter, and nothing else. InterfaceFlapped is made raw here, so the
+    real QueueDrops, whose counter wraps at 2^32, is still the committed one: were it raw, the list would name it too."""
     reads, odd = coverage.found()
     real = coverage.monitoring.alert_rules
 
     def raw(i):
-        return [{**r, "expr": 'node_qdisc_drops_total{node="h2"} > 0'}
-                if r["alert"] == "QueueDrops" else r for r in real(i)]
+        return [{**r, "expr": 'node_network_carrier_changes_total{node="r1"} > 0'}
+                if r["alert"] == "InterfaceFlapped" else r for r in real(i)]
     monkeypatch.setattr(coverage.monitoring, "alert_rules", raw)
     problems = coverage.check(listed(), reads, odd, inv)
-    assert problems == ["alert QueueDrops reads the counter node_qdisc_drops_total outside increase, rate, irate, resets: "
-                        "a reset or a wrap would read as a fall"]
+    assert problems == ["alert InterfaceFlapped reads the counter node_network_carrier_changes_total outside increase, rate, "
+                        "irate, resets: a reset or a wrap would read as a fall"]

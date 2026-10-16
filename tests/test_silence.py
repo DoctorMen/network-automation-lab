@@ -102,6 +102,7 @@ def test_a_silence_added_by_hand_is_reported(tmp_path, monkeypatch, capsys):
     held = tmp_path / "silences.yml"
     held.write_text("silences: []\n")
     monkeypatch.setattr(silence, "Noc", lambda *_: noc)
+    monkeypatch.setattr(silence, "lab_name", lambda: "netauto")  # no rendered build/ needed
     assert silence.main(["--file", str(held)]) == 1
     err = capsys.readouterr().err
     assert "by-hand  node='r1'" in err and "not in monitoring/silences.yml" in err and "old" not in err

@@ -58,20 +58,38 @@ def halfway_between_scrapes(noc, interval, **labels):
     time.sleep((last + interval / 2 - time.time()) % interval)
 
 
+def held_back_by(noc, alert, **labels):
+    """The causes this object's alert lists in its deps label, read from the rules the running NOC has loaded. A
+    label the rule doesn't carry (a queue's device comes from its series) matches every rule."""
+    found = set()
+    for r in noc.rules():
+        own = r.get("labels") or {}
+        if r.get("type") == "alerting" and r["name"] == alert and all(own.get(k, v) == v for k, v in labels.items()):
+            found |= set(own.get("deps", "/").strip("/").split("/")) - {""}
+    return found
+
+
 def quiet(noc, alert, timeout=90, **labels):
-    """Wait until this object's alert is neither pending nor firing, and the pager's last word on it was
-    "resolved", before a test breaks the object: Alertmanager sends no new page for an alert it already
-    paged. A previous test's knock-on can still be resolving (FRR drops a link's BFD session when OSPF
-    drops the adjacency there)."""
+    """Wait until this object's alert is neither pending nor firing, the pager's last word on it was "resolved",
+    and no cause it lists in deps has its marker firing, before a test breaks the object: Alertmanager sends no
+    new page for an alert it already paged, nor for one a marker holds back. A previous test's knock-on can still
+    be resolving (FRR drops a link's BFD session when OSPF drops the adjacency there), and a marker keeps
+    firing 75 s after its cause recovered (decision 0021)."""
+    causes = held_back_by(noc, alert, **labels)
+
+    def holding():
+        return [a["labels"]["cause"] for a in noc.alerts("firing", alertname="CauseSeen") if a["labels"].get("cause") in causes]
+
     def calm():
-        if noc.alerts(None, alertname=alert, **labels):
+        if noc.alerts(None, alertname=alert, **labels) or holding():
             return False
         last = {}
         for x in noc.notifications(0, alertname=alert, **labels):
             last[tuple(sorted(x["labels"].items()))] = x["status"]
         return all(s == "resolved" for s in last.values())
     assert wait_for(calm, timeout=timeout, interval=1), \
-        f"{alert} {labels} was still active before the test broke anything: {noc.alerts(None, alertname=alert, **labels)}"
+        f"{alert} {labels} was still active, or held back by {holding()}, before the test broke anything: " \
+        f"{noc.alerts(None, alertname=alert, **labels)}"
 
 
 def wait_alert(noc, alert, since, timeout, **labels):

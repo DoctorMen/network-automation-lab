@@ -10,7 +10,7 @@ recv PORT IDLE                         counts what arrives on PORT until IDLE se
                                        Prints "listening" once it is, then the counts at the end.
 
 Each prints one JSON line at the end. A sender's `sent` counts every datagram send() accepted: a
-datagram the node's own queue then drops still counts as sent (V-025).
+datagram the node's own queue then drops still counts as sent (V-026).
 """
 import json
 import socket

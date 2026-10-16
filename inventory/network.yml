@@ -256,11 +256,13 @@ logging:
   # runs drift and apply every five minutes, at about twice the busiest source's pace (V-030). On the
   # merged wave 2 lab one drift and one apply sent r2 25 KB of syslog and 15 KB of command records, about
   # 7.3 and 4.3 MB a day at that pace; each command record also reaches the store as syslog, since
-  # syslogd forwards the box's copy.
+  # syslogd forwards the box's copy. In the review of the merged rules (commit ff727a8) r2's translation
+  # log ran at 1962941 bytes a day, 94% of the 2 MiB it had then: h1's ping of the carrier every 10 s
+  # writes a translation line each.
   budget:
     store_mb: 3584
     syslog_kb: 16384      # each router, firewall and server's syslog
-    nat_kb: 2048          # each NAT router's translation log (decision 0031)
+    nat_kb: 4096          # each NAT router's translation log (decision 0031)
     accounting_kb: 8192   # each router's command records from its accounting proxy (decision 0029)
   # Apps whose own log is forwarded as the app writes it, by a forwarder that doesn't run as root.
   # h2's web server writes an access line per request. `cut` names the kinds of line its forwarder drops

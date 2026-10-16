@@ -38,8 +38,9 @@ WARNING = b"\0\0\0\1"
 # The keywords FRR 8.4 takes a secret after, in the daemons these routers run: `neighbor X password`,
 # `key-string`, `ip ospf authentication-key` and `ip ospf message-digest-key N md5` (and `ip rip authentication
 # string`, whose `authentication` starts authentication-key). FRR takes any unambiguous start of a keyword
-# (`passw`), so any word that starts one of them hides the rest of its command. A word that does so by chance
-# (a route-map named m) costs that record its detail, never a secret.
+# (`passw`), so any word that starts one of them hides the rest of its command, and so does any word with password
+# in it (isisd's area-password and domain-password, were it ever started). A word that does so by chance (a
+# route-map named m) costs that record its detail, never a secret.
 SECRET_WORDS = ("password", "key-string", "authentication-key", "md5")
 
 
@@ -74,7 +75,7 @@ def record(command: bytes) -> str:
     and any other control character written as \\xNN, so no command can put a line of its own in the log."""
     words = command.decode(errors="replace").split()
     for i, w in enumerate(words[:-1]):
-        if any(s.startswith(w.lower()) for s in SECRET_WORDS):
+        if any(s.startswith(w.lower()) for s in SECRET_WORDS) or "password" in w.lower():
             words = words[:i + 1] + ["<hidden>"]
             break
     return "".join(c if c.isprintable() else f"\\x{ord(c):02x}" for c in " ".join(words))

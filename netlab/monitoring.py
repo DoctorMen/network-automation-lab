@@ -1,4 +1,4 @@
-"""The NOC's checks, generated from the inventory (decisions 0018 to 0022).
+"""The NOC's checks, generated from the inventory (decisions 0018 to 0023, 0025, 0026, 0029 and 0031).
 
 Nothing here is a hand-written expected value: the scrape targets, the alert rules (one per BGP
 session, OSPF neighbor, BFD peer, web check, router interface, log source and unattended job), the log
@@ -513,8 +513,11 @@ def alert_rules(inv: Inventory) -> list[dict]:
     for d in exporter_nodes(inv):
         # A queue's drop counter catches a burst far shorter than a scrape, which a 5-minute average of the
         # interface's traffic hides, and which the interface's own drop counter never sees (decision 0023).
+        # Its deps are what is in front of the node, never the node itself: a burst that fills h2's queue drops
+        # the NOC's ping of h2 too, and that marker holds back for 75 s, longer than this keeps firing (decision
+        # 0021). It can't fire without a scrape of the node's own exporter, so the node's cause adds nothing else.
         signal = f"increase(node_qdisc_drops_total{selector(node=d)}[1m])"
-        rules.append(rule(inv, "QueueDrops", f"{signal} > 0", {**target_labels(inv, d), "deps": model.label({d})},
+        rules.append(rule(inv, "QueueDrops", f"{signal} > 0", {**target_labels(inv, d), "deps": model.label({d}, own=d)},
                           f"{d} {{{{ $labels.device }}}} ({{{{ $labels.kind }}}} queue) dropped packets in the last minute",
                           signal, "> 0", "0"))
     window = mon["reboot_window"]
