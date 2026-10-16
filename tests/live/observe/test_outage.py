@@ -128,7 +128,7 @@ def test_every_alert_says_why_what_is_normal_and_what_changed(outage, noc):
         node = a["labels"].get("node")
         if node in outage["applied"]:
             assert re.search(f"commit {head}(-dirty)? ", note["changes"]) and f"applied to {node} " in note["changes"], \
-                f"{what}: {note['changes']}"
+                f"{what}: {note['changes']} (HEAD is {head}: a lab applied from another commit needs make apply first)"
             started = calendar.timegm(time.strptime(a["startsAt"][:19], "%Y-%m-%dT%H:%M:%S"))  # RFC 3339, UTC
             assert 0 <= started - outage["applied"][node] < 3600, f"{what}: raised {started - outage['applied'][node]:.0f} s after the apply"
             named += 1
