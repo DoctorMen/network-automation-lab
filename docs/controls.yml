@@ -750,6 +750,7 @@ controls:
       - tests/test_volume.py::test_a_cut_kind_netlab_does_not_know_is_refused
       - tests/test_volume.py::test_a_cut_source_must_wait_a_heartbeat_before_it_is_silent
       - tests/test_detections.py::test_a_source_over_its_budget_during_the_review_fails
+      - tests/test_detections.py::test_the_review_measures_every_source_the_store_keeps
     period: P31D
     threat: >-
       The store filling with the NOC's own check while nobody knows which source spends its disk; a cut
@@ -785,6 +786,8 @@ controls:
       - tests/test_detections.py::test_a_detection_the_review_never_measured_has_a_blank_cell
       - tests/test_detections.py::test_a_hand_edited_table_fails
       - tests/test_detections.py::test_a_source_over_its_budget_during_the_review_fails
+      - tests/test_detections.py::test_the_review_starts_while_the_watchdog_fires
+      - tests/test_detections.py::test_the_review_does_not_start_while_another_alert_is_pending
       - tests/live/observe/test_detections.py::test_table_rows_are_the_rules_the_running_noc_has_loaded
     period: P31D
     threat: >-
@@ -792,9 +795,9 @@ controls:
       stop reading its pages; a table that was right once and drifted from the rules.
     fails_when: >-
       Each false-positive figure is 30 minutes of a stated workload in the lab, not a real network's normal
-      work (RISK-58), and a real fault in that window counts as false. PendingRebootOverdue and
-      LogIngestOverBudget look back further than the review, so their 0 measures nothing, which their cells
-      say. The review is a committed file: the fp-review workflow can run it on GitHub, monthly or when the
+      work (RISK-58), and a real fault in that window counts as false. PendingRebootOverdue,
+      LogIngestOverBudget and JobMissed look back further than the review, so their 0 measures nothing,
+      which their cells say. The review is a committed file: the fp-review workflow can run it on GitHub, monthly or when the
       repository owner starts it by hand, and uploads what the pager received once its own secret scan
       passed, but a person commits it. Blind spots are written by hand, so an entry is only as good
       as whoever wrote it; the check proves it is there and not blank. make test fails 92 days after the

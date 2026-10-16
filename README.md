@@ -128,7 +128,7 @@ CI runs every test each night as well as on every push to `main` and every pull 
 
 ## Scored against what operators actually need
 
-[OROS 0.3](docs/oros/README.md) is a standard of 61 pass/fail requirements for network and security operations, built from 3,785 relevant Stack Exchange questions and 103 mailing-list, forum and feature-tracker posts. [The scorecard](docs/oros/scorecard.md) holds this lab to every one of them, and names the test behind each pass: **27 pass, 16 partial, 18 fail.** Most of the fails need things this lab doesn't have yet (a vulnerability scanner, a switch or a shared L2 segment, a directory and per-person credentials), and the scorecard says what each one is missing.
+[OROS 0.3](docs/oros/README.md) is a standard of 61 pass/fail requirements for network and security operations, built from 3,785 relevant Stack Exchange questions and 103 mailing-list, forum and feature-tracker posts. [The scorecard](docs/oros/scorecard.md) holds this lab to every one of them, and names the test behind each pass: **28 pass, 15 partial, 18 fail.** Most of the fails need things this lab doesn't have yet (a vulnerability scanner, a switch or a shared L2 segment, a directory and per-person credentials), and the scorecard says what each one is missing.
 
 ## How it works
 
