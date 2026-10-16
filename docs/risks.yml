@@ -786,8 +786,12 @@
     While a cause fires, every alert that lists it in deps is held back (decision 0021), whether it
     follows from the cause or is a second failure behind it. A cause's marker keeps firing 75 s after it
     recovers, so the dependents still recovering behind it don't page. A failure that is still true then
-    pages, up to 75 s later than it would have on its own. Telling the two apart needs a view from
-    beyond the cause, which an in-band NOC doesn't have (RISK-31).
+    pages, up to 75 s later than it would have on its own. A cause seen for a single scrape (one lost
+    ping, one slow scrape) holds back for those 75 s everything that lists it with no page of its own,
+    so a short alert behind it in that time, such as a flap on a port of the router behind, would never
+    be paged (read from the rules, not measured). A flap never waits behind its own link, so the short
+    outage of a link itself still pages.
+    Telling the two apart needs a view from beyond the cause, which an in-band NOC doesn't have (RISK-31).
   compensating_control: tests/live/observe/test_outage.py::test_a_parent_failure_pages_once_and_a_killed_service_pages_again
   compensates: a failure on a part that doesn't depend on the cause still pages at once, and nothing held back pages late once the cause has cleared
   owner: DoctorMen

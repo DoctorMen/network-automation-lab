@@ -229,7 +229,9 @@ def success(inv: Inventory, lab: str, job: str, at: float | None = None) -> int:
     """A job's success, as its last step: so a job that failed, hung or never started sends none, and
     JobMissed pages once its window passes. Without a NOC (the lab job's make deploy-network) only a
     warning; a NOC that should have got it pages instead. HEARTBEAT_URL, when set, is an outside check
-    (a healthchecks.io-style ping URL) that alerts on its own when the ping stops, the NOC included."""
+    (a healthchecks.io-style ping URL) that alerts on its own when the ping stops, the NOC included. A
+    failed ping only warns too: that check pages when the ping is late, and failing here would fail a job
+    whose work is done (CI then skips saving the backup it just verified)."""
     if job not in [j["name"] for j in inv.monitoring.get("jobs") or []]:
         print(f"{job} is not a job inventory/network.yml lists under monitoring.jobs", file=sys.stderr)
         return 2
@@ -246,8 +248,8 @@ def success(inv: Inventory, lab: str, job: str, at: float | None = None) -> int:
             urllib.request.urlopen(f"{url.rstrip('/')}/{job}", timeout=10).read()
             print(f"{job}: heartbeat sent")  # never the URL: its key is the secret
         except OSError as exc:
-            print(f"{job}: the heartbeat ping failed ({type(exc).__name__})", file=sys.stderr)
-            return 1
+            print(f"warning: {job}: the heartbeat ping failed ({type(exc).__name__}); the outside check will alert "
+                  "if no later ping reaches it", file=sys.stderr)
     return 0
 
 

@@ -39,6 +39,10 @@ WAIT = {"TargetDown": 15, "BGPSessionDown": 10, "OSPFNeighborDown": 10, "BFDPeer
         "NodeDown": 10, "LinkDown": 10, "CauseSeen": 0, "JobMissed": 0, "AlertPathSilent": 0, "Watchdog": 0}
 # Seconds InterfaceFlapped looks back over the carrier-change counter: six scrapes.
 FLAP_WINDOW = 30
+# Seconds Prometheus waits before it sends a firing alert to Alertmanager again (its --rules.alert.resend-delay,
+# left at the default). An alert sent before Alertmanager answers, at the NOC's start, is dropped and arrives
+# this much later.
+RESEND_DELAY = 60
 # Seconds between evaluations of the cause markers (their own rule group), so a cause reaches Alertmanager
 # well inside group_wait of what depends on it.
 CAUSE_EVERY = 1
@@ -330,6 +334,13 @@ def per_object(metric: str, keys: dict, test: str) -> str:
     return f"max by ({', '.join(keys)}) ({metric}{sel} {test}) or absent({metric}{sel})"
 
 
+def after_link_down(inv: Inventory) -> int:
+    """Seconds after LinkDown last fired that the flap ending its outage stays quiet: the counter keeps the
+    change for FLAP_WINDOW after the carrier is back, LinkDown's last firing evaluation can be an interval
+    before that, and one interval of margin."""
+    return FLAP_WINDOW + 2 * inv.monitoring["interval"]
+
+
 def keep_firing(inv: Inventory) -> int:
     """Seconds a cause's marker keeps firing after its signal recovers, still holding back what depends on
     it: the slowest dependent to recover is a log source's SourceSilent, which clears on its next heartbeat.
@@ -375,8 +386,9 @@ def alert_rules(inv: Inventory) -> list[dict]:
             labels = {**target_labels(inv, r), "job": job, **({"cause": cid} if cid in model.causes else {}), "deps": model.label({r})}
             rules.append(rule(inv, "TargetDown", f"{signal} == 0", labels, f"{job} on {r} does not answer its scrape",
                               signal, "== 0", "1"))
-    # The NOC's own services: one rule per job, since every target of a blackbox job is one exporter.
-    for job in ("web", "icmp", "logs", "pushgateway"):
+    # The NOC's own services: one rule per scrape job besides the routers' exporters, since every target of a
+    # blackbox job is one exporter. Read from the scrape config, so a job added there gets its rule too.
+    for job in dict.fromkeys(j["job_name"] for j in prometheus_config(inv)["scrape_configs"] if j["job_name"] not in EXPORTERS):
         signal = f"min(up{selector(job=job)})"
         labels = {"job": job, **({"cause": logs} if job == "logs" else {}), "deps": "/"}
         rules.append(rule(inv, "TargetDown", f"{signal} == 0", labels, f"the NOC's {job} job does not answer its scrape",
@@ -419,13 +431,19 @@ def alert_rules(inv: Inventory) -> list[dict]:
         for ep in inv.interfaces(r):
             # The carrier-change counter catches a flap shorter than a scrape, which a state poll misses. It
             # fires once the carrier is back: a link still down is LinkDown's page, not a flap.
+            # Its deps are the router and what is in front of it, never its own link: a scrape that sees the
+            # flap fires the link's marker, which would hold back the only page a short outage raises. A link
+            # down long enough for LinkDown to fire has had its page, so the flap that ends it adds none.
             keys = {"node": r, "device": ep.interface}
             signal = f"increase(node_network_carrier_changes_total{selector(**keys)}[{FLAP_WINDOW}s])"
-            rules.append(rule(inv, "InterfaceFlapped", f"{signal} > 0 and node_network_carrier{selector(**keys)} == 1",
-                              {**target_labels(inv, r), "device": ep.interface,
-                               "deps": model.label({r, *model.link_objects(link_at(inv, r, ep.interface))})},
-                              f"{r} {ep.interface} lost carrier in the last {FLAP_WINDOW} s", signal,
-                              "> 0 with the carrier back up", "0"))
+            expr, condition = f"({signal} > 0 and node_network_carrier{selector(**keys)} == 1)", "> 0 with the carrier back up"
+            lid = link_id(link_at(inv, r, ep.interface))
+            if lid in model.causes:
+                linkdown = f"ALERTS{selector(alertname='LinkDown', alertstate='firing', cause=lid)}"
+                expr += f" unless on() max_over_time({linkdown}[{after_link_down(inv)}s])"
+                condition += f", and no LinkDown for its link in the last {after_link_down(inv)} s"
+            rules.append(rule(inv, "InterfaceFlapped", expr, {**target_labels(inv, r), "device": ep.interface, "deps": model.label({r})},
+                              f"{r} {ep.interface} lost carrier in the last {FLAP_WINDOW} s", signal, condition, "0"))
     for d in exporter_nodes(inv):
         # A queue's drop counter catches a burst far shorter than a scrape, which a 5-minute average of the
         # interface's traffic hides, and which the interface's own drop counter never sees (decision 0023).
@@ -454,10 +472,12 @@ def alert_rules(inv: Inventory) -> list[dict]:
 
 # --- Dead-man's switch: jobs and the alert path itself (OROS NOT-4, decision 0022) -------------------------
 
-def since_start(expr: str) -> str:
-    """expr, or the NOC's start time when nothing has arrived since it started (the pushgateway starts with
-    it): `time() - since_start(last)` then grows from the start, so something that never ran pages too."""
-    return f"({expr} or on() max(process_start_time_seconds{selector(job='pushgateway')}))"
+def since_start(expr: str, after: int = 0) -> str:
+    """expr, or the NOC's start time (plus `after` seconds) when nothing has arrived since it started (the
+    pushgateway starts with it): `time() - since_start(last)` then grows from the start, so something that
+    never ran pages too."""
+    start = f"max(process_start_time_seconds{selector(job='pushgateway')})"
+    return f"({expr} or on() {f'({start} + {after})' if after else start})"
 
 
 def deadman_rules(inv: Inventory, logs: str) -> list[dict]:
@@ -477,10 +497,12 @@ def deadman_rules(inv: Inventory, logs: str) -> list[dict]:
     path, mail = mon["alert_path"], f"log_last_seen_seconds{selector(node=host(inv), source='mail')}"
     out.append(rule(inv, "Watchdog", "vector(1)", {}, f"always firing: the alert path's heartbeat, mailed every {path['every']} s",
                     f"time() - {mail}", "(Watchdog itself always fires: vector(1))", f"under {path['every']} s since the last mail"))
-    out.append(rule(inv, "AlertPathSilent", f"time() - {since_start(f'max({mail})')} > {path['silent_after']}",
+    # At the NOC's start Prometheus can send Watchdog before Alertmanager answers. That send is dropped, and
+    # it sends again only RESEND_DELAY later, so the first mail is not due before then.
+    out.append(rule(inv, "AlertPathSilent", f"time() - {since_start(f'max({mail})', RESEND_DELAY)} > {path['silent_after']}",
                     {"channel": "mail", "deps": f"/{logs}/"},
                     f"no alert mail has reached the NOC's mailbox for over {path['silent_after']} s: the mail path is broken",
-                    f"time() - {mail}", f"> {path['silent_after']}, or no mail since the NOC started",
+                    f"time() - {mail}", f"> {path['silent_after']}, or no mail in the {RESEND_DELAY + path['silent_after']} s since the NOC started",
                     f"under {path['every']} s"))
     return out
 

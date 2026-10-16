@@ -231,7 +231,7 @@ def test_each_metric_is_the_type_its_exporter_declares(noc):
     declared = noc.get(monitoring.PORTS["prometheus"], "/api/v1/metadata")["data"]
     wrong = []
     for metric, c in counts.items():
-        if metric == "up":
+        if metric in ("up", "ALERTS"):
             continue  # Prometheus' own, with no TYPE line to compare
         types = {m["type"] for m in declared.get(metric, [])}
         # Prometheus' metadata calls an untyped metric "unknown".

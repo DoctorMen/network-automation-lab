@@ -19,7 +19,7 @@ no_purchase: "Doing it with what is already here is CI's own red run, which says
 staffing: "One person. Two make lines call `python -m netlab.observe success JOB` and the rule is generated from the inventory's jobs list. Help: the project's public issue tracker, free."
 vendor_domains: [prometheus.io, github.com/prometheus]
 independent_sources:
-  - "tests/live/observe/test_deadman.py::test_a_job_that_never_starts_pages (our test: a real make drift reports its success, then a success older than its window pages JobMissed on the webhook)"
+  - "tests/live/observe/test_deadman.py::test_a_job_whose_last_success_is_a_window_old_pages (our test: a real make drift reports its success, then a success older than its window pages JobMissed on the webhook)"
   - "tests/live/observe/test_outage.py::test_every_alert_says_why_what_is_normal_and_what_changed (our test: alerts about a router name the commit make apply pushed for it)"
   - "https://www.robustperception.io/monitoring-batch-jobs-in-python/ (Robust Perception, a consultancy, not the project: push a last-success time only when the job succeeds, and alert on time() minus it)"
 ---

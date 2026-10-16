@@ -39,6 +39,15 @@ def test_dependencies_come_from_the_inventory_graph():
         assert {"r1", "r3", "r1:eth2-r3:eth2", "frr@r1"} <= deps(r)
 
 
+def test_a_flap_is_never_held_back_by_its_own_link():
+    """A scrape that sees a short outage fires the link's marker, and its LinkDown needs 10 s to page: a flap
+    behind its own link would then page nothing. Each flap lists its router and what is in front of it."""
+    for r in rules("InterfaceFlapped"):
+        link = monitoring.link_id(monitoring.link_at(inv, r["labels"]["node"], r["labels"]["device"]))
+        assert link not in deps(r), r["labels"]
+        assert deps(r) == deps(rules("NodeDown", node=r["labels"]["node"])[0]) | {r["labels"]["node"]}, r["labels"]
+
+
 def test_every_alert_lists_only_causes_and_every_cause_has_one_inhibit_rule(tmp_path):
     render_all(inv, tmp_path)
     am = yaml.safe_load((tmp_path / monitoring.host(inv) / "alertmanager.yml").read_text())
@@ -76,7 +85,9 @@ def test_no_two_causes_hold_each_other_back():
 def test_markers_are_in_alertmanager_before_what_they_hold_back():
     """A cause's marker fires on the evaluation after the scrape that sees it (the probe's own timeout
     included); what depends on it holds its `for` and then group_wait before its first page. The margin
-    between the two is what lets inhibition win, and it is stated here."""
+    between the two is what lets inhibition win, and it is stated here. Rules with no `for` are left out:
+    each fires on a fact that comes later by nature (a flap once the carrier is back, a source silent
+    for silent_after, a job or mail missing for its window)."""
     mon = inv.monitoring
     marker = mon["interval"] + 2 + monitoring.CAUSE_EVERY  # scrape, ping timeout (blackbox icmp 2 s), evaluation
     first_page = min(w for w in monitoring.WAIT.values() if w) + mon["group_wait"]

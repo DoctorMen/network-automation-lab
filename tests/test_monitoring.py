@@ -78,11 +78,34 @@ def test_an_alert_keeps_its_identity_while_its_series_comes_and_goes():
 
 
 def test_flap_rule_uses_the_carrier_counter_on_the_routers_own_interfaces():
-    """Each interface's rule reads its own carrier-change counter, and fires once the carrier is back up."""
+    """Each interface's rule reads its own carrier-change counter, and fires once the carrier is back up,
+    unless its link was down long enough for LinkDown to have paged already."""
+    causes = monitoring.causes(inv)
     for r in rules_for("InterfaceFlapped"):
-        sel = f'{{node="{r["labels"]["node"]}",device="{r["labels"]["device"]}"}}'
-        assert r["expr"] == f"increase(node_network_carrier_changes_total{sel}[{monitoring.FLAP_WINDOW}s]) > 0 " \
-                            f"and node_network_carrier{sel} == 1"
+        node, device = r["labels"]["node"], r["labels"]["device"]
+        sel = f'{{node="{node}",device="{device}"}}'
+        flap = f"(increase(node_network_carrier_changes_total{sel}[{monitoring.FLAP_WINDOW}s]) > 0 and node_network_carrier{sel} == 1)"
+        link = monitoring.link_id(monitoring.link_at(inv, node, device))
+        paged = (f' unless on() max_over_time(ALERTS{{alertname="LinkDown",alertstate="firing",cause="{link}"}}'
+                 f'[{monitoring.after_link_down(inv)}s])') if link in causes else ""
+        assert r["expr"] == flap + paged
+    # The flap's counter stays raised FLAP_WINDOW after the carrier is back, and LinkDown's last firing
+    # evaluation can be an interval before that.
+    assert monitoring.after_link_down(inv) > monitoring.FLAP_WINDOW + inv.monitoring["interval"]
+
+
+def test_every_scrape_job_has_a_target_down_rule():
+    """A router's exporter pages per router; every other job, the NOC's own, pages when any of its targets
+    stops answering. A job added to the scrape config gets its rule with no other change."""
+    rules = rules_for("TargetDown")
+    for job in {j["job_name"] for j in monitoring.prometheus_config(inv)["scrape_configs"]}:
+        mine = [r for r in rules if r["labels"]["job"] == job]
+        if job in monitoring.EXPORTERS:
+            # frr_exporter runs on the routers we own, node_exporter there and on each server (decision 0023).
+            want = monitoring.exporter_routers(inv) if job == "frr" else monitoring.exporter_nodes(inv)
+            assert sorted(r["labels"]["node"] for r in mine) == sorted(want), job
+        else:
+            assert [r["expr"] for r in mine] == [f'min(up{{job="{job}"}}) == 0'], job
 
 
 def test_source_silent_bound():
@@ -187,6 +210,13 @@ def test_web_check_on_a_port_nobody_listens_on_is_refused(tmp_path):
     def m(raw):
         raw["monitoring"]["web"][0]["port"] = 8080
     assert "web check h2:8080 has no listener in services" in problems(tmp_path, m)
+
+
+def test_a_heartbeat_between_two_flushes_is_refused(tmp_path):
+    """Alertmanager sends only on a flush, so a heartbeat period that is not a whole number of them can't be kept."""
+    def m(raw):
+        raw["monitoring"]["alert_path"]["every"] = raw["monitoring"]["group_interval"] * 2 + 2
+    assert "must be a multiple of group_interval" in problems(tmp_path, m)
 
 
 def test_monitoring_host_must_be_a_host(tmp_path):

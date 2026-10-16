@@ -21,7 +21,7 @@ sources:
 stake: An engineer on shift silences a whole router to stop one flapping port, or acts on an alert without knowing a change went out an hour ago
 failure_modes:
   - mode: an alert carries no context, or a template that fails and shows an error instead
-    mitigation: rule() adds why_fired, baseline and changes to every rule; a live outage of 20 or more alerts checks each one filled in by Prometheus, with no template error
+    mitigation: rule() adds why_fired, baseline and changes to every rule; a live outage of 20 or more alerts, the cause markers and the heartbeat not counted, checks each one filled in by Prometheus, with no template error
     test: tests/live/observe/test_outage.py::test_every_alert_says_why_what_is_normal_and_what_changed
   - mode: the baseline link points at some other series than the alert's
     mitigation: The link is built from the same signal the rule's condition reads, and the live test queries its expression for that object's own history

@@ -67,8 +67,9 @@ collectors:
     after_push: [netlab_job_last_success_timestamp_seconds]
   up:
     exporter: Prometheus itself
-    reads: whether each scrape above answered
-    metrics: [up]
+    reads: whether each scrape above answered, and which of its own alerts fire (ALERTS, read by InterfaceFlapped
+      so the flap that ends a link outage LinkDown paged for doesn't page again)
+    metrics: [up, ALERTS]
 
 # What each metric above counts (OROS DEC-2, decision 0024): the unit, a counter or a gauge, and for an
 # interface or queue counter its direction and where it counts (before or after the queue). A counter also
@@ -231,6 +232,10 @@ counts:
     type: gauge
   up:
     counts: 1 if Prometheus' last scrape of the target answered, 0 if not (Prometheus' own, per target)
+    type: gauge
+  ALERTS:
+    counts: 1 for each alert rule's series while it is pending or firing, with alertstate saying which; the series
+      ends when the alert resolves (Prometheus' own, per alert)
     type: gauge
 
 # Programs that change a device and read nothing from it (the lint counts them as actions, not reads).

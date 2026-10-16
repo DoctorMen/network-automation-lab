@@ -383,7 +383,7 @@ def monitoring_problems(inv: Inventory) -> list[str]:
             problems.append(f"monitoring: image {name} has no digest (sha256:...) under digests")
     path = mon.get("alert_path") or {}
     for key, value in (("interval", mon.get("interval")), ("reboot_window", mon.get("reboot_window")),
-                       ("group_wait", mon.get("group_wait")),
+                       ("group_wait", mon.get("group_wait")), ("group_interval", mon.get("group_interval")),
                        ("heartbeat", logs.get("heartbeat")), ("silent_after", logs.get("silent_after")),
                        ("alert_path every", path.get("every")), ("alert_path silent_after", path.get("silent_after"))):
         if not (isinstance(value, int) and value > 0):
@@ -408,7 +408,11 @@ def monitoring_problems(inv: Inventory) -> list[str]:
     if not beat + 2 * interval < silent <= 2 * beat - 3 * interval - wait - 1:
         problems.append(f"logging: silent_after {silent} must be over heartbeat + 2 x interval ({beat + 2 * interval}) "
                         f"and at most twice the heartbeat less 3 x interval, group_wait and 1 s ({2 * beat - 3 * interval - wait - 1})")
-    # Watchdog's mail goes out every `every` s, on Alertmanager's 5 s flush: one late mail must not page.
+    # Watchdog's mail goes out on Alertmanager's flushes, group_interval apart, so its period is a whole
+    # number of them; one late mail must not page.
+    if path["every"] % mon["group_interval"]:
+        problems.append(f"monitoring: alert_path every {path['every']} must be a multiple of group_interval "
+                        f"({mon['group_interval']}), since Alertmanager sends only on a flush")
     if not path["silent_after"] > 2 * path["every"] + interval:
         problems.append(f"monitoring: alert_path silent_after {path['silent_after']} must be over twice its every "
                         f"plus one interval ({2 * path['every'] + interval})")
