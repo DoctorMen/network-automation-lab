@@ -111,12 +111,16 @@ jobs:
         id: secret-scan
         # Runs after drift, so it sees every file this run wrote. gitleaks knows the patterns; the
         # grep knows this run's actual password, read from its file (-f), never from a command line.
-        # The backup runs only when this passed, so a password that reached backups/ never reaches restic.
+        # The backup runs only when this passed, so a password that reached backups/ never reaches restic,
+        # and results/, backups/ and the finding bundle are uploaded only when it did not fail.
+        # grep exits 1 for no match, 0 for a match and 2 for an error (it may have matched as well), so
+        # only 1 is clean. A folder this run never wrote (drift failed early) is left out, not an error.
         if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: |
           make gitleaks
           for f in "$NETLAB_SECRETS"/*; do
-            if grep -rlF -f "$f" backups results build; then echo "::error::this run's BGP password is in the files above"; exit 1; fi
+            rc=0; grep -rlF -f "$f" $(ls -d backups results build 2>/dev/null) || rc=$?
+            if [ "$rc" != 1 ]; then echo "::error::this run's BGP password is in the files above, or a file could not be read (grep exit $rc)"; exit 1; fi
           done
       # The backup destination is a restic repository kept between runs in the Actions cache. It is
       # created once by hand (drills.yml, input init_backup_repo) and never here: a job that creates
@@ -137,13 +141,25 @@ jobs:
         # (from NETLAB_SECRETS), and sends nothing if the capture holds it.
         if: ${{ !cancelled() && steps.backup-repo.outcome == 'success' }}
         run: make backup BACKUP_REPO="$RUNNER_TEMP/backup/repo" BACKUP_PASSWORD="$RUNNER_TEMP/backup/password"
+      # A key per attempt: keys can't be overwritten, and a re-run keeps its run id.
       - name: Keep the repository for the next run
+        id: keep-repo
         if: ${{ !cancelled() && steps.backup.outcome == 'success' }}
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/backup
-          key: restic-${{ github.run_id }}
+          key: restic-${{ github.run_id }}-${{ github.run_attempt }}
+      # actions/cache/save only warns when the upload fails, so look the new key up: a miss fails here.
+      - name: Check the repository reached the cache
+        if: ${{ !cancelled() && steps.keep-repo.outcome == 'success' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/backup
+          key: restic-${{ github.run_id }}-${{ github.run_attempt }}
+          lookup-only: true
+          fail-on-cache-miss: true
       - name: Measure RAM (raw data for docs/sizing)
+        id: measure
         continue-on-error: true  # a sizing reading is evidence, not a network test
         run: |
           # Drop the committed runner file first, so the artifact and the log only ever hold this run's reading.
@@ -162,7 +178,7 @@ jobs:
           docker exec clab-netauto-fw1 iptables -vnL FORWARD || true
           docker exec clab-netauto-r2 sh -c 'iptables -vnL; iptables -t raw -vnL' || true
       - name: Upload test results and config backups
-        if: always()
+        if: ${{ always() && steps.secret-scan.outcome != 'failure' }}
         uses: actions/upload-artifact@v4
         with:
           name: results-and-backups
@@ -172,7 +188,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 90
       - name: Upload the finding bundle (re-run by the reproduce job)
-        if: always()
+        if: ${{ always() && steps.secret-scan.outcome != 'failure' }}
         uses: actions/upload-artifact@v4
         with:
           name: finding-bundle
@@ -180,7 +196,8 @@ jobs:
           if-no-files-found: ignore
           retention-days: 90
       - name: Upload sizing data
-        if: always()
+        # Only after a measurement: if it was skipped, the folder still holds the committed file.
+        if: ${{ always() && steps.measure.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: sizing-data

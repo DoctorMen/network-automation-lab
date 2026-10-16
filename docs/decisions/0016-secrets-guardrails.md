@@ -35,7 +35,7 @@ failure_modes:
     mitigation: The pre-push hook refuses it; pushed anyway with --no-verify, the CI scan of the pushed history goes red and names the rule
     test: tests/test_secrets.py::test_marked_file_is_blocked_at_push_and_alerted_by_ci
   - mode: a BGP password in clear in a backup or drift output, which gitleaks' default rules miss
-    mitigation: The redacting vtysh on each router prints a sha256 tag instead; the frr-bgp-neighbor-password rule catches any line still in clear, and the lab job scans backups/, results/ and build/ after drift
+    mitigation: The redacting vtysh on each router prints a sha256 tag instead; the frr-bgp-neighbor-password rule catches any line still in clear, and the lab job scans backups/, results/ and build/ after drift and uploads results/ and backups/ only when that scan did not fail
     test: tests/test_secrets.py::test_frr_password_rule_catches_what_default_rules_miss
   - mode: the password on a command line, in an environment, a log or a temp file while make apply or make drift runs
     mitigation: vtysh reads it on stdin; the task is no_log; pipelining keeps the module and its arguments off disk on both ends; frr-reload.py never sees a password line

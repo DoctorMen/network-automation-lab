@@ -21,7 +21,8 @@ make a new repository in the empty mountpoint, on the local disk, and report suc
 
 In CI the repository and its password live in the Actions cache (`$RUNNER_TEMP/backup`), restored at
 the start of the backup step with `fail-on-cache-miss` and saved under a new key after a verified
-backup. Create it once with **Actions > Drills > Run workflow > init_backup_repo**, in the order
+backup. `actions/cache/save` only warns when its upload fails, so the next step looks that key up
+and fails the job if the cache doesn't hold it. Create it once with **Actions > Drills > Run workflow > init_backup_repo**, in the order
 below. That job refuses if a repository already exists. Pull requests don't back up: their caches
 are scoped to the PR, so main could never restore them.
 
@@ -36,13 +37,13 @@ the cache the one before saved. Each can be started from the Actions tab (Run wo
    `gh workflow run drills.yml --ref main -f init_backup_repo=true`, or the API with
    `{"ref": "main", "inputs": {"init_backup_repo": "true"}}`. It must show: job *Create the backup
    repository* green, its *Refuse to replace it* step skipped, `created a restic repository at ...`,
-   and a cache `restic-<run id>` under Actions > Caches. The drill job is skipped.
+   and a cache `restic-<run id>-1` under Actions > Caches. The drill job is skipped.
 2. **One CI run with a backup.** `gh workflow run ci.yml --ref main`, or the API with
    `{"ref": "main"}` (the nightly run does the same). It must show, in the lab job: *Restore the
-   backup repository* finds `restic-<run id of step 1>`, *Back up configs* ends with `verified
+   backup repository* finds `restic-<run id of step 1>-1`, *Back up configs* ends with `verified
    snapshot ...: 7 files, every inventory device, no secret in clear (1 searched for), restic check
    --read-data clean`, and *Keep the
-   repository* saves a new `restic-<run id>`. Its control-status job is still red, naming only the
+   repository* saves a new `restic-<run id>-1`, which *Check the repository reached the cache* finds. Its control-status job is still red, naming only the
    drill tests (`has no result in the evidence`): no drill has run yet.
 3. **One drill run.** `gh workflow run drills.yml --ref main`, or the API with `{"ref": "main"}` and
    no inputs (`init_backup_repo` defaults to false). It must show: job *Restore drill and power-event
