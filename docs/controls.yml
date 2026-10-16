@@ -449,6 +449,7 @@ controls:
   - id: verdict-log
     claim: "Every odd behaviour in the log has one verdict (my config, normal behaviour, platform bug or lab artifact), the version it was seen on, and a fix or workaround. None may stay unclassified past 5 working days"
     test:
+      - tests/test_verdicts.py::test_verdict_log_is_well_formed
       - tests/test_verdicts.py::test_verdict_log_lints_clean
       - tests/test_verdicts.py::test_unclassified_entry_gets_five_working_days
     period: P31D
@@ -457,8 +458,11 @@ controls:
       on it, or a platform bug is worked around forever without anyone knowing.
     fails_when: >-
       It lints what is written. An odd behaviour nobody logs is never checked, and the verdict
-      itself is only as right as its evidence. The 5-day limit is checked in CI's review job, which
-      the lab job doesn't wait for, so an overdue entry turns only that job red.
+      itself is only as right as its evidence. The log's structure (every field, a known verdict, a
+      fix or workaround, no id used twice) is checked by make test, so in CI's offline job, which the
+      lab job waits for. The 5-day limit is checked by make review, in CI's review job, which the lab
+      job doesn't wait for: an overdue entry turns the review job red, and on main the control-status
+      job as well, since it reads the review job's results.
 
   - id: decision-records
     claim: "Every design decision has a record naming the constraint, the alternatives (doing nothing included), an outside source, the stake and who decides"

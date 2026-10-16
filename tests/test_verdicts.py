@@ -27,6 +27,14 @@ def test_verdict_log_lints_clean():
     assert lint(VERDICTS) == []
 
 
+def test_verdict_log_is_well_formed():
+    """docs/verdicts.yml's structure, with no date compared to today, so `make test` checks it: every entry
+    has its fields and an id of its own, and a classified one a known verdict and a fix or workaround. The
+    5-working-day limit is test_verdict_log_lints_clean's, in `make review`."""
+    # date.min is before every entry was opened, so no entry is overdue and only the structure counts.
+    assert lint(VERDICTS, today=date.min) == []
+
+
 def test_entry_without_fix_or_workaround_fails(tmp_path):
     assert lint(log_with(tmp_path, fixed_in=None)) == ["verdicts.yml: V-100: neither fixed_in nor workaround"]
 
