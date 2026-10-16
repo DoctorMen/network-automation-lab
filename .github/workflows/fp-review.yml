@@ -20,7 +20,8 @@ jobs:
   fp-review:
     name: Benign workload on the full lab, every page counted
     runs-on: ubuntu-24.04
-    # About 6 minutes to deploy, up to 5 for the NOC to go quiet, 30 of workload and 2 for late pages.
+    # Up to 5 minutes for the NOC to go quiet, 30 of workload and 2 for late pages, after the deploy (about 2
+    # minutes in the sandbox; the image pulls on a runner are not measured).
     timeout-minutes: 60
     env:
       CLAB_VERSION: "0.68.0"
