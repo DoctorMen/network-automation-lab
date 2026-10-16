@@ -515,7 +515,8 @@ controls:
     fails_when: >-
       Syslog is UDP with no queue or authentication (RISK-33): a whole stream lost pages, but a single
       lost line or a forged one is not detected. h2's app log's bound is stated (its silent_after plus
-      evaluation), not twice its 5 s gap, because that would page on one late scrape. Only r1's export is
+      evaluation): its normal gap is the heartbeat, since its forwarder cuts the NOC's checks and sends a
+      count line per heartbeat's worth (decision 0026), so it rests on those checks. Only r1's export is
       blocked live; the others have the same generated rule.
 
   - id: central-log-store
@@ -551,6 +552,55 @@ controls:
       The digest is checked against what Docker reports for the pulled image, so it trusts the local
       daemon. Answering only on two ports is not authentication: anyone on the campus can send the
       collector a line naming any router (RISK-33), and the exporters have no TLS (RISK-31).
+
+  - id: logvol-cut-at-source
+    claim: "One named kind of line, the NOC's own successful web check, is cut at h2's own forwarder before it leaves h2, and nothing else is: 36 of the check's own requests are written to h2's log and never reach the store, which gets the forwarder's count lines instead, while the same request from a user and a failed check from the NOC arrive as written. Every log source has a daily ingest budget, the budgets together fit the store for its whole retention, each source's last 24 h at the collector is within its budget, and a source whose last 24 h passes it fires LogIngestOverBudget"
+    test:
+      - tests/live/observe/test_volume.py::test_noisy_kind_cut_at_the_source_while_wanted_lines_arrive
+      - tests/live/observe/test_volume.py::test_every_source_within_its_budget
+      - tests/test_volume.py::test_forwarder_cuts_the_named_kind_and_nothing_else
+      - tests/test_volume.py::test_an_unnamed_kind_is_never_cut
+      - tests/test_volume.py::test_budget_rule_pages_once_a_source_passes_its_day
+      - tests/test_volume.py::test_every_source_has_a_budget_and_a_rule
+      - tests/test_volume.py::test_budgets_the_store_cannot_hold_are_refused
+      - tests/test_volume.py::test_a_source_without_a_budget_is_refused
+      - tests/test_volume.py::test_a_cut_kind_netlab_does_not_know_is_refused
+      - tests/test_volume.py::test_a_cut_source_must_wait_a_heartbeat_before_it_is_silent
+    period: P31D
+    threat: >-
+      The store filling with the NOC's own check while nobody knows which source spends its disk; a cut
+      meant for noise that drops the line explaining an incident, or drops a whole source or severity.
+    fails_when: >-
+      The cut matches what an access line says (client address, request, status), so any successful GET /
+      from the NOC's address is cut too (RISK-55). The budget counts the bytes the collector hands Loki,
+      not Loki's disk, and only pages (RISK-56); once a day is over it stays firing for that day (RISK-57).
+      The page itself is proven in Prometheus' own rule evaluator, not live, because a live page would stay
+      up for a day. Routers' syslog, mostly Ansible's module lines (V-030), is not cut.
+
+  - id: logvol-detection-coverage
+    claim: "[`docs/detections.md`](docs/detections.md) is generated from the alert rules the NOC runs: one row per detection with what it detects, the data it reads, its sensor and where that sits, the objects it watches, its blind spots and its pages over 30 minutes of a stated benign workload, with no blank cell. `make test` fails on a rule with no row, a hand edit, or a review older than 92 days or run on other rules, and the rows are the rules the running NOC has loaded"
+    test:
+      - tests/test_detections.py::test_table_has_a_full_row_for_every_deployed_rule_and_a_current_review
+      - tests/test_detections.py::test_every_alert_the_rules_raise_is_a_row
+      - tests/test_detections.py::test_a_rule_without_a_row_fails
+      - tests/test_detections.py::test_a_blank_blind_spot_fails
+      - tests/test_detections.py::test_a_review_older_than_its_cycle_fails
+      - tests/test_detections.py::test_a_review_of_other_rules_fails
+      - tests/test_detections.py::test_a_review_shorter_than_the_stated_workload_fails
+      - tests/test_detections.py::test_a_review_with_a_failed_step_fails
+      - tests/test_detections.py::test_a_detection_the_review_never_measured_has_a_blank_cell
+      - tests/test_detections.py::test_a_hand_edited_table_fails
+      - tests/test_detections.py::test_a_source_over_its_budget_during_the_review_fails
+      - tests/live/observe/test_detections.py::test_table_rows_are_the_rules_the_running_noc_has_loaded
+    period: P31D
+    threat: >-
+      A quiet NOC read as cover for what it never sees; a detection that pages on normal work until people
+      stop reading its pages; a table that was right once and drifted from the rules.
+    fails_when: >-
+      Each false-positive figure is 30 minutes of a stated workload in the lab, not a real network's normal
+      work (RISK-58), and a real fault in that window counts as false. Blind spots are written by hand, so
+      an entry is only as good as whoever wrote it; the check proves it is there and not blank. make test
+      fails 92 days after the last review, and on any rule change, until make fp-review runs again on a full lab.
 
   - id: verdict-log
     claim: "Every odd behaviour in the log has one verdict (my config, normal behaviour, platform bug or lab artifact), the version it was seen on, and a fix or workaround. None may stay unclassified past 5 working days"

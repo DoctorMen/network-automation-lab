@@ -208,7 +208,7 @@ logging:
   # collector. LogIngestOverBudget pages once a source's last 24 h passes its budget. netlab validate
   # fails if every source at its full budget for the whole retention would not fit store_mb, the disk
   # the NOC sets aside for raw lines. Sized from the benign workload (`make fp-review`), whose operator
-  # runs drift and apply every five minutes: about twice the busiest router's pace there.
+  # runs drift and apply every five minutes: 2.8 times the busiest router's pace there (V-030).
   budget:
     store_mb: 1536
     syslog_kb: 8192       # each router, firewall and server's syslog

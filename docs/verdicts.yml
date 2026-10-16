@@ -169,3 +169,13 @@
     - "Prometheus history for that run (query_range, 1 s step, times from BFD going down): frr_bfd_peer_state{node=\"r1\",peer=\"10.0.12.1\"} missing from about +3 s to +14 s, then 0; frr_ospf_neighbor_adjacencies{iface=\"eth1\"} 0 at +4 s, 1 at +14 s; ALERTS pending from +8 s to +17 s, then a second pending series from +18 s, firing at +28 s. FRR deletes the session when OSPF drops the adjacency and adds it back, still down, when OSPF re-forms"
     - "The rule was `frr_bfd_peer_state{...} != 1 or absent(...)`: the series half keeps the target's labels (job, instance, owner, role), absent() gives node and peer only, so the alert changed identity when the series came back and its 10 s `for` started again"
   fixed_in: "decision 0018 (build/w2base, not yet committed): every per-object rule is `max by (<the object's keys>) (... ) or absent(...)`, so both halves label the alert alike, and owner and role are rule labels; tests/test_monitoring.py::test_an_alert_keeps_its_identity_while_its_series_comes_and_goes"
+
+- id: V-030
+  opened: 2026-10-16
+  version: ansible-core 2.21.5 (ansible>=10), busybox syslogd in frrouting/frr:v8.4.1
+  symptom: each router's syslog sent the store 2.4 to 3.6 MB a day over the benign workload, over the first 1 MiB budget, and nearly all of it was lines Ansible writes for each module it runs
+  verdict: normal-behaviour
+  evidence:
+    - "2026-10-16, lab na12, an 8-minute run of the benign workload (make drift and make apply every five minutes) with a 1 MiB syslog budget: r1 2.9, r2 3.6, r3 3.4 MB a day, fw1 0.6, h2 0.06"
+    - "2026-10-16, lab na12, the 30-minute review in monitoring/fp-review.yml (05:18:28Z to 05:48:57Z), read back from Loki: r1 97%, r2 94%, r3 98% and fw1 86% of their syslog bytes are lines tagged ansible-<module> ('Invoked with' and the module's arguments); the rest is mostly the heartbeat. Ansible's modules log each invocation to the target's syslog; decision 0019 relies on no_log to keep the password task's out"
+  workaround: "The syslog budget is sized to it: 8 MiB a day, 2.8 times r2's 3.0 MB a day in that review (decision 0026). The lines are not cut: busybox syslogd can't filter by message, and they are the record of what the operator's playbooks ran on each router"

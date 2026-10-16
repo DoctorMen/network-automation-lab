@@ -58,6 +58,14 @@ def test_a_review_shorter_than_the_stated_workload_fails():
     assert any(p.startswith("the review ran") for p in problems(review=review))
 
 
+def test_a_review_with_a_failed_step_fails():
+    """A step that failed means part of the normal work never ran, so the window was not the stated workload."""
+    review = copy.deepcopy(REVIEW)
+    step = next(iter(review["steps"]))
+    review["steps"][step]["failed"] = 1
+    assert f"review step failed 1 of {review['steps'][step]['runs']} times: {step}" in problems(review=review)
+
+
 def test_a_detection_the_review_never_measured_has_a_blank_cell():
     review = copy.deepcopy(REVIEW)
     del review["detections"]["WebContentWrong"]

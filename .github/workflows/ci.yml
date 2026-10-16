@@ -185,11 +185,14 @@ jobs:
       - name: Deploy (network and NOC)
         id: deploy
         run: make deploy
-      - name: NOC tests (NOT-1 state alerts, NOT-2 coverage, NOT-3 arrival, NOT-7 central store)
+      - name: NOC tests (NOT-1 state alerts, NOT-2 coverage, NOT-3 arrival, NOT-5 volume, NOT-6 detections, NOT-7 central store)
         run: make observe  # also writes results/observe.xml (JUnit, timestamped)
       - name: Synthetic event from every log source (make testevent)
         if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: make testevent
+      - name: Each log source's last 24 h against its daily budget (make ingest, OROS NOT-5)
+        if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
+        run: make ingest
       - name: Config drift check (Ansible)
         # The observe tests put back everything they break; drift proves it.
         if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}

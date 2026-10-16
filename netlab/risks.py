@@ -102,6 +102,9 @@ DETECTORS = {
                            "syslog sent over UDP, with no acknowledgement, queue or authentication"),
     "log-store-in-container": Detector("build", "noc/loki.yaml", r"^\s+chunks_directory: /loki/", None,
                                        "the central log store kept inside its container, one copy, with no backup"),
+    # Log volume at the source (decision 0026).
+    "log-cut-at-source": Detector("build", "*/forwarder.yaml", r'\.cut = "', None,
+                                  "a kind of log line cut at its source, so the store holds only a count of it"),
 }
 
 

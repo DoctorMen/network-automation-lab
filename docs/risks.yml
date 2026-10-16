@@ -707,3 +707,85 @@
   presented_to: pending
   presented_on: null
   presented_evidence: null
+
+- id: RISK-55
+  kind: accepted-risk
+  title: h2's forwarder cuts every successful GET / from the NOC's address, not only the NOC's own check
+  detectors: [log-cut-at-source]
+  likelihood: 2
+  impact: 2
+  reasoning: >-
+    The cut (decision 0026) matches a line by its client address (the collector's, 10.30.30.10), its
+    request line (GET / HTTP/1.1) and a 200 status, because that is all an access line says. So an
+    operator on noc loading h2's page, or anything else on noc making that same request, is cut with the
+    check and reaches the store only as a count. A request from any other address, any other page, any
+    other status, and the check itself failing are all forwarded as written. Anyone able to run commands
+    on noc already holds the NOC's store and rules. The fix is a check the app can tell apart (a header
+    it logs), which needs a change to the app NOT-7 says we may not make.
+  compensating_control: tests/live/observe/test_volume.py::test_noisy_kind_cut_at_the_source_while_wanted_lines_arrive
+  compensates: only that one kind is cut, every cut line is counted in the store, and a failed request from the NOC arrives as written
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-56
+  kind: accepted-risk
+  title: the ingest budget counts the bytes the collector hands the store, and only pages
+  likelihood: 2
+  impact: 2
+  reasoning: >-
+    log_bytes_total adds up the length of each line's message at the collector. Loki's own disk use adds
+    an index and labels and takes compression off, so a source at its budget can use more or less disk
+    than its budget says; store_mb is checked against the budgets, not against Loki's disk. Nothing stops
+    a source over its budget: LogIngestOverBudget pages once its last 24 h passes it, and every line is
+    still stored, so a flood can fill noc's disk in less than a day. Lines from an address the collector
+    can't map are labelled node=unknown, with no budget. A real NOC would also set Loki's per-stream rate
+    limits, which drop lines.
+  compensating_control: tests/test_volume.py::test_budget_rule_pages_once_a_source_passes_its_day
+  compensates: a source over its day's budget pages, named by node and source, with the day's total in the page
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-57
+  kind: accepted-risk
+  title: a source over its day's budget pages once and stays firing for the rest of that day
+  likelihood: 2
+  impact: 1
+  reasoning: >-
+    LogIngestOverBudget reads the last 24 h, as a licence or a store counts it. Once a burst puts a source
+    over, the alert stays firing until the burst is more than a day old (tests/test_volume.py proves it
+    clears then), so a second flood from the same source that day is no new page. A pace alert would
+    catch it, and would also page on the operator's normal bursts (make drift and make apply every five
+    minutes), which is why the budget is a day's total (decision 0026).
+  compensating_control: none (`make ingest` shows each source's current pace against its budget on demand)
+  compensates: while it fires, the page names the source and its day's total, and `make ingest` shows whether it is still sending
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-58
+  kind: accepted-risk
+  title: each detection's false-positive figure comes from 30 minutes of a stated workload in the lab
+  likelihood: 3
+  impact: 2
+  reasoning: >-
+    `make fp-review` (decision 0027) counts every page over 30 minutes of a stated benign workload: a
+    user's page loads and pings, and the operator's drift, apply, verify, testevent and locate every five
+    minutes, on a lab with nothing broken. A real campus has other normal work (maintenance windows,
+    a carrier that flaps, many users at once, a reboot window that runs out), and slower patterns than
+    30 minutes. So a figure of 0 is 0 pages over that workload, not a rate for a real network. The review
+    can't tell a real fault in its window from a false page, so a figure can only overstate.
+  compensating_control: tests/test_detections.py::test_table_has_a_full_row_for_every_deployed_rule_and_a_current_review
+  compensates: the workload is stated in docs/detections.md, every figure is from the current 92-day cycle and from the rules that run now
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null

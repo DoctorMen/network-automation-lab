@@ -122,8 +122,8 @@ def over_budget(source, value):
 
 def test_budget_rule_pages_once_a_source_passes_its_day(docker, rendered):
     """The rendered rule, in Prometheus' own evaluator: a source sending a fiftieth of its budget a minute is quiet
-    at 49 minutes and pages at 51; a burst under its budget never pages; one over it pages until it is a day old,
-    and a day after the spending stops nothing pages."""
+    at 49 minutes and pages at 51; a burst under its budget never pages; one over it pages at once; both still page
+    hours after they stopped sending (a rule over the last hour would not), and a day after the spending stops nothing pages."""
     syslog = next(s for s in monitoring.log_sources(inv) if s["source"] == "syslog")
     app = next(s for s in monitoring.log_sources(inv) if s["source"] != "syslog")
     quiet = next(s for s in monitoring.log_sources(inv) if s["source"] == "syslog" and s["node"] != syslog["node"])
@@ -148,6 +148,9 @@ def test_budget_rule_pages_once_a_source_passes_its_day(docker, rendered):
             {"eval_time": "49m", "alertname": "LogIngestOverBudget", "exp_alerts": [over_budget(app, burst)]},
             {"eval_time": "51m", "alertname": "LogIngestOverBudget", "exp_alerts": [over_budget(syslog, 51 * step),
                                                                                    over_budget(app, burst)]},
+            # Hours after both stopped sending, their day is still over: a day's total, not a pace.
+            {"eval_time": "300m", "alertname": "LogIngestOverBudget", "exp_alerts": [over_budget(syslog, 60 * step),
+                                                                                    over_budget(app, burst)]},
             # A day after the hour that spent it, nothing in the last 24 h is over any budget.
             {"eval_time": "1500m", "alertname": "LogIngestOverBudget", "exp_alerts": []},
         ],

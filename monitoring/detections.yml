@@ -76,8 +76,9 @@ detections:
   LogIngestOverBudget:
     detects: a log source whose last 24 h at the collector passed its daily budget from the inventory
     blind_spots:
-      - "It counts the bytes of each line the collector hands to Loki, not what Loki keeps on disk with its index and compression."
+      - "It counts the bytes of each line the collector hands to Loki, not what Loki keeps on disk with its index and compression, and it stops nothing (RISK-56)."
       - "A day's total, not a pace: a flood that stays under the day's budget does not page, however fast it came."
+      - "Once a source's day is over its budget the alert stays firing until that day is out, so a second flood from it is no new page (RISK-57)."
       - "Lines cut at the source are not counted, by design, and lines lost on the way never arrive to be counted."
       - "Lines from an address the collector can't map are labelled node=unknown, and no rule has a budget for them."
 
