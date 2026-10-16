@@ -31,6 +31,8 @@ def test_dependencies_come_from_the_inventory_graph():
         assert {"r2", "r3", "h2:eth1-r3:eth3"} <= deps(r), r["labels"]
     assert deps(rules("NodeDown", node="r1")[0]) == {"r2"}
     assert deps(rules("NodeDown", node="r2")[0]) == set(), "r2 is the NOC's first hop: nothing the NOC sees is in front of it"
+    # So a dead uplink from the NOC is still one page, NodeDown for r2 (RISK-43).
+    assert all("r2" in deps(r) for r in rules("NodeDown") if r["labels"]["node"] != "r2")
     assert {"r1", "fw1:eth2-r1:eth3"} <= deps(rules("NodeDown", node="fw1")[0])
     # A session's alerts list both ends of their link and the collector they are read through.
     for r in rules("OSPFNeighborDown", node="r1", neighbor="r3"):

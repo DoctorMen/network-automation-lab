@@ -11,7 +11,8 @@ reference that will still be there when an auditor or the next scan raises the f
 silence can't grow to cover a new object by matching a pattern.
 
 Alertmanager keeps silences in its own state, which a redeploy starts empty, so `make deploy` runs this
-again; the file is the record of every silence, expired ones included.
+again; the file is the record of every silence, expired ones included. A silence in Alertmanager that the
+file doesn't hold (one added by hand with amtool or the web page) is reported, and `make silence` fails.
 """
 from __future__ import annotations
 
@@ -106,12 +107,25 @@ def check(entries: list[dict], inv: Inventory, refs: set[str]) -> list[str]:
     return [p for e in entries for p in problems(e, inv, refs)]
 
 
+OPS = {(True, False): "=", (True, True): "=~", (False, False): "!=", (False, True): "!~"}
+FROM_FILE = re.compile(r"\(monitoring/silences\.yml #([0-9a-f]{10})\)$")
+
+
+def in_place(noc) -> dict[str | None, list[dict]]:
+    """Alertmanager's active and pending silences by the file key in their comment (None: no key)."""
+    out: dict[str | None, list[dict]] = {}
+    for s in noc.silences():
+        if s["status"]["state"] in ("active", "pending"):
+            m = FROM_FILE.search(s.get("comment") or "")
+            out.setdefault(m.group(1) if m else None, []).append(s)
+    return out
+
+
 def apply(entries: list[dict], noc, now: datetime | None = None) -> list[tuple[dict, str]]:
     """Add each silence that hasn't ended to Alertmanager, unless it is there already (by its key).
     [(entry, silence id)] for each one now in place."""
     now, out = now or datetime.now(timezone.utc), []
-    present = {s["comment"].rsplit("#", 1)[-1].rstrip(")"): s["id"] for s in noc.silences()
-               if s["status"]["state"] in ("active", "pending") and "#" in s.get("comment", "")}
+    present = {k: found[0]["id"] for k, found in in_place(noc).items() if k}
     for e in entries:
         if when(e["ends"]) <= now:
             continue  # kept in the file as the record; Alertmanager has nothing to do
@@ -121,6 +135,12 @@ def apply(entries: list[dict], noc, now: datetime | None = None) -> list[tuple[d
                                          str(e["by"]), f"{e['reason']} [{e['ref']}] (monitoring/silences.yml #{k})")
         out.append((e, present[k]))
     return out
+
+
+def strays(entries: list[dict], noc) -> list[dict]:
+    """Active or pending silences the file doesn't hold: added by hand, or left after their entry was removed."""
+    keys = {key(e) for e in entries}
+    return [s for k, found in in_place(noc).items() if k not in keys for s in found]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -137,12 +157,16 @@ def main(argv: list[str] | None = None) -> int:
     if found or args.check:
         print(f"{len(entries)} silences, " + (f"{len(found)} problems" if found else "each narrow, time-boxed and justified"))
         return 1 if found else 0
-    if not entries:
-        print("no silences")
-        return 0
-    for e, sid in apply(entries, Noc(lab_name(), monitoring.host(inv))):
+    noc = Noc(lab_name(), monitoring.host(inv))
+    for e, sid in apply(entries, noc):
         print(f"{sid}  {matchers(e)}  until {when(e['ends']).isoformat()}  ({e['ref']}, {e['by']})")
-    return 0
+    loose = strays(entries, noc)
+    for s in loose:
+        what = " ".join(m["name"] + OPS[m.get("isEqual", True), m["isRegex"]] + repr(m["value"]) for m in s["matchers"])
+        print(f"{s['id']}  {what}  until {s['endsAt']}  by {s.get('createdBy')!r}: not in monitoring/silences.yml; "
+              "add it there with its reason and record, or expire it", file=sys.stderr)
+    print(f"{len(entries)} silences in the file, {len(loose)} in Alertmanager that it doesn't hold")
+    return 1 if loose else 0
 
 
 if __name__ == "__main__":

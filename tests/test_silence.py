@@ -69,7 +69,8 @@ class FakeNoc:
 
     def add_silence(self, matchers, starts, ends, by, comment):
         self.added.append(matchers)
-        self.store.append({"id": f"s{len(self.added)}", "comment": comment, "status": {"state": "active"}})
+        self.store.append({"id": f"s{len(self.added)}", "comment": comment, "createdBy": by, "endsAt": ends, "status": {"state": "active"},
+                           "matchers": [{"name": k, "value": v, "isRegex": False, "isEqual": True} for k, v in matchers.items()]})
         return f"s{len(self.added)}"
 
 
@@ -79,3 +80,21 @@ def test_apply_adds_each_current_silence_once_and_skips_ended_ones():
     assert [sid for _, sid in silence.apply([entry(), old], noc, now=T0)] == ["s1"], "added again"
     assert noc.added == [{"alertname": "InterfaceFlapped", "node": "r1", "device": "eth3"}]
     assert "[RISK-30]" in noc.store[0]["comment"] and noc.store[0]["comment"].startswith(entry()["reason"])
+
+
+def test_a_silence_added_by_hand_is_reported(tmp_path, monkeypatch, capsys):
+    """One added with amtool, on a whole router, isn't in the file: make silence names it and fails."""
+    noc = FakeNoc()
+    [(_, mine)] = silence.apply([entry()], noc, now=T0)
+    noc.store.append({"id": "by-hand", "comment": "r1 is noisy", "createdBy": "someone", "endsAt": "2026-10-27T08:00:00Z",
+                      "matchers": [{"name": "node", "value": "r1", "isRegex": False, "isEqual": True}],
+                      "status": {"state": "active"}})
+    noc.store.append({"id": "old", "comment": "long gone", "status": {"state": "expired"}})
+    assert [s["id"] for s in silence.strays([entry()], noc)] == ["by-hand"]
+    assert {s["id"] for s in silence.strays([], noc)} == {mine, "by-hand"}, "a silence whose entry was removed is a stray too"
+    held = tmp_path / "silences.yml"
+    held.write_text("silences: []\n")
+    monkeypatch.setattr(silence, "Noc", lambda *_: noc)
+    assert silence.main(["--file", str(held)]) == 1
+    err = capsys.readouterr().err
+    assert "by-hand  node='r1'" in err and "not in monitoring/silences.yml" in err and "old" not in err

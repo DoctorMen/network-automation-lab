@@ -107,3 +107,25 @@ def test_a_failed_heartbeat_fails_the_step(monkeypatch, capsys):
 
 def test_only_a_listed_job_can_report():
     assert observe.success(inv, "no-such-lab", "nightly-typo") == 2
+
+
+def test_only_a_scheduled_run_that_passed_pings_the_outside_check():
+    """The nightly run pings HEARTBEAT_URL/nightly after every job it runs has passed, and each job's own
+    success reaches the outside check on scheduled runs only: a push or a pull request never stands in for
+    a night that didn't run."""
+    flows = {p.name: yaml.safe_load(p.read_text()) for p in (ROOT / ".github" / "workflows").glob("*.yml")}
+    ci = flows["ci.yml"]["jobs"]
+    beat = ci["heartbeat"]
+    assert beat["if"] == "${{ github.event_name == 'schedule' }}", "a status function in `if` would let it ping after a failure"
+    assert set(beat["needs"]) == set(ci) - {"heartbeat", "control-status"}
+    assert '"$HEARTBEAT_URL/nightly"' in beat["steps"][-1]["run"]
+    gated = "${{ github.event_name == 'schedule' && secrets.HEARTBEAT_URL || '' }}"
+    for j in JOBS:
+        runs = [(f, job) for f, flow in flows.items() for job in flow["jobs"].values()
+                if any(re.match(rf"make {j['name']}\b", str(step.get("run", ""))) for step in job.get("steps", []))
+                and True in flow and "schedule" in flow[True]]
+        assert any(job.get("env", {}).get("HEARTBEAT_URL") == gated for _, job in runs), \
+            f"no scheduled job runs make {j['name']} with the outside check"
+    for f, flow in flows.items():
+        for name, job in flow["jobs"].items():
+            assert job.get("env", {}).get("HEARTBEAT_URL", gated) == gated, f"{f} {name}: HEARTBEAT_URL not gated on schedule"
