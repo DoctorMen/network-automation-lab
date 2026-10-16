@@ -4,6 +4,7 @@ from pathlib import Path
 
 import yaml
 
+from netlab import monitoring
 from netlab.backup import IMAGE as RESTIC_IMAGE
 from netlab.inventory import load
 from netlab.render import render_all, render_firewall, render_router
@@ -77,7 +78,10 @@ def test_web_rule_matches_only_connection_openers():
 def test_render_all_writes_a_consistent_lab(tmp_path):
     render_all(inv, tmp_path)
     topo = yaml.safe_load((tmp_path / "topology.clab.yml").read_text())
-    assert set(topo["topology"]["nodes"]) == set(inv.devices)
+    # Every device, plus the NOC's sidecars (decision 0018), each in another node's network namespace.
+    assert set(topo["topology"]["nodes"]) == set(inv.devices) | set(monitoring.sidecars(inv))
+    for name, cfg in monitoring.sidecars(inv).items():
+        assert topo["topology"]["nodes"][name]["network-mode"] == f"container:{cfg['netns']}"
     assert topo["topology"]["defaults"]["image"] == inv.platform["image"]
     assert len(topo["topology"]["links"]) == len(inv.links)
     for node in topo["topology"]["nodes"].values():
@@ -86,7 +90,7 @@ def test_render_all_writes_a_consistent_lab(tmp_path):
     expected = json.loads((tmp_path / "expected_state.json").read_text())
     assert expected["ospf_neighbors"]["r2"] == ["r1", "r3"]
     assert expected["bfd_peers"]["r1"] == {"10.0.12.1": "eth1", "10.0.13.1": "eth2"}
-    assert expected["passive_interfaces"] == {"r1": [], "r2": [], "r3": ["eth3"]}
+    assert expected["passive_interfaces"] == {"r1": [], "r2": ["eth4"], "r3": ["eth3"]}  # r2 eth4: the NOC's LAN
     assert expected["platform"] == inv.platform
     assert expected["bgp_sessions"][0]["peer"] == "isp"
 
@@ -100,8 +104,9 @@ def test_render_is_deterministic(tmp_path):
 
 
 def test_ci_pulls_the_image_the_inventory_names():
-    """CI deploys the image the inventory records, so the live version check tests the real thing. The
-    drills workflow pulls that image too, and exactly the restic image netlab.backup runs."""
+    """CI deploys the images the inventory records, so the live version checks test the real thing: the lab
+    job the router image, the observe job every image the full lab runs (`netlab images`). The drills
+    workflow pulls the router image too, and exactly the restic image netlab.backup runs."""
     ci = yaml.safe_load((INVENTORY.parents[1] / ".github" / "workflows" / "ci.yml").read_text())
     steps = [step for job in ci["jobs"].values() for step in job["steps"]]
     pulls = [step["run"].split()[-1] for step in steps if step.get("run", "").startswith("docker pull")]
@@ -110,6 +115,8 @@ def test_ci_pulls_the_image_the_inventory_names():
                          if line.strip().startswith("docker pull")] for job in drills}
     assert drill_pulls == {"backup-init": [RESTIC_IMAGE], "drills": [inv.platform["image"], RESTIC_IMAGE]}
     assert pulls == [inv.platform["image"]]
+    observe = [step["run"] for step in ci["jobs"]["observe"]["steps"] if "netlab images" in step.get("run", "")]
+    assert observe and "docker pull" in observe[0], "the observe job doesn't pull what `netlab images` lists"
 
 
 def test_canary_goes_first_with_the_rollout_settings(tmp_path):
@@ -139,10 +146,16 @@ def test_h2_port_is_shaped_with_a_web_class(tmp_path):
 
 
 def test_every_node_has_one_exec_list(tmp_path):
-    """Each node's deploy steps are one exec list with no key given twice: h2's address, route and QoS, r2's and r3's edge.sh, fw1's firewall.sh."""
+    """Each node's deploy steps are one exec list with no key given twice: h2's address, route and QoS, r2's and
+    r3's edge.sh, fw1's firewall.sh, and last, on every log source, the NOC's agent (decision 0019)."""
     render_all(inv, tmp_path)
     nodes = yaml.load((tmp_path / "topology.clab.yml").read_text(), Loader=OneKeyLoader)["topology"]["nodes"]
-    assert {n: v["exec"] for n, v in nodes.items() if n in inv.routers and "exec" in v} == {"r2": ["sh /edge.sh"], "r3": ["sh /edge.sh"]}
-    assert nodes["fw1"]["exec"] == ["sh /firewall.sh"]
+    agent = "sh /monitoring/agent.sh"
+    sources = monitoring.syslog_sources(inv)
+    for n in sources:
+        assert nodes[n]["exec"][-1] == agent and nodes[n]["exec"].count(agent) == 1, n
+    assert not [n for n, v in nodes.items() if agent in v.get("exec", []) and n not in sources]
+    assert {n: v["exec"][:-1] for n, v in nodes.items() if n in inv.routers and n in sources} == {"r1": [], "r2": ["sh /edge.sh"], "r3": ["sh /edge.sh"]}
+    assert nodes["fw1"]["exec"][:-1] == ["sh /firewall.sh"]
     h2 = nodes["h2"]["exec"]
     assert h2[0].startswith("ip addr add ") and h2[1].startswith("ip route replace default ") and h2[2].startswith("tc qdisc add ")

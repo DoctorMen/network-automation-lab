@@ -1,0 +1,321 @@
+# What the NOC sees of every value we read from a device (OROS NOT-2, decision 0018).
+#
+# `make coverage` (netlab/coverage.py; tests/test_coverage.py runs it in `make test`) finds every command the live tests,
+# netlab's own tools, the Ansible playbooks and the runbooks run on a device, and fails when one of
+# them reads something this file doesn't list. Each entry is marked:
+#   exported  an exporter the NOC already scrapes carries the value (metric:)
+#   derived   the NOC works it out from other metrics or from the central log store (metric: or logql:, how:)
+#   gap       this platform and version export nothing for it; fallback: says what we do instead
+# tests/live/observe/test_coverage.py checks on a running lab that every metric named here exists in
+# Prometheus, and every logql query returns lines.
+#
+# The statuses hold for the versions below. Another FRR or exporter release can export more (or less):
+# re-check the gaps when one of these changes.
+platform:
+  frr: 8.4.1_git                # inventory/network.yml platform.frr
+  frr_exporter: v1.3.1          # collectors: bgp, ospf, bfd (its defaults)
+  node_exporter: v1.8.2         # collectors: netclass, netdev, netstat, textfile
+  blackbox_exporter: v0.25.0
+  vector: 0.40.1
+  loki: 3.1.1
+
+# Every Prometheus job, and what it reads. No check depends on a scraper that isn't here: the lint fails
+# on a job this list lacks, and on an alert rule that uses a metric no collector lists.
+collectors:
+  frr:
+    exporter: frr_exporter, a sidecar in each owned router's network namespace
+    # FRR's own machine-readable interface: the daemons' JSON replies over their vty sockets, the same
+    # sockets vtysh uses. Nothing parses a CLI screen.
+    reads: "`show ... json` from bgpd, ospfd and bfdd over /var/run/frr/*.vty"
+    metrics: [frr_bgp_peer_state, frr_bgp_peer_uptime_seconds, frr_bgp_peer_prefixes_received_count_total,
+              frr_bgp_peer_prefixes_advertised_count_total, frr_ospf_neighbor_adjacencies, frr_bfd_peer_state,
+              frr_collector_up]
+  node:
+    exporter: node_exporter, a sidecar in each owned router's network namespace
+    reads: /sys/class/net (netclass), /proc/net/dev (netdev), /proc/net/netstat and snmp (netstat), and the
+      pending-reboot file netlab/kernel.py writes (textfile)
+    metrics: [node_network_up, node_network_carrier, node_network_carrier_changes_total,
+              node_network_transmit_errs_total, node_network_transmit_drop_total, node_network_receive_bytes_total,
+              node_network_receive_packets_total, node_netstat_TcpExt_IPReversePathFilter,
+              node_netstat_Udp_OutDatagrams, node_reboot_required, node_reboot_required_since_seconds]
+  web:
+    exporter: blackbox_exporter on noc
+    reads: an HTTP GET of each inventory web check, from the NOC, and the body checked for its expected text
+    metrics: [probe_success]
+  icmp:
+    exporter: blackbox_exporter on noc
+    reads: a ping from the NOC to each log source and BGP peer
+    metrics: [probe_success]
+  logs:
+    exporter: vector (the collector on noc)
+    reads: its own count and last-seen time of the lines each source sent
+    metrics: [log_last_seen_seconds, log_lines_total]
+  up:
+    exporter: Prometheus itself
+    reads: whether each scrape above answered
+    metrics: [up]
+
+# Programs that change a device and read nothing from it (the lint counts them as actions, not reads).
+actions: [kill, mkdir, rm, cp, mv, touch, umask, seq, sleep, diff, logger, frr-reload.py, watchfrr.sh]
+
+# Commands built at run time, which the lint can't read from the source.
+opaque:
+  - where: tests/live/test_qos.py::test_backup_yields_to_web
+    why: replays h2's rendered tc lines from build/topology.clab.yml to put the QoS back (writes only)
+  - where: tests/live/test_verify.py::test_qos_change_confirmed_from_class_counters
+    why: replays h2's rendered tc lines from build/topology.clab.yml to put the QoS back (writes only)
+
+reads:
+  # --- Routing state: each object's own state, alerted on per object (NOT-1) ---
+  - read: vtysh show ip ospf neighbor
+    value: each OSPF neighbor is Full
+    status: exported
+    metric: frr_ospf_neighbor_adjacencies
+    alert: OSPFNeighborDown
+  - read: vtysh show bgp summary
+    value: each BGP session is Established, and how many prefixes it received
+    status: exported
+    metric: frr_bgp_peer_state, frr_bgp_peer_prefixes_received_count_total
+    alert: BGPSessionDown
+  - read: vtysh show bfd peers
+    value: each BFD peer is up
+    status: exported
+    metric: frr_bfd_peer_state
+    alert: BFDPeerDown
+  - read: vtysh show bgp neighbors <arg>
+    value: the session's state, whether TCP MD5 is on, and how often it dropped
+    status: derived
+    metric: frr_bgp_peer_state, frr_bgp_peer_uptime_seconds
+    logql: '{source="syslog"} |= "%ADJCHANGE" |= "Down"'
+    how: state is exported; each drop resets the session's uptime and logs an ADJCHANGE Down line
+      (bgp log-neighbor-changes), counted with count_over_time. Whether MD5 is on is not exported by
+      FRR 8.4.1's JSON or frr_exporter v1.3.1; make drift's password tags check it (decision 0016)
+  - read: vtysh show daemons
+    value: every routing daemon answers
+    status: derived
+    metric: frr_collector_up
+    how: frr_collector_up{collector} is 1 while bgpd, ospfd and bfdd each answer frr_exporter; TargetDown fires
+      when the exporter itself doesn't
+  - read: vtysh show ip route
+    value: every router's loopback is in every routing table
+    status: derived
+    metric: probe_success{job="icmp"}
+    how: the NOC pings every router's loopback from its own LAN, which needs the route on every router on the
+      way there and back
+  - read: vtysh show ip route ospf
+    value: the host LANs are learned through OSPF
+    status: derived
+    metric: probe_success{job="icmp", node="h2"}
+    how: the NOC reaches h2 through r2 and r3, which only have LAN-B as an OSPF route
+  - read: vtysh show ip route <arg>
+    value: which next hop and interface a prefix (or the default route) uses
+    status: gap
+    fallback: frr_exporter v1.3.1 has no route collector. Which link carries a path follows from the per-link
+      OSPF adjacency and BFD alerts; tests/live/test_failover.py and test_routing.py check the next hops
+      on every CI run
+  - read: vtysh show ip route bgp
+    value: the carrier sees only our aggregate (plus any blackhole /32 we send it)
+    status: derived
+    metric: frr_bgp_peer_prefixes_advertised_count_total{node="r2"}
+    how: what r2 advertises is what isp receives; 1 is the aggregate alone, 2 while an RTBH trigger is on
+  - read: vtysh show bgp ipv4 unicast <arg>
+    value: an RTBH trigger is advertised to the ISP, with its community
+    status: derived
+    metric: frr_bgp_peer_prefixes_advertised_count_total{node="r2"}
+    how: the advertised count rises by one per trigger; the community itself is in the running config
+      (make drift fails while a trigger is on, docs/runbooks/ddos-rtbh.md)
+  - read: vtysh show ip ospf
+    value: a router's OSPF router ID
+    status: gap
+    fallback: it is the router's loopback, rendered from the inventory into the read-only intent; make drift
+  - read: vtysh show ip ospf interface <arg>
+    value: the host LAN interfaces are passive
+    status: gap
+    fallback: no exporter carries an interface's passive flag. It is a line of the intended config, so make
+      drift fails on any change; tests/live/test_routing.py checks it on every CI run
+  - read: vtysh show running-config
+    value: the running config matches the intent
+    status: gap
+    fallback: no exporter carries a config. make drift backs up and diffs every router and the firewall
+      every night (REC-2). FRR's `log commands` would put each vtysh line in the central store, and with it
+      the BGP password lines make apply sends; it is left off on purpose (decision 0019)
+  - read: vtysh show version
+    value: the FRR release running
+    status: gap
+    fallback: frr_exporter reports its own version, not FRR's. tests/live/test_platform.py checks every node
+      against the inventory on every CI run
+  # --- Interfaces and counters ---
+  - read: ip -s link show
+    value: an edge port's TX errors and drops (ours or the carrier's?), RX bytes and packets (a flood?)
+    status: exported
+    metric: node_network_transmit_errs_total, node_network_transmit_drop_total, node_network_receive_bytes_total, node_network_receive_packets_total
+  - read: ip link show
+    value: an interface is up
+    status: exported
+    metric: node_network_up, node_network_carrier
+    alert: InterfaceFlapped
+  - read: nstat -az TcpExtIPReversePathFilter
+    value: packets a strict reverse-path filter dropped
+    status: exported
+    metric: node_netstat_TcpExt_IPReversePathFilter
+  - read: ip route show
+    value: the carrier blackholes an RTBH target
+    status: derived
+    metric: frr_bgp_peer_prefixes_advertised_count_total{node="r2"}
+    how: the carrier's table is not ours to read (isp is observed, not logged into); r2 advertising the
+      trigger is what we can see, and the carrier's own acknowledgement is the runbook's step 4
+  - read: ip route get
+    value: the carrier still routes our addresses to r2
+    status: derived
+    metric: probe_success{job="icmp", node="isp"}
+    how: the NOC pings the carrier's side of the hand-off; the reply comes back only through r2
+  - read: cat /proc/sys/net/ipv4/conf/<arg>/rp_filter
+    value: the reverse-path filter mode on r3's server-LAN port
+    status: gap
+    fallback: node_exporter's sysctl collector is not enabled here. The mode is set by r3's read-only edge.sh,
+      and the drops it causes are exported (node_netstat_TcpExt_IPReversePathFilter)
+  - read: tc class show
+    value: h2's QoS classes and the bytes each carried
+    status: gap
+    fallback: h2 runs no exporter, and node_exporter's qdisc collector sees qdiscs, not HTB classes. make
+      verify reads the class counters on demand; tests/live/test_qos.py on every CI run
+  # --- Filters ---
+  - read: iptables -L
+    value: packets each firewall rule matched
+    status: gap
+    fallback: node_exporter v1.8.2 has no iptables collector and no iptables exporter is installed. The
+      counters are read by tests/live/test_controls.py on every CI run; the rules themselves by make drift
+  - read: iptables -S
+    value: the live ruleset matches the intent
+    status: gap
+    fallback: make drift replays the intent and diffs every night (REC-2)
+  - read: iptables -C
+    value: one rule is present
+    status: gap
+    fallback: make drift, as for iptables -S
+  - read: iptables-save
+    value: the live ruleset, for the backup
+    status: gap
+    fallback: make drift backs it up into backups/ every night
+  - read: netstat -ln<arg>
+    value: which TCP and UDP ports the NOC itself answers on
+    status: gap
+    fallback: tests/live/observe/test_noc.py on every observe run
+  - read: netstat -ltn
+    value: which TCP ports a router listens on
+    status: gap
+    fallback: no exporter lists sockets. tests/live/test_management_plane.py checks every router on every CI run
+  # --- Versions and pending changes ---
+  - read: uname
+    value: the kernel running, against the newest installed
+    status: exported
+    metric: node_reboot_required, node_reboot_required_since_seconds
+    alert: PendingRebootOverdue
+  - read: ls /lib/modules
+    value: the kernels installed
+    status: exported
+    metric: node_reboot_required, node_reboot_required_since_seconds
+    alert: PendingRebootOverdue
+  - read: readlink
+    value: a daemon still runs a binary that has been replaced
+    status: gap
+    fallback: make verify, on demand and after every make apply (decision 0018 keeps the textfile to the kernel)
+  - read: ps
+    value: which processes run, and how they were started
+    status: gap
+    fallback: no process exporter. make verify checks the daemons; tests/live/observe/test_central_store.py the
+      web server the forwarder reads
+  - read: cat /proc/<arg>/stat
+    value: a container's start time (was it restarted?)
+    status: gap
+    fallback: a restart re-sends a node's startup lines, which the central store keeps; tests/live/observe/test_arrival.py
+      checks it after a source is restored
+  - read: cat /proc/<arg>/status
+    value: which user a process runs as
+    status: gap
+    fallback: tests/live/observe/test_central_store.py checks the forwarder runs as nobody on every observe run
+  - read: cat /etc/frr/daemons
+    value: which daemons should run
+    status: gap
+    fallback: the file is the read-only intent; make verify and make drift
+  - read: . /etc/os-release
+    value: the Alpine release
+    status: gap
+    fallback: tests/live/test_platform.py on every CI run
+  - read: apk
+    value: the FRR and busybox packages installed
+    status: gap
+    fallback: tests/live/test_platform.py on every CI run
+  - read: cat /var/log/messages*
+    value: what a node logged
+    status: exported
+    logql: '{source="syslog"}'
+    metric: log_lines_total
+  - read: tail /var/log/messages
+    value: a node's latest log lines
+    status: exported
+    logql: '{source="syslog"}'
+    metric: log_last_seen_seconds
+  # --- What a node can reach ---
+  - read: ping
+    value: a host or hop answers
+    status: exported
+    metric: probe_success{job="icmp"}
+  - read: wget
+    value: h2 serves its real page
+    status: exported
+    metric: probe_success{job="web"}
+    alert: WebContentWrong
+  - read: nc -z
+    value: a TCP port answers from a given place
+    status: gap
+    fallback: which ports answer from where is the segmentation test's job (tests/live/test_scope.py,
+      test_edge.py) on every CI run; the NOC probes only the web check's port
+  - read: traceroute
+    value: the hops on a path
+    status: gap
+    fallback: make locate, on demand (docs/runbooks/carrier-loss.md)
+  - read: python3 SCAN
+    value: which ports answer from the internet side
+    status: gap
+    fallback: tests/live/test_edge.py on every CI run
+  - read: python3 SPOOF
+    value: a forged source is dropped
+    status: gap
+    fallback: tests/live/test_edge.py on every CI run; the drops are exported (node_netstat_TcpExt_IPReversePathFilter)
+  - read: python3 FORGE_ACK
+    value: a forged mid-stream ACK is dropped by fw1
+    status: gap
+    fallback: tests/live/test_controls.py on every CI run
+  - read: python3 <arg>
+    value: web latency during a bulk copy (tests/live/tools/web_latency.py and backup.py)
+    status: gap
+    fallback: tests/live/test_qos.py on every CI run
+  # --- Evidence for a third party (make finding) ---
+  - read: python3 capture.py
+    value: ICMP on our hand-off port while r2 pings past it
+    status: gap
+    fallback: make finding captures it on demand (decision 0017); flight-recorder capture is a later build (FND-2)
+  - read: python3 SUPPORT
+    value: FRR's support bundle
+    status: gap
+    fallback: make finding, on demand
+  - read: python3 CLOCK
+    value: each device's clock against the host's
+    status: gap
+    fallback: make finding, on demand; every node reads the host's kernel clock
+  # --- Secrets that must not be anywhere ---
+  - read: grep /var/log/frr /var/run/frr /tmp
+    value: no BGP password in FRR's logs or scratch files
+    status: derived
+    logql: '{source="syslog"} |= "password"'
+    how: router logs are in the central store too, so tests/live/observe/test_logs.py searches every line there
+      for the password itself; this query is the line an operator would search first
+  - read: grep /tmp/rollback /var/log/frr
+    value: no BGP password in a rollback file
+    status: gap
+    fallback: tests/live/test_rollout.py on every CI run
+  - read: grep /proc/[0-9]*/cmdline /proc/[0-9]*/environ /root/.ansible
+    value: no BGP password on a command line, in an environment or in Ansible's files
+    status: gap
+    fallback: tests/live/test_secrets.py on every CI run

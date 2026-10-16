@@ -3,10 +3,6 @@ import json
 import re
 import subprocess
 
-import yaml
-
-from .conftest import BUILD
-
 
 def inspect(target: str, fmt: str) -> str:
     return subprocess.run(["docker", "inspect", "-f", fmt, target],
@@ -16,7 +12,8 @@ def inspect(target: str, fmt: str) -> str:
 def test_running_version_matches_inventory(node, expected):
     """Every node runs the recorded image tag and digest, Alpine, busybox and FRR; routers' FRR reports that version."""
     want = expected["platform"]
-    nodes = yaml.safe_load((BUILD / "topology.clab.yml").read_text())["topology"]["nodes"]
+    # The inventory's devices: the NOC's sidecars run images of their own (tests/live/observe/test_noc.py).
+    nodes = expected["owners"]
     wrong = []
     for name in nodes:
         n = node(name)

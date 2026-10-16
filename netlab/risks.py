@@ -93,6 +93,15 @@ DETECTORS = {
                                          "the backup repository's password is kept in the same Actions cache as the repository"),
     "password-runtime-only": Detector("repo", "ansible/deploy.yml", r"^\s*cmd: vtysh -f /dev/stdin$", None,
                                       "a BGP password set in the running config only, so a restart or power cut loses it"),
+    # The NOC (decision 0018) and the central log store (0019).
+    "exporter-plain-http": Detector("build", "topology.clab.yml", r"--web\.listen-address=(?!127\.0\.0\.1:)", r"--web\.config\.file",
+                                    "an exporter answering plain HTTP beyond its own host, with no TLS or password"),
+    "vty-socket-shared": Detector("build", "topology.clab.yml", r"^\s+- \S+/run:/var/run/frr:ro$", None,
+                                  "FRR's vty sockets shared with another container, which can send them config commands"),
+    "syslog-udp": Detector("build", "monitoring/agent.sh", r"^syslogd -R ", None,
+                           "syslog sent over UDP, with no acknowledgement, queue or authentication"),
+    "log-store-in-container": Detector("build", "noc/loki.yaml", r"^\s+chunks_directory: /loki/", None,
+                                       "the central log store kept inside its container, one copy, with no backup"),
 }
 
 

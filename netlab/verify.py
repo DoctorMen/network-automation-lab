@@ -23,6 +23,8 @@ from pathlib import Path
 
 import yaml
 
+from .kernel import kernel_status  # shared with the routers' pending-reboot metric (decision 0018)
+
 ROOT = Path(__file__).resolve().parent.parent
 PROBES = 5  # connections per QoS class: enough to see in the counters, far too few to load the link
 
@@ -30,20 +32,6 @@ PROBES = 5  # connections per QoS class: enough to see in the counters, far too 
 def run(lab: str, node: str, *cmd: str) -> str:
     return subprocess.run(["docker", "exec", f"clab-{lab}-{node}", *cmd],
                           capture_output=True, text=True, timeout=60).stdout
-
-
-def version_key(release: str) -> tuple[int, ...]:
-    """'6.8.0-1017-azure' -> (6, 8, 0, 1017), so 6.10 sorts after 6.9."""
-    return tuple(int(n) for n in re.findall(r"\d+", release))
-
-
-def kernel_status(running: str, installed: list[str]) -> str:
-    if not installed:
-        return f"nothing to compare: no kernel installed on the node (it runs the host's {running})"
-    newest = max(installed, key=version_key)
-    if newest != running:
-        return f"not in effect: {newest} is installed but {running} is running, reboot required"
-    return f"in effect: {running} is the newest installed"
 
 
 def daemons_status(exes: list[str], daemons_file: str) -> str:

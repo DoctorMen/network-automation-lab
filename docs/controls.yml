@@ -77,7 +77,7 @@ controls:
       an adjacency. It checks only the interfaces the inventory puts on a host LAN.
 
   - id: vty-localhost
-    claim: "No routing daemon's management port (vty) answers on a lab link. Every TCP listener on every router is bound to 127.0.0.1, except BGP itself"
+    claim: "No routing daemon's management port (vty) answers on a lab link. Every TCP listener on every router is bound to 127.0.0.1, except BGP itself and the NOC's two exporters, on the router's own loopback"
     test: tests/live/test_management_plane.py::test_router_daemons_listen_on_localhost_only
     period: P31D
     threat: >-
@@ -86,7 +86,9 @@ controls:
     fails_when: >-
       BGP listens on every address; from the ISP side only the peer's own address reaches it, through
       r2's edge filter (wan-filter). UDP listeners (BFD) are not checked. The vtys have no password: anyone with
-      `docker exec` on the host is root on every node, and that is the real management path.
+      `docker exec` on the host is root on every node, and that is the real management path. The exporters'
+      addresses come from expected_state.json; they answer plain HTTP to anyone who reaches the loopback
+      (RISK-26), and frr_exporter holds the vty sockets (RISK-27).
 
   - id: users-reach-web-and-internet
     claim: "Users can reach the web server and the internet"
@@ -425,6 +427,7 @@ controls:
     test:
       - tests/live/test_platform.py::test_running_version_matches_inventory
       - tests/test_render.py::test_ci_pulls_the_image_the_inventory_names
+      - tests/live/observe/test_noc.py::test_sidecars_run_their_pinned_image_in_their_nodes_namespace
     period: P31D
     threat: >-
       A silent upgrade (a re-pushed tag, a different package build) changing behaviour while every
@@ -433,6 +436,121 @@ controls:
       It checks the image, FRR, Alpine and busybox, not every package in the image or the host
       kernel, which the containers share. The digest is checked against what Docker reports for the
       pulled image, so it trusts the local Docker daemon.
+
+  # The NOC (decisions 0018 and 0019): OROS NOT-1, NOT-2, NOT-3 and NOT-7. Run by `make observe`, in CI's
+  # observe job, on the full lab; the network's own tests never need it.
+  - id: noc-object-state
+    claim: "Every BGP session, OSPF adjacency and BFD peer on a router we own has an alert of its own, which pages while the host still answers ping. The carrier shutting the session, our own end shutting it (Idle (Admin), which a check for state 0 alone misses), an OSPF neighbor whose hellos are dropped, and a BFD peer down while OSPF stays Full each page for that object and no other, within the bound `expected_state.json` states"
+    test:
+      - tests/live/observe/test_state.py::test_bgp_session_down_while_the_peer_pings
+      - tests/live/observe/test_state.py::test_bgp_local_admin_shutdown_alerts_too
+      - tests/live/observe/test_state.py::test_ospf_neighbor_down_while_it_pings
+      - tests/live/observe/test_state.py::test_bfd_peer_down_while_ospf_and_ping_stay_up
+      - tests/test_monitoring.py::test_one_rule_per_object_the_inventory_implies
+      - tests/test_monitoring.py::test_state_rules_catch_admin_down_and_a_missing_series
+      - tests/test_monitoring.py::test_an_alert_keeps_its_identity_while_its_series_comes_and_goes
+    period: P31D
+    threat: >-
+      A BGP session or an OSPF adjacency down for hours while every ping is green, found only when
+      users call or the next nightly run fails; a session shut on our own end missed by a check for
+      "down" (0) alone.
+    fails_when: >-
+      The NOC sees the routers over the campus links it watches, so a dead link behind r2 blinds it to
+      what is behind (RISK-25): each object pages on its own, and one page per cause is a later build
+      (OROS DEC-5). The pager is a webhook sink on noc, not a person. Only the first BGP session and the
+      first OSPF adjacency are broken live; the rest have the same generated rule. isp, the carrier's, is
+      watched only from r2's side. A 5 s scrape and evaluation suit CI; a real NOC would run longer.
+
+  - id: noc-content-flap-reboot
+    claim: "A web server answering 200 with the wrong page pages, and so does an interface down for 0.3 s between two scrapes, and a newer kernel left unbooted past its reboot window but not inside it"
+    test:
+      - tests/live/observe/test_state.py::test_web_page_with_the_wrong_content_alerts
+      - tests/live/observe/test_state.py::test_sub_second_flap_alerts_although_no_scrape_saw_it_down
+      - tests/live/observe/test_state.py::test_reboot_pending_past_its_window_alerts
+      - tests/test_monitoring.py::test_flap_rule_uses_the_carrier_counter_on_the_routers_own_interfaces
+      - tests/test_monitoring.py::test_pending_reboot_textfile
+    period: P31D
+    threat: >-
+      A server that answers with the wrong content looking healthy, a flapping link no scrape ever sees
+      down, and a kernel patch left unbooted for weeks.
+    fails_when: >-
+      The web check matches one entry only h2's real docroot has, not the whole page. The flap rule reads
+      the carrier counter, so a flap the kernel never counts (a peer that stops forwarding with carrier
+      up) is BFD's job instead. The reboot rule covers the kernel only; a daemon running a replaced
+      binary is `make verify`'s finding, not an alert. The flap is taken on r1's link to fw1 only.
+
+  - id: read-coverage
+    claim: "Every value a live test, netlab, a playbook or a runbook reads from a device is listed in `monitoring/coverage.yml` for FRR 8.4.1, frr_exporter 1.3.1 and node_exporter 1.8.2: exported to the NOC, derived from what is, or a gap with its fallback. A new read, a scrape job or a rule metric the list doesn't name fails `make test`, and every listed metric and log query answers on the live NOC"
+    test:
+      - tests/test_coverage.py::test_every_read_is_listed
+      - tests/test_coverage.py::test_an_unlisted_read_fails
+      - tests/test_coverage.py::test_a_read_nobody_makes_any_more_fails
+      - tests/test_coverage.py::test_every_entry_is_exported_derived_or_gap_with_its_evidence
+      - tests/test_coverage.py::test_an_unlisted_scraper_fails
+      - tests/test_coverage.py::test_a_new_command_program_must_be_placed
+      - tests/live/observe/test_coverage.py::test_every_listed_metric_is_on_the_noc
+      - tests/live/observe/test_coverage.py::test_every_listed_log_query_runs
+      - tests/live/observe/test_coverage.py::test_nothing_scrapes_that_the_list_does_not_name
+    period: P31D
+    threat: >-
+      An operator reading a value off a device by hand during an incident because the NOC never had it,
+      and nobody knowing which values those are until then; a scraper nobody vetted feeding an alert.
+    fails_when: >-
+      The lint finds commands in Python it can parse (literal arguments, the repo's own run helpers),
+      Ansible command and shell tasks, and runbook code spans. A command built at run time from a
+      variable it can't resolve is listed as opaque, by hand. It lists what we read, not what an operator
+      might want to; most entries are gaps today, each with its fallback.
+
+  - id: log-arrival
+    claim: "Every log source has a last-seen check counted where its lines arrive, not by the sender. r1's syslog dropped on the way pages as silent within twice its heartbeat while r1's own counters say it is still sending, and comes back without a restart of anything. `make testevent` sends a marked line from every source the way its real lines go and finds each one in the central store"
+    test:
+      - tests/live/observe/test_arrival.py::test_every_source_has_a_last_seen_check
+      - tests/live/observe/test_arrival.py::test_synthetic_event_from_every_source_reaches_the_store
+      - tests/live/observe/test_arrival.py::test_blocked_source_raises_source_silent_and_comes_back_without_a_restart
+      - tests/test_monitoring.py::test_source_silent_bound
+    period: P31D
+    threat: >-
+      A router, firewall or server that stopped logging, found during the incident that needed its logs;
+      a sender's own counters saying all is well while nothing arrives.
+    fails_when: >-
+      Syslog is UDP with no queue or authentication (RISK-28): a whole stream lost pages, but a single
+      lost line or a forged one is not detected. h2's app log's bound is stated (its silent_after plus
+      evaluation), not twice its 5 s gap, because that would page on one late scrape. Only r1's export is
+      blocked live; the others have the same generated rule.
+
+  - id: central-log-store
+    claim: "Every router, firewall and server we own logs to one searchable store on the NOC, FRR's routing daemons included, and h2's web server's own log is forwarded by a sidecar running as nobody, with the app unchanged. The store keeps lines the boxes have already rotated away, and no BGP password reaches it"
+    test:
+      - tests/live/observe/test_central_store.py::test_router_daemons_log_to_the_central_store
+      - tests/live/observe/test_central_store.py::test_app_log_forwarded_without_root_and_searchable
+      - tests/live/observe/test_central_store.py::test_history_outlasts_on_box_rotation
+      - tests/live/observe/test_central_store.py::test_no_secret_in_the_central_store
+      - tests/test_monitoring.py::test_app_forwarder_runs_as_nobody_and_reads_the_log_read_only
+    period: P31D
+    threat: >-
+      The line that explains an incident rotated off the box hours ago, or never left the daemon (V-005);
+      an app nobody may change logging only to its own host.
+    fails_when: >-
+      The store is one copy inside noc's container and a redeploy starts it empty (RISK-29). h1, a user's
+      machine, sends nothing (RISK-30), and isp, the carrier's, logs only on its own box. Lines keep
+      busybox's local time and no hostname; the source is named by its address.
+
+  - id: noc-platform
+    claim: "The NOC's sidecars each run their pinned image (tag and digest) in their node's network namespace, every scrape target answers, every rule the inventory implies is loaded, and noc answers on the campus only on its log sources' two ports"
+    test:
+      - tests/live/observe/test_noc.py::test_sidecars_run_their_pinned_image_in_their_nodes_namespace
+      - tests/live/observe/test_noc.py::test_every_target_answers_and_every_rule_is_loaded
+      - tests/live/observe/test_noc.py::test_noc_listens_on_the_campus_only_for_its_sources
+      - tests/test_monitoring.py::test_exporters_listen_on_the_routers_loopback_only
+      - tests/test_monitoring.py::test_rendered_configs_match_the_inventory
+    period: P31D
+    threat: >-
+      A monitoring image re-pushed under the same tag, a rule that failed to load and so never fires, or a
+      NOC service answering the whole campus.
+    fails_when: >-
+      The digest is checked against what Docker reports for the pulled image, so it trusts the local
+      daemon. Answering only on two ports is not authentication: anyone on the campus can send the
+      collector a line naming any router (RISK-28), and the exporters have no TLS (RISK-26).
 
   - id: verdict-log
     claim: "Every odd behaviour in the log has one verdict (my config, normal behaviour, platform bug or lab artifact), the version it was seen on, and a fix or workaround. None may stay unclassified past 5 working days"
@@ -461,7 +579,7 @@ controls:
       failure-mode tests, not that the reasoning is sound. A decision made with no record is not seen.
 
   - id: selection-records
-    claim: "FRR, Containerlab, Ansible, iptables, gitleaks, Docker, GitHub Actions and restic each have a selection record with its constraint, a no-purchase line, staffing, and sources its maker didn't write, a measurement of our own among them. A new image in the inventory, Makefile, hooks or CI fails the check until it has one"
+    claim: "FRR, Containerlab, Ansible, iptables, gitleaks, Docker, GitHub Actions, restic, Prometheus with Alertmanager, node_exporter with blackbox_exporter, frr_exporter, Loki and Vector each have a selection record with its constraint, a no-purchase line, staffing, and sources its maker didn't write, a measurement of our own among them. A new image in the inventory, Makefile, hooks or CI fails the check until it has one"
     test:
       - tests/test_selections.py::test_every_selection_record_lints_clean
       - tests/test_selections.py::test_sources_from_the_seller_alone_are_rejected

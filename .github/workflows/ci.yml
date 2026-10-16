@@ -75,11 +75,13 @@ jobs:
           # Masked: if a value ever reached this log, GitHub would print *** instead. echo is a shell
           # builtin, so the value is on no command line.
           for f in "$RUNNER_TEMP"/netlab-secrets/*; do echo "::add-mask::$(cat "$f")"; done
-      - name: Deploy
+      - name: Deploy the network (no NOC sidecars; the observe job runs those)
         id: deploy
-        run: make deploy
+        # The inventory's own nodes only (--node-filter from `netlab nodes`), so this job pulls one image
+        # and starts what it always started, plus the NOC's host. Decision 0018.
+        run: make deploy-network
       - name: Live tests (routing, reachability, firewall, failover, collection, locate, platform)
-        run: make live  # also writes results/live.xml (JUnit, timestamped)
+        run: make live  # tests/live without tests/live/observe; also writes results/live.xml (JUnit, timestamped)
       - name: Config drift check (Ansible)
         # Runs even when a live test failed, so every run still backs up the configs.
         if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
@@ -120,13 +122,6 @@ jobs:
         with:
           path: ${{ runner.temp }}/backup
           key: restic-${{ github.run_id }}
-      - name: Measure RAM (raw data for docs/sizing)
-        continue-on-error: true  # a sizing reading is evidence, not a network test
-        run: |
-          # Drop the committed runner file first, so the artifact and the log only ever hold this run's reading.
-          rm -f docs/sizing/data/*-github-runner.json
-          make measure LAB_ENV=github-runner NOTE="GitHub ubuntu-24.04, containerlab $CLAB_VERSION, idle right after make live and make drift"
-          cat docs/sizing/data/*-github-runner.json
       - name: Show routing tables on failure
         if: failure()
         run: |
@@ -154,6 +149,76 @@ jobs:
         with:
           name: finding-bundle
           path: results/finding/
+          if-no-files-found: ignore
+          retention-days: 90
+      - name: Destroy
+        if: always()
+        run: make destroy || true
+
+  observe:
+    name: Deploy the full lab and test the NOC (alerts, log arrival, central store)
+    # In parallel with the lab job, on its own runner: the same network plus the NOC's sidecars
+    # (decisions 0018 and 0019), and only the tests in tests/live/observe, which take links, sessions and
+    # log sources down on purpose. The RAM measurement moved here: it reads the full lab.
+    needs: offline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CLAB_VERSION: "0.68.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt -r requirements-ansible.txt
+      - name: Install Containerlab
+        run: bash -c "$(curl -sL https://get.containerlab.dev)" -- -v "$CLAB_VERSION"
+      - name: Pull every image the full lab runs (the inventory's pinned tags)
+        run: python3 -m netlab images | xargs -n1 docker pull
+      - name: Create this run's BGP password
+        # As in the lab job: a new random one per run, masked, outside the checkout (decision 0016).
+        run: |
+          echo "NETLAB_SECRETS=$RUNNER_TEMP/netlab-secrets" >> "$GITHUB_ENV"
+          NETLAB_SECRETS="$RUNNER_TEMP/netlab-secrets" make secrets
+          for f in "$RUNNER_TEMP"/netlab-secrets/*; do echo "::add-mask::$(cat "$f")"; done
+      - name: Deploy (network and NOC)
+        id: deploy
+        run: make deploy
+      - name: NOC tests (NOT-1 state alerts, NOT-2 coverage, NOT-3 arrival, NOT-7 central store)
+        run: make observe  # also writes results/observe.xml (JUnit, timestamped)
+      - name: Synthetic event from every log source (make testevent)
+        if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
+        run: make testevent
+      - name: Config drift check (Ansible)
+        # The observe tests put back everything they break; drift proves it.
+        if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
+        run: make drift
+      - name: Secret scan of this run's results and build/
+        if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
+        run: |
+          make gitleaks
+          for f in "$NETLAB_SECRETS"/*; do
+            if grep -rlF -f "$f" backups results build; then echo "::error::this run's BGP password is in the files above"; exit 1; fi
+          done
+      - name: Measure RAM (raw data for docs/sizing)
+        continue-on-error: true  # a sizing reading is evidence, not a network test
+        run: |
+          # Drop the committed runner file first, so the artifact and the log only ever hold this run's reading.
+          rm -f docs/sizing/data/*-github-runner.json
+          make measure LAB_ENV=github-runner NOTE="GitHub ubuntu-24.04, containerlab $CLAB_VERSION, full lab with the NOC, idle right after make observe and make drift"
+          cat docs/sizing/data/*-github-runner.json
+      - name: What the NOC fired and paged, on failure
+        if: failure()
+        run: make alerts || true
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: observe-results
+          path: |
+            results/
+            backups/
           if-no-files-found: ignore
           retention-days: 90
       - name: Upload sizing data

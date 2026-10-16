@@ -157,16 +157,31 @@ def host_sync() -> str:
 
 
 def copy_lab(topology: Path, dest: Path) -> list[str]:
-    """The topology and every file it binds into a node, so the bundle can stand the lab up again."""
+    """The topology and every file it binds into a node, so the bundle can stand the lab up again.
+
+    The network's own nodes only: the NOC's sidecars (nodes in another node's network namespace, decision
+    0018) take no part in a path, and would make whoever re-runs the bundle pull their images. A folder a
+    node binds (a router's run/, which holds its live sockets) is recreated empty, with a .keep file so an
+    upload that drops empty folders still carries it: containerlab refuses a bind whose source is missing."""
     topo = yaml.safe_load(topology.read_text())
     dest.mkdir(parents=True)
-    shutil.copy(topology, dest / topology.name)
-    sources = sorted({b.split(":", 1)[0] for node in topo["topology"]["nodes"].values() for b in node.get("binds") or []})
-    for src in sources:
+    nodes = {n: c for n, c in topo["topology"]["nodes"].items()
+             if not str(c.get("network-mode") or "").startswith("container:")}
+    if len(nodes) == len(topo["topology"]["nodes"]):
+        shutil.copy(topology, dest / topology.name)
+    else:
+        topo["topology"]["nodes"] = nodes
+        (dest / topology.name).write_text("# netlab's topology without the NOC's sidecars (netlab/finding.py copy_lab).\n"
+                                          + yaml.safe_dump(topo, sort_keys=False, width=200))
+    for src in sorted({b.split(":", 1)[0] for node in nodes.values() for b in node.get("binds") or []}):
+        if (topology.parent / src).is_dir():
+            (dest / src).mkdir(parents=True, exist_ok=True)
+            (dest / src / ".keep").write_text("")
+            continue
         (dest / src).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(topology.parent / src, dest / src)
     defaults = topo["topology"].get("defaults", {})
-    return sorted({node.get("image", defaults.get("image")) for node in topo["topology"]["nodes"].values()})
+    return sorted({node.get("image", defaults.get("image")) for node in nodes.values()})
 
 
 def prepare(out: Path) -> None:

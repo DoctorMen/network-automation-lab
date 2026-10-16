@@ -82,6 +82,14 @@ class Inventory:
         return self.raw.get("rollout", {})
 
     @property
+    def monitoring(self) -> dict:
+        return self.raw.get("monitoring", {})
+
+    @property
+    def logging(self) -> dict:
+        return self.raw.get("logging", {})
+
+    @property
     def devices(self) -> list[str]:
         return [*self.routers, *self.firewalls, *self.hosts]
 
@@ -254,6 +262,7 @@ def validate(inv: Inventory) -> list[str]:
             problems.append(f"{name}: wan_filter interface {wan['interface']} is not on any link")
     problems.extend(rtbh_problems(inv))
     problems.extend(scope_problems(inv))
+    problems.extend(monitoring_problems(inv))
     # A TCP MD5 entry names the two ends of one BGP session, and a secret by file name (not its value).
     for i, auth in enumerate(inv.raw.get("bgp_auth", [])):
         label = f"bgp_auth #{i + 1}"
@@ -355,4 +364,45 @@ def scope_problems(inv: Inventory) -> list[str]:
     for name in filters:
         if name not in systems:
             problems.append(f"scope: {name} filters traffic into the segment, so it must be in systems")
+    return problems
+
+
+def monitoring_problems(inv: Inventory) -> list[str]:
+    """The NOC's checks can only be generated from what the inventory really has (decisions 0018, 0019)."""
+    mon, logs = inv.monitoring, inv.logging
+    if not mon:
+        return []
+    problems = []
+    if mon.get("host") not in inv.hosts:
+        problems.append(f"monitoring: host {mon.get('host')!r} is not a host")
+    # A floating tag (or none) lets an upgrade in without a commit; the selection records name a version.
+    for name, image in (mon.get("images") or {}).items():
+        if not re.fullmatch(r"[a-z0-9./_-]+:v?\d[\w.-]*", str(image)):
+            problems.append(f"monitoring: image {name} {image!r} needs a pinned version tag")
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", str((mon.get("digests") or {}).get(name))):
+            problems.append(f"monitoring: image {name} has no digest (sha256:...) under digests")
+    for key, value in (("interval", mon.get("interval")), ("reboot_window", mon.get("reboot_window")),
+                       ("heartbeat", logs.get("heartbeat")), ("silent_after", logs.get("silent_after"))):
+        if not (isinstance(value, int) and value > 0):
+            problems.append(f"monitoring: {key} {value!r} must be a whole number of seconds")
+    for check in mon.get("web") or []:
+        host = inv.hosts.get(check.get("host"), {})
+        if check.get("port") not in host.get("services", []):
+            problems.append(f"monitoring: web check {check.get('host')}:{check.get('port')} has no listener in services")
+    if problems:
+        return problems
+    # A source is silent when its last line is older than silent_after. Shorter than the heartbeat plus two
+    # scrapes and a healthy source would trip it. NOT-3's bound is twice the heartbeat, and the alert needs
+    # up to three intervals and Alertmanager's 1 s group_wait on top of silent_after to reach the pager.
+    beat, silent, interval = logs["heartbeat"], logs["silent_after"], mon["interval"]
+    if not beat + 2 * interval < silent <= 2 * beat - 3 * interval - 1:
+        problems.append(f"logging: silent_after {silent} must be over heartbeat + 2 x interval ({beat + 2 * interval}) "
+                        f"and at most twice the heartbeat less 3 x interval + 1 s ({2 * beat - 3 * interval - 1})")
+    for app in logs.get("apps") or []:
+        label = f"logging: app {app.get('host')}/{app.get('name')}"
+        if app.get("port") not in inv.hosts.get(app.get("host"), {}).get("services", []):
+            problems.append(f"{label}: port {app.get('port')} has no listener in services")
+        # Its normal gap is the web check's interval, so the same margin applies.
+        if not (isinstance(app.get("silent_after"), int) and app["silent_after"] > 3 * interval):
+            problems.append(f"{label}: silent_after must be over 3 x interval ({3 * interval})")
     return problems

@@ -582,3 +582,128 @@
   presented_to: pending
   presented_on: null
   presented_evidence: null
+
+# The NOC (decision 0018) and the central log store (decision 0019).
+- id: RISK-25
+  kind: accepted-risk
+  title: the NOC watches in band, so a dead link blinds it to what is behind
+  likelihood: 3
+  impact: 2
+  reasoning: >-
+    noc sits on its own LAN behind r2 (10.30.30.0/24), and every scrape, probe and log line crosses the
+    campus links it watches. Decision 0007 took the management network away because Docker's default
+    route leaked traffic, and a second LAN only for monitoring would hide the failures users see. When
+    r2 or the r1-r2 and r2-r3 links fail together, the NOC loses its view of r1, r3, fw1 and h2 at once:
+    each pages on its own (TargetDown, the per-object rules on absent(), SourceSilent), so the cause is
+    one page among many. Grouping those into one page per cause is a later build (OROS DEC-5).
+  compensating_control: tests/test_monitoring.py::test_state_rules_catch_admin_down_and_a_missing_series
+  compensates: a series the NOC stops receiving pages as down, so blindness is never silence
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-26
+  kind: accepted-risk
+  title: the exporters and the NOC's endpoints have no TLS and no password
+  detectors: [exporter-plain-http]
+  likelihood: 2
+  impact: 2
+  reasoning: >-
+    frr_exporter and node_exporter answer plain HTTP on each router's loopback, which OSPF carries to the
+    whole campus, so any host that reaches a loopback reads the routing table, BGP peers, interface
+    counters and kernel version. Nothing they serve is a secret (the BGP password is not in any metric),
+    and they can't be written to over HTTP. Prometheus, Alertmanager, blackbox and Loki answer on
+    127.0.0.1 inside noc only. The collector's syslog and forwarder ports take lines from anyone on the
+    campus (RISK-28). The fix is exporter-toolkit's --web.config.file with TLS and basic auth, and the
+    same on Prometheus' scrape configs.
+  compensating_control: tests/live/test_management_plane.py::test_router_daemons_listen_on_localhost_only
+  compensates: each router answers on the campus only for BGP and its two exporters on its loopback, and noc only on its sources' ports (test_noc_listens_on_the_campus_only_for_its_sources)
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-27
+  kind: accepted-risk
+  title: frr_exporter holds FRR's vty sockets, which accept config commands
+  detectors: [vty-socket-shared]
+  likelihood: 1
+  impact: 3
+  reasoning: >-
+    frr_exporter reads FRR's state the documented way, JSON over each daemon's vty socket in
+    /var/run/frr. The folder is mounted read-only into its sidecar, but a read-only mount doesn't stop a
+    connect() to a socket, and FRR's vty takes `configure terminal` from whoever connects. A compromised
+    or malicious exporter image could change routing. The image is pinned by tag and its digest is
+    checked against the inventory on every observe run, it runs nothing but the exporter, and a change
+    it made by hand would show as drift. FRR has no read-only vty, so the fix is a different collector
+    (a polling sidecar that holds the sockets, with the exporter outside).
+  compensating_control: tests/live/test_collection.py::test_unsaved_change_is_flagged
+  compensates: a config change made through vtysh that intent doesn't hold fails the drift check, which names the line
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-28
+  kind: accepted-risk
+  title: syslog crosses the campus as clear UDP, so lines can be lost or forged
+  detectors: [syslog-udp]
+  likelihood: 2
+  impact: 2
+  reasoning: >-
+    busybox syslogd, the only syslog daemon in the router image, sends each line once over UDP 514 with
+    no acknowledgement, queue or authentication (RFC 5426). A congested or dead link loses the lines
+    behind it for good, and any host on the campus can send a line naming any router's address. The
+    collector names a line by its source address only. A whole stream lost pages as SourceSilent within
+    twice its heartbeat; a single lost line, or a forged one, is not detected. The fix is a TLS syslog
+    sender (RFC 5425) in a sidecar, reading FRR's lines from a socket rather than the image's syslogd.
+  compensating_control: tests/live/observe/test_arrival.py::test_blocked_source_raises_source_silent_and_comes_back_without_a_restart
+  compensates: a source whose lines stop arriving pages within twice its heartbeat, and its own counters can't hide it
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-29
+  kind: accepted-risk
+  title: the central log store is one copy inside noc's container
+  detectors: [log-store-in-container]
+  likelihood: 3
+  impact: 2
+  reasoning: >-
+    Loki keeps its chunks and index in /loki inside the noc-loki container, with nothing bound from the
+    host and nothing copied off it. A redeploy or `make destroy` starts it empty, and a disk fault loses
+    the 720 h it keeps. For a lab that is rebuilt on every CI run that is the normal life of the store;
+    a real NOC would keep it on durable storage, replicated, and longer than 720 h if PCI DSS 10.5.1's
+    12 months applied (decision 0013 keeps that scope a toy). The boxes keep only 16 KB and one rotated
+    file each, by design, so the store is the only history.
+  compensating_control: none (nothing backs the store up; the boxes' own rotated copy is the only other history)
+  compensates: nothing; while noc is up, it holds every line the boxes have already rotated away
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-30
+  kind: accepted-risk
+  title: h1, a user's machine, sends no logs
+  likelihood: 2
+  impact: 1
+  reasoning: >-
+    Every router, firewall and server we own sends syslog to the NOC, and h2's web app its own log; h1 is
+    a user's machine on LAN-A, which a NOC doesn't run a forwarder on. What it does on the network is
+    seen at fw1, its only way out, whose own lines (and later its connection and NAT logs, OROS FND-5)
+    reach the store. A compromise on h1 that never crosses fw1 is not logged anywhere central.
+  compensating_control: tests/live/observe/test_arrival.py::test_synthetic_event_from_every_source_reaches_the_store
+  compensates: fw1, LAN-A's only way out, is a source, and its test event reaches the store on every observe run
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null

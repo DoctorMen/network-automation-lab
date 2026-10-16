@@ -6,7 +6,7 @@ LAB_ENV ?= local
 NOTE    ?=
 
 .PHONY: help validate render test deploy live drift apply locate measure destroy all
-.PHONY: secrets gitleaks finding risks
+.PHONY: secrets gitleaks finding risks deploy-network observe coverage testevent alerts
 
 help:            ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-15s %s\n", $$1, $$2}'
@@ -24,8 +24,24 @@ deploy: render secrets ## Render, start the lab with Containerlab, then set what
 	$(CLAB) deploy -t $(TOPO) --reconfigure
 	$(MAKE) apply
 
+deploy-network: render secrets ## As deploy, but the network's own nodes only: no NOC sidecars (CI's lab job)
+	$(CLAB) deploy -t $(TOPO) --reconfigure --node-filter $$($(PY) -m netlab nodes)
+	$(MAKE) apply
+
 live:            ## Test the running lab: routing, firewall, failover, drift checks, locate (JUnit in results/)
-	$(PY) -m pytest -v tests/live --junitxml=results/live.xml
+	$(PY) -m pytest -v tests/live --ignore=tests/live/observe --junitxml=results/live.xml
+
+observe:         ## Test the NOC on a full lab (make deploy): alerts, log arrival, central store (JUnit in results/)
+	$(PY) -m pytest -v tests/live/observe --junitxml=results/observe.xml
+
+coverage:        ## Every value a test or runbook reads from a device has a metric or log query (monitoring/coverage.yml)
+	$(PY) -m netlab.coverage
+
+testevent:       ## Send a marked line from every log source and show where it arrived: make testevent
+	$(PY) -m netlab.observe testevent
+
+alerts:          ## What is firing now, and what the NOC's pager (the webhook sink) has received
+	$(PY) -m netlab.observe alerts
 
 drift:           ## Back up routers and firewall, fail on drift or on a backup missing running config
 	cd ansible && ansible-playbook drift.yml
@@ -60,7 +76,7 @@ gitleaks:        ## Scan every commit, then backups/, results/ and build/ if pre
 destroy:         ## Tear the lab down
 	$(CLAB) destroy -t $(TOPO) --cleanup
 
-all: test deploy live drift ## Everything CI does
+all: test deploy live observe drift ## Everything CI does (CI's lab job runs live on deploy-network, its observe job observe)
 
 # Backups (OROS REC-1, REC-3). BACKUP_REPO is the destination: a restic repository on a disk or share
 # that outlives this machine. If it isn't mounted, `make backup` fails; it never creates one.
