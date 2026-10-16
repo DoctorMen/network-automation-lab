@@ -49,7 +49,10 @@ gone. It runs `make apply`, because the BGP password is in no startup config ([d
 authentication on both ends, then that h1 reaches h2:80 through fw1 and `drift.yml` passes. It redeploys every node, so it is skipped in
 `make live` and runs weekly in `.github/workflows/drills.yml`, after the restore drill. Measured here:
 36.5 s for the test before it ran `make apply`, 70 to 80 s with it (four runs on 2026-10-15; `make
-apply` takes about 40 s with the canary rollout); routing back 10.8 to 20.2 s after the cut.
+apply` takes about 40 s with the canary rollout); routing back 10.8 to 20.2 s after the cut. On the
+full lab with the NOC (two runs on 2026-10-16), where the drill also waits for the NOC to settle:
+148.3 and 187.3 s for the test, routing back 73.9 and 83.7 s after the cut, about a minute later,
+as when a daemon crashes as it starts and watchfrr starts it again (V-011).
 
 ## Consequences
 

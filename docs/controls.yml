@@ -967,7 +967,8 @@ controls:
     fails_when: >-
       The throwaway router has no links, so the drill shows the config loads, not that the restored
       router forms adjacencies. Its image, daemons file and sysctls come from build/, not from the
-      backup. A backup missing a line still boots cleanly; that is caught when it is captured
+      backup, and of the topology's binds it mounts only the read-only ones: the live router's FRR
+      sockets (run/), which its exporter reads, stay out of the drill. A backup missing a line still boots cleanly; that is caught when it is captured
       (capture-complete) and by the sha256 check at the destination (backup-at-destination). The
       weekly job in drills.yml has not run on GitHub yet: every drill so far ran here, against a
       scratch repository, not the CI destination in the Actions cache.
@@ -992,7 +993,7 @@ controls:
       activity), neither runs and nothing alerts. That needs a check from outside GitHub (RISK-25).
 
   - id: power-event-drill
-    claim: "After a whole-lab power cycle every node comes back by itself from its startup config: an unsaved change on r2 is gone and OSPF, BFD and BGP are up; once `make apply` has set the BGP password again (it is in no startup config), h1 reaches the web server through fw1 and nothing has drifted. Routing was back 10.8 to 20.2 s after the cut over four runs here. A weekly job is set up to run it"
+    claim: "After a whole-lab power cycle every node comes back by itself from its startup config: an unsaved change on r2 is gone and OSPF, BFD and BGP are up; once `make apply` has set the BGP password again (it is in no startup config), h1 reaches the web server through fw1 and nothing has drifted. On the full lab the NOC then scrapes every target and hears every log source again, with nothing firing. Routing was back 10.8 to 20.2 s after the cut over four runs here before the NOC was added, and 73.9 and 83.7 s over two runs of the full lab. That extra minute matches watchfrr's wait before it starts again a daemon that crashed as it started (V-011), which 3 of 5 other full-lab cycles watched here showed. The NOC was settled 147.2 and 185.6 s after the cut. A weekly job is set up to run it"
     test: tests/live/test_power_event.py::test_power_event_recovers_from_startup_config
     period: P31D
     threat: >-
@@ -1006,6 +1007,10 @@ controls:
       BGP session stays down against a real carrier, and in the lab it came back with no MD5 (RISK-28). The
       weekly job has not run on GitHub yet, where the cut is `containerlab deploy --reconfigure`;
       in the development sandbox it was the stand-in script's whole-lab redeploy (LAB_PARITY.md).
+      On the full lab the NOC's history from before the cut is gone, because Prometheus and the
+      central store keep their data inside their containers (RISK-35). The drill waits up to 240 s
+      for routing, so it passes through one daemon restart after a startup crash (V-011) and only
+      reports the slower time.
 
   - id: runbooks
     claim: "Runbooks for link failure, BGP down, config drift, restoring a router from backup, a power event, carrier loss and a DDoS blackhole at the ISP each name an owner, a coordinator, who updates stakeholders, a review date and their hosts. The check fails on a missing field, a review older than 180 days, or a host that isn't in the inventory or in the runbook's own host list"
