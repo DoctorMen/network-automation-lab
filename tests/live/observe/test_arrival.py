@@ -59,8 +59,14 @@ def test_blocked_source_raises_source_silent_and_comes_back_without_a_restart(no
     since = time.time()
     for rule in rules:
         node(on).run("iptables", "-I", *rule)
+    blocked = time.time()
     try:
-        last = noc.value(f'log_last_seen_seconds{{node="{source}",source="syslog"}}')
+        # The last line that got through, read once the NOC has scraped the collector after the block: a line that
+        # arrived just before it (the previous test's test event, say) is not yet in the value scraped before.
+        seen = f'log_last_seen_seconds{{node="{source}",source="syslog"}}'
+        assert wait_for(lambda: (noc.value(f"timestamp({seen})") or 0) > blocked + 1, timeout=3 * mon["interval"], interval=1), \
+            "the NOC did not scrape the collector after the block"
+        last = noc.value(seen)
         page = wait_alert(noc, "SourceSilent", since, bound + 15, node=source, source="syslog")
         assert page, f"no SourceSilent for {source} within {bound} s"
         assert page["received"] - last <= bound, f"paged {page['received'] - last:.0f} s after the last line arrived (bound {bound} s)"
