@@ -14,6 +14,15 @@ def inspect(target, fmt):
     return subprocess.run(["docker", "inspect", "-f", fmt, target], capture_output=True, text=True, check=True).stdout.strip()
 
 
+def netns(container):
+    """The container's network namespace as the kernel names it (net:[inode]). Another user's /proc/<pid>/ns is
+    closed to an unprivileged reader (the CI runner), so there it is read through sudo."""
+    link = f"/proc/{inspect(container, '{{.State.Pid}}')}/ns/net"
+    if os.geteuid() == 0:
+        return os.readlink(link)
+    return subprocess.run(["sudo", "-n", "readlink", link], capture_output=True, text=True, check=True).stdout.strip()
+
+
 def test_sidecars_run_their_pinned_image_in_their_nodes_namespace(lab_name, mon):
     """Each sidecar runs the inventory's tag, resolved to the inventory's digest, in its node's network namespace."""
     nodes = yaml.safe_load((BUILD / "topology.clab.yml").read_text())["topology"]["nodes"]
@@ -27,7 +36,7 @@ def test_sidecars_run_their_pinned_image_in_their_nodes_namespace(lab_name, mon)
         digests = json.loads(inspect(inspect(c, "{{.Image}}"), "{{json .RepoDigests}}"))
         if not any(d.endswith("@" + mon["digests"][image]) for d in digests):
             wrong.append(f"{name}: {image} is {digests}, the inventory says {mon['digests'][image]}")
-        ns = {os.readlink(f"/proc/{inspect(x, '{{.State.Pid}}')}/ns/net") for x in (c, f"clab-{lab_name}-{target}")}
+        ns = {netns(x) for x in (c, f"clab-{lab_name}-{target}")}
         if len(ns) != 1:
             wrong.append(f"{name}: not in {target}'s network namespace ({ns})")
     assert not wrong, "\n".join(wrong)

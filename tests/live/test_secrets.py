@@ -113,10 +113,20 @@ class Watch(threading.Thread):
         self.join()
 
 
+def read_any(path):
+    """A file's bytes. FRR writes files only root can read in each router's build/<router>/run (its /var/run/frr,
+    shared with its frr_exporter, decision 0018), so as an unprivileged user (the CI runner) those are read
+    through sudo; a file that can't be read either way fails the test, since an unread file isn't clean."""
+    try:
+        return path.read_bytes()
+    except PermissionError:
+        return subprocess.run(["sudo", "-n", "cat", "--", str(path)], capture_output=True, check=True).stdout
+
+
 def files_holding(values, *folders):
     needles = [v.encode() for v in values]
     return [str(p.relative_to(ROOT)) for folder in folders if folder.exists()
-            for p in folder.rglob("*") if p.is_file() and any(n in p.read_bytes() for n in needles)]
+            for p in folder.rglob("*") if p.is_file() and any(n in read_any(p) for n in needles)]
 
 
 def playbook(name):

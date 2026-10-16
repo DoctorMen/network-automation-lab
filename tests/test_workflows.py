@@ -107,7 +107,9 @@ def scan_step(tmp_path, *fake_tools):
     step = next(s for s in JOBS["lab"]["steps"] if s.get("id") == "secret-scan")
     bindir = tmp_path / "bin"
     bindir.mkdir(parents=True)
-    for name, script in (("make", "exit 0"), *fake_tools):
+    # sudo runs its command as itself here, with the options dropped, so a fake grep stands in for the real one.
+    sudo = 'while [ "${1#-}" != "$1" ]; do shift; done; exec "$@"'
+    for name, script in (("make", "exit 0"), ("sudo", sudo), *fake_tools):
         (bindir / name).write_text(f"#!/bin/sh\n{script}\n")
         (bindir / name).chmod(0o755)
     store = tmp_path / "secrets"
@@ -130,6 +132,14 @@ def test_password_grep_passes_only_when_grep_found_nothing(tmp_path):
     assert run() == 1, "the password in results/ passed because backups/ is missing (grep exit 2)"
     _, run = scan_step(tmp_path / "error", ("grep", "echo backups/r2.conf; exit 2"))
     assert run() == 1, "grep matched and also hit a read error (exit 2), and the step passed"
+
+
+def test_both_password_greps_read_as_root():
+    """FRR writes files only root can read in each router's build/<router>/run, so the lab job's and the observe
+    job's greps run as root: as the runner user they exit 2 on those files, which the step rightly counts as a failure."""
+    for job in ("lab", "observe"):
+        scan = next(s for s in JOBS[job]["steps"] if s.get("id") == "secret-scan")
+        assert 'sudo -n grep -rlF -f "$f" $(ls -d backups results build' in scan["run"], job
 
 
 def test_uploads_wait_for_the_secret_scan_and_the_measurement():

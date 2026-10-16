@@ -121,11 +121,13 @@ jobs:
         # failed, and not when it was skipped or cancelled, since then nothing scanned them.
         # grep exits 1 for no match, 0 for a match and 2 for an error (it may have matched as well), so
         # only 1 is clean. A folder this run never wrote (drift failed early) is left out, not an error.
+        # As root: each router's build/<router>/run is its /var/run/frr (shared with its frr_exporter,
+        # decision 0018), where FRR writes files only root can read, and an unread file is not clean.
         if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: |
           make gitleaks
           for f in "$NETLAB_SECRETS"/*; do
-            rc=0; grep -rlF -f "$f" $(ls -d backups results build 2>/dev/null) || rc=$?
+            rc=0; sudo -n grep -rlF -f "$f" $(ls -d backups results build 2>/dev/null) || rc=$?
             if [ "$rc" != 1 ]; then echo "::error::this run's BGP password is in the files above, or a file could not be read (grep exit $rc)"; exit 1; fi
           done
       # The backup destination is a restic repository kept between runs in the Actions cache. It is
@@ -259,13 +261,13 @@ jobs:
       - name: Secret scan of this run's results, backups, sizing data, build/ and the central log store
         id: secret-scan
         # Last, so it sees every file this job uploads and every line it sent to Loki, drift's included,
-        # and the uploads below run only when it did not fail. grep: only exit 1 (no match) is clean, as
-        # in the lab job.
+        # and the uploads below run only when it passed. grep: as in the lab job, as root, and only exit 1
+        # (no match) is clean.
         if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: |
           make gitleaks
           for f in "$NETLAB_SECRETS"/*; do
-            rc=0; grep -rlF -f "$f" $(ls -d backups results build docs/sizing/data 2>/dev/null) || rc=$?
+            rc=0; sudo -n grep -rlF -f "$f" $(ls -d backups results build docs/sizing/data 2>/dev/null) || rc=$?
             if [ "$rc" != 1 ]; then echo "::error::this run's BGP password is in the files above, or a file could not be read (grep exit $rc)"; exit 1; fi
           done
           python3 -m pytest -q -p no:cacheprovider tests/live/observe/test_central_store.py::test_no_secret_in_the_central_store
