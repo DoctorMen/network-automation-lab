@@ -336,7 +336,7 @@ def test_a_secret_in_a_play_or_block_environment_is_found(tmp_path):
 
 
 def test_every_running_config_read_goes_through_the_redacting_vtysh():
-    """Every task that reads a router's running config (a plan, a backup, the rollout's fallback) or reloads one uses the redacting vtysh, and a reload or a fallback saved on the router leaves the password lines out, so a rollback neither deletes nor sets a password."""
+    """Every task that reads a router's running config (a plan, a backup, the rollout's fallback) or reloads one uses the redacting vtysh, and a reload or a fallback saved on the router leaves the password lines out, so a rollback neither deletes nor sets a password (unless the change deleted the neighbor, RISK-30)."""
     problems = []
     for path in sorted(ANSIBLE.glob("*.yml")) + sorted((ANSIBLE / "tasks").glob("*.yml")):
         for task in tasks(yaml.safe_load(path.read_text())):

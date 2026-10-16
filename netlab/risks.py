@@ -93,6 +93,9 @@ DETECTORS = {
                                          "the backup repository's password is kept in the same Actions cache as the repository"),
     "password-runtime-only": Detector("repo", "ansible/deploy.yml", r"^\s*cmd: vtysh -f /dev/stdin$", None,
                                       "a BGP password set in the running config only, so a restart or power cut loses it"),
+    "rollback-without-password": Detector("repo", "ansible/deploy.yml", r"frr-reload\.py .*--reload \{\{ fallback \}\}", None,
+                                          "the rollback reloads a fallback with no password lines, so a BGP neighbor "
+                                          "the failed change deleted comes back without its password"),
 }
 
 

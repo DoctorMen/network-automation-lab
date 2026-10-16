@@ -19,8 +19,9 @@
 # BGP passwords are the one thing the intended config can't hold (decision 0016): frr-reload.py
 # reads the running config through the redacting vtysh (tasks/redacting_vtysh.yml), and the
 # passwords are set last, from the secret store, on vtysh's stdin. The fallback is saved and
-# restored through the same vtysh with the password lines left out, so a rollback neither deletes
-# nor sets a password, and no password is written to the router's disk.
+# restored through the same vtysh with the password lines left out, so no password is written to the
+# router's disk, and a rollback neither deletes nor sets one, unless the failed change deleted the
+# neighbor itself (see the rescue, RISK-30).
 - name: Roll out intended FRR configuration, canary first
   hosts: routers
   gather_facts: false
@@ -94,7 +95,8 @@
     # Outside the block: if saving fails, nothing has changed yet, so the play just stops. Inside
     # it, the rescue would reload an empty or half-written fallback and delete the router's config.
     # Through the redacting vtysh with NETLAB_PASSWORDS=drop, the way the apply reads it: the file has
-    # no password line, so none is on the router's disk, and the rollback below leaves passwords alone.
+    # no password line, so none is on the router's disk, and the rollback below leaves passwords alone
+    # (with one exception, RISK-30, in the rescue's comment).
     - name: Save the running config as this router's fallback
       ansible.builtin.shell: |
         set -e
@@ -173,7 +175,10 @@
         # read-only intent refuses, so it exits 1 after rolling back. Pointing --confdir at the
         # fallback's own folder makes the fallback that file, so it doesn't try. The fallback has no
         # password lines and the running config is read the same way (drop), so a password is neither
-        # deleted nor set: it stays whatever the password task last left.
+        # deleted nor set: it stays whatever the password task last left. Except (RISK-30): a failed
+        # change to the neighbor itself (its remote-as or address, or the local AS) deleted it with its
+        # password, so this re-creates it from the fallback without one, and the session stays down
+        # until the inventory is reverted and make apply runs. Seen in the lab: a wrong remote-as on r2.
         - name: Roll back to the fallback
           ansible.builtin.command: /usr/lib/frr/frr-reload.py --confdir {{ fallback | dirname }} --bindir {{ vtysh_dir }} --reload {{ fallback }}
           environment:

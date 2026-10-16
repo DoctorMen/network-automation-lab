@@ -279,7 +279,7 @@ controls:
       secret needs its own check.
 
   - id: rollback-keeps-password
-    claim: "A router with a BGP password that fails its health gate goes back to the config it ran before with the password untouched: the session never drops, and neither the saved fallback, FRR's log, a command line nor the playbook output holds the password. Every playbook task that reads or reloads a router's config does it through the redacting vtysh"
+    claim: "A router with a BGP password that fails its health gate, after a change that doesn't touch its BGP neighbor's address or AS numbers, goes back to the config it ran before with the password untouched: the session never drops, and neither the saved fallback, FRR's log, a command line nor the playbook output holds the password. Every playbook task that reads or reloads a router's config does it through the redacting vtysh"
     test:
       - tests/live/test_rollout.py::test_rollback_keeps_the_bgp_password_and_writes_it_nowhere
       # Deterministic: it reads every task in ansible/, the rescue's rollback included.
@@ -292,8 +292,12 @@ controls:
     fails_when: >-
       The live test rolls back r2 alone (--limit r2). A production batch rolling back r2, r3 and isp
       together with passwords set is not in the suite. A rollback leaves the password whatever the
-      password task last set, so a change that rotated it is not undone. The offline check reads the
-      commands as written in ansible/, not what a tool they call does.
+      password task last set, so a change that rotated it is not undone. A failed change to the
+      neighbor itself (its remote-as or address, or the local AS) is the exception: frr-reload.py
+      deletes and re-creates the neighbor, the fallback has no password line, and the session stays
+      down until the inventory is reverted and make apply runs (RISK-30, seen in the lab with a wrong
+      remote-as on r2). The offline check reads the commands as written in ansible/, not what a tool
+      they call does.
 
   - id: secret-never-rendered
     claim: "The password is never rendered: `build/` names only the secret's file, the store is 0600 and never overwritten, and backups and drift output show a sha256 tag in its place"

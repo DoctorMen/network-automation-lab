@@ -82,7 +82,7 @@ failure_modes:
 
 - `serial: [1, "100%"]`: the canary named in the inventory's `rollout:` block goes alone, then the other three. netlab renders it first in the Ansible inventory.
 - Before a batch: refuse outside the change window, and note the network's problems (`python -m netlab.health`).
-- Each router saves `show running-config` (its fallback), applies the difference, gets its BGP passwords on stdin (decision 0016), and is compared with intent again, so a line frr-reload.py didn't take fails the batch. The fallback is read through the redacting vtysh without its password lines, the way the apply reads the running config, so a rollback neither deletes nor sets a password.
+- Each router saves `show running-config` (its fallback), applies the difference, gets its BGP passwords on stdin (decision 0016), and is compared with intent again, so a line frr-reload.py didn't take fails the batch. The fallback is read through the redacting vtysh without its password lines, the way the apply reads the running config, so a rollback neither deletes nor sets a password, unless the failed change deleted a neighbor that has one (accepted risk RISK-30).
 - The health gate: every OSPF neighbor Full and every BGP session Established (from `expected_state.json`), every host pinging every other host, waiting up to `gate_timeout` (20 s) for any problem the batch added to clear. The canary waits out `vetting_delay` (10 s) and is checked again.
 - Rescue: reload the fallback, then fail. `any_errors_fatal` and `max_fail_percentage: 0` stop the play.
 - After each batch, `python -m netlab.verify` checks that its routers run what is installed: the newest installed kernel, and every enabled FRR daemon from its binary on disk (`tests/live/test_verify.py`).
