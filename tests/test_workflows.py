@@ -2,7 +2,8 @@
 that a backup saved to the cache is checked there, and a re-run restores the newest one; that the NOC's
 tests run in three jobs that cover every test file once; that only what each job's own secret scan passed is
 published, the false-positive review's upload included; and that control-status fails when a scan withheld
-this run's live or NOC results."""
+this run's live or NOC results. Every job in any workflow that holds a run's BGP password scans after a failed
+test, and uploads nothing its scan did not pass."""
 import os
 import re
 import subprocess
@@ -256,9 +257,9 @@ def test_testevent_ingest_drift_and_the_measurement_each_run_in_one_noc_job():
 
 
 def test_the_review_workflow_uploads_only_after_its_own_secret_scan(tmp_path):
-    """fp-review.yml's upload waits for that run's own scan: gitleaks over the history and every folder it uploads
-    from (the review rewrites monitoring/fp-review.yml and docs/detections.md), and the password grep as root over
-    every file it uploads; a password in the rewritten review fails the scan."""
+    """fp-review.yml's upload waits for that run's own scan: gitleaks over the checked-out commit and every folder it
+    uploads from (the review rewrites monitoring/fp-review.yml and docs/detections.md), and the password grep as root
+    over every file it uploads; a password in the rewritten review fails the scan."""
     steps = steps_of("fp-review.yml")
     scan = next(i for i, s in enumerate(steps) if s.get("id") == "secret-scan")
     review = next(i for i, s in enumerate(steps) if "make fp-review" in s.get("run", ""))
@@ -276,3 +277,43 @@ def test_the_review_workflow_uploads_only_after_its_own_secret_scan(tmp_path):
     assert scan_run() == 0
     (work / "monitoring" / "fp-review.yml").write_text("password 0123456789abcdef0123456789abcdef\n")
     assert scan_run() == 1, "this run's password in the rewritten review passed the scan"
+
+
+# What each job's scan waits for: the deploy (nothing to scan without it), never the tests, so a failed test is
+# still scanned and its results still published. fp-review has no deploy id: it scans once the review has counted.
+DEPLOYED = "${{ !cancelled() && steps.deploy.outcome == 'success' }}"
+SCAN_WHEN = {
+    ("ci.yml", "lab"): DEPLOYED, ("ci.yml", "observe-1"): DEPLOYED, ("ci.yml", "observe-2"): DEPLOYED,
+    ("ci.yml", "observe-3"): DEPLOYED, ("drills.yml", "drills"): DEPLOYED,
+    ("fp-review.yml", "fp-review"): "${{ !cancelled() && hashFiles('results/fp-review-notifications.json') != '' }}",
+}
+
+
+def password_jobs():
+    """(workflow, job, steps) for every job in any workflow that creates a run's BGP password (make secrets)."""
+    for path in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
+        for job, spec in yaml.safe_load(path.read_text())["jobs"].items():
+            steps = spec.get("steps") or []
+            if any("make secrets" in s.get("run", "") for s in steps):
+                yield path.name, job, steps
+
+
+def test_every_job_holding_a_run_password_scans_after_a_failed_test_and_before_it_uploads(tmp_path):
+    """A job that creates a run's BGP password has a secret scan, which runs after a failed test (only a cancelled
+    run or a failed deploy skips it: with success() a failed test would skip it, its upload would be withheld and
+    control-status would read an earlier run's results), and every upload in the job comes after it and waits for
+    it to pass. The drills job's scan finds this run's password in its results."""
+    found = {}
+    for workflow, job, steps in password_jobs():
+        scan = next((i for i, s in enumerate(steps) if s.get("id") == "secret-scan"), None)
+        assert scan is not None, f"{workflow} {job} holds this run's password and uploads with no secret scan"
+        found[(workflow, job)] = steps[scan].get("if")
+        for i, s in enumerate(steps):
+            if s.get("uses", "").startswith("actions/upload-artifact@"):
+                assert i > scan and s["if"].startswith("${{ always() && ") and "steps.secret-scan.outcome == 'success'" in s["if"], \
+                    f"{workflow} {job}: {s['name']} is published when the secret scan did not pass"
+    assert found == SCAN_WHEN
+    work, run = scan_step(tmp_path, steps=next(steps for w, j, steps in password_jobs() if (w, j) == ("drills.yml", "drills")))
+    assert run() == 0
+    (work / "results" / "power-drill.xml").write_text("<failure>password 0123456789abcdef0123456789abcdef</failure>")
+    assert run() == 1, "this run's password in the drill results passed the drills job's scan"

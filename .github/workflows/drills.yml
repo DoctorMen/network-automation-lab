@@ -115,8 +115,22 @@ jobs:
       - name: Power-event drill (whole-lab containerlab deploy --reconfigure)
         if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: make power-drill
+      - name: Secret scan of this run's results and build/
+        id: secret-scan
+        # As in ci.yml's lab job: this job holds this run's BGP password, and its results carry what the drills
+        # printed (a failed power drill quotes r2's own log lines), so nothing is uploaded until this passed
+        # (OROS ACC-4). It runs after a failed drill too. grep: as root, and only exit 1 (no match) is clean.
+        # A failed scan withholds this run's drill results and turns the run red; control-status then reads the
+        # last ones uploaded.
+        if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
+        run: |
+          make gitleaks
+          for f in "$NETLAB_SECRETS"/*; do
+            rc=0; sudo -n grep -rlF -f "$f" $(ls -d backups results build 2>/dev/null) || rc=$?
+            if [ "$rc" != 1 ]; then echo "::error::this run's BGP password is in the files above, or a file could not be read (grep exit $rc)"; exit 1; fi
+          done
       - name: Upload drill results
-        if: always()
+        if: ${{ always() && steps.secret-scan.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: drill-results

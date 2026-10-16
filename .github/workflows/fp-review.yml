@@ -47,14 +47,15 @@ jobs:
       - name: Deploy (network and NOC)
         run: make deploy
       - name: The review (make fp-review), on this clean checkout
-        id: review
         run: make fp-review LAB_ENV=github-runner
       - name: Secret scan of what this run uploads (the review, the table, the notifications) and build/
         id: secret-scan
         # As in ci.yml: nothing from a run is uploaded until its own scan passed (OROS ACC-4). gitleaks scans
-        # the history and backups/, results/ and build/, and here also monitoring/ and docs/, where the review
+        # the checked-out commit (actions/checkout fetches only that one; the secrets workflow scans every commit
+        # on each push) and backups/, results/ and build/, and here also monitoring/ and docs/, where the review
         # rewrote fp-review.yml and detections.md; the grep looks for this run's actual password, as root, and
-        # only its exit 1 (no match) is clean. It runs once the review has counted (the notifications file).
+        # only its exit 1 (no match) is clean. It runs once the review has counted (the notifications file),
+        # whether or not the review passed.
         if: ${{ !cancelled() && hashFiles('results/fp-review-notifications.json') != '' }}
         run: |
           make gitleaks SCAN_DIRS="backups results build monitoring docs"
