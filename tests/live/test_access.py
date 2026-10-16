@@ -5,6 +5,7 @@ box at once, and survives root deleting the box's copy, is tests/live/observe/te
 import uuid
 
 from .conftest import wait_for
+from .test_rollout import ROLLBACK_DIR, VTYSH_DIR, reload_intent
 
 
 def on_box(node, router, needle):
@@ -30,6 +31,29 @@ def test_each_router_we_own_has_the_named_accounts(node, expected):
         assert log[:3] == "-rw" and "w" not in log[3:10] and log.split()[2] == "root", f"{router}: {log}"
     for a in access["accounts"]:
         assert node("isp").run("id", a["name"], check=False).returncode != 0, f"isp has {a['name']}"
+
+
+def test_the_cm_tool_reloads_after_root_did(node, expected):
+    """frr-reload.py --reload logs to /var/log/frr/frr-reload.log and creates the file if it is missing. On each
+    router we own the file is there from the start, the CM tool's, in the admin group, mode 0640: the CM tool and
+    root write it, the admins read it, nobody else can. So a reload as root first (an operator's, umask 022) leaves
+    make apply's reload, run as the CM tool, able to log. A file root created first refused it (Errno 13, r3 in CI
+    run 38972784804)."""
+    access = expected["access"]
+    cm = access["ansible_user"]
+    failed = {}
+    for router in access["routers"]:
+        # Root first, with a login shell's umask, then the CM tool the way make apply runs it: the order that failed.
+        # `docker exec` runs with umask 0000 here, so a file root created would be anyone's to write and hide it.
+        as_root = node(router).run("sh", "-c", f"umask 022 && exec env NETLAB_PASSWORDS=drop /usr/lib/frr/frr-reload.py --reload "
+                                   f"--rundir {ROLLBACK_DIR} --bindir {VTYSH_DIR} /etc/frr/frr.conf", check=False)
+        for who, result in (("root", as_root), (cm, reload_intent(node, router, user=cm))):
+            if result.returncode:
+                failed[f"{router} as {who}"] = (result.stderr.strip().splitlines() or [f"exit {result.returncode}"])[-1]
+    assert not failed, f"a reload of the intent failed: {failed}"
+    for router in access["routers"]:
+        log = node(router).run("ls", "-l", "/var/log/frr/frr-reload.log", check=False).stdout.split()
+        assert log[:1] == ["-rw-r-----"] and log[2:4] == [cm, access["group"]], f"{router}: {' '.join(log) or 'no frr-reload.log'}"
 
 
 def test_frr_answers_a_person_only_through_the_accounting_proxy(node, expected):

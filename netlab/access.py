@@ -2,7 +2,7 @@
 
 Everything here comes from the inventory's `access` block. render() writes build/access/: access.sh, which
 each router we own runs once at deploy, just before the NOC agent (accounts, the admin group, the CM
-tool's scratch folders, the accounting proxy), the proxy itself (templates/access/vty_aaa.py) and the vtysh shim that
+tool's scratch folders and frr-reload.py's log file, the accounting proxy), the proxy itself (templates/access/vty_aaa.py) and the vtysh shim that
 sends every account but root through it.
 """
 from __future__ import annotations

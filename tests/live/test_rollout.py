@@ -19,6 +19,8 @@ from .test_secrets import Watch
 ANSIBLE_PLAYBOOK = Path(sys.executable).with_name("ansible-playbook")
 # Where the playbooks put the redacting vtysh on each router (tasks/redacting_vtysh.yml).
 VTYSH_DIR = yaml.safe_load((ROOT / "ansible" / "group_vars" / "routers.yml").read_text())["vtysh_dir"]
+# The folder deploy.yml keeps each router's fallback in, and gives frr-reload.py as its --rundir.
+ROLLBACK_DIR = str(Path(yaml.safe_load((ROOT / "ansible" / "deploy.yml").read_text())[0]["vars"]["fallback"]).parent)
 
 
 def deploy(*args):
@@ -92,14 +94,28 @@ def change_intent(changes):
         intent(router).write_text(text)
 
 
+def applier(router):
+    """The account deploy.yml applies as on this router: its ansible_user (the CM tool's, on a router we own), or
+    root when it has none (the carrier's isp)."""
+    hosts = yaml.safe_load((BUILD / "ansible_inventory.yml").read_text())["all"]["children"]["routers"]["hosts"]
+    return hosts[router].get("ansible_user")
+
+
+def reload_intent(node, router, user=None):
+    """frr-reload.py --reload of the router's intent, with deploy.yml's arguments: through the redacting vtysh with
+    password lines dropped (plain frr-reload.py would delete r2's BGP password, with it on vtysh's command line and in
+    its log), and the fallback's folder as its run folder, which the CM tool can write and FRR's own it can't."""
+    return node(router).run("env", "NETLAB_PASSWORDS=drop", "/usr/lib/frr/frr-reload.py", "--reload", "--rundir", ROLLBACK_DIR,
+                            "--bindir", VTYSH_DIR, "/etc/frr/frr.conf", check=False, user=user)
+
+
 def put_back(node, originals):
     """The original intent back in build/ and on every router. Returns what went wrong: each router whose
     reload failed or didn't finish, and a network that didn't settle; empty when all is back. It doesn't
     raise: it runs in a finally, where an error would replace the test's own failure, so each error
     becomes one of its problems. It also prints them, so they show in the report of a test whose body
-    already failed, where the assert after the finally never runs. Reloaded the way deploy.yml applies,
-    through the redacting vtysh with password lines dropped: plain frr-reload.py would delete r2's BGP
-    password, with it on vtysh's command line and in its log."""
+    already failed, where the assert after the finally never runs. Reloaded the way deploy.yml applies
+    (reload_intent), as the account it applies as on each router (applier)."""
     problems = []
     # Each step catches everything, for the reason above. A hung frr-reload.py raises TimeoutExpired.
     try:
@@ -108,8 +124,7 @@ def put_back(node, originals):
         problems.append(f"build/ not put back: {type(e).__name__}: {e}")
     for router in originals:
         try:
-            reload = node(router).run("env", "NETLAB_PASSWORDS=drop", "/usr/lib/frr/frr-reload.py", "--reload",
-                                      "--bindir", VTYSH_DIR, "/etc/frr/frr.conf", check=False)
+            reload = reload_intent(node, router, user=applier(router))
             if reload.returncode:
                 problems.append(f"{router}: frr-reload.py exited {reload.returncode} (its log: /var/log/frr/frr-reload.log on {router})")
         except Exception as e:
