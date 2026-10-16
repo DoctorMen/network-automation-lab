@@ -169,7 +169,9 @@ jobs:
             # The container's own output is FRR's start script: frrcommon.sh says there when a daemon
             # crashed in startup or failed to start (V-011). The daemons' own lines go to syslog
             # (`log syslog informational` in frr.conf, decision 0019), and busybox syslogd keeps them in
-            # /var/log/messages on every router, whether or not a NOC is there to forward them to.
+            # /var/log/messages on every router, whether or not a NOC is there to forward them to. syslogd
+            # starts with the exec step, after the links, so a daemon that dies in its first seconds
+            # can leave a line in neither place: then `ps` is the evidence (V-011).
             echo "--- $r start script (docker logs)"; docker logs --tail 60 clab-netauto-$r 2>&1 || true
             echo "--- $r FRR's daemons (/var/log/messages)"; docker exec clab-netauto-$r tail -n 80 /var/log/messages || true
           done
