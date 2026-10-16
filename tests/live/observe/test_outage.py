@@ -10,6 +10,7 @@ OROS DEC-1, why it fired, what is normal, what changed: every alert of that outa
 rule's condition with the value now, a link to its signal's last 7 days, and the commit `make apply` last
 applied, raised within the hour after that apply."""
 import calendar
+import re
 import subprocess
 import time
 import urllib.parse
@@ -80,8 +81,8 @@ def test_a_parent_failure_pages_once_and_a_killed_service_pages_again(outage, mo
     o, parent, healthy = outage, outage["parent"], outage["healthy"]
     assert o["parent_page"], f"NodeDown {parent} did not page"
     assert o["service_page"], f"TargetDown for frr_exporter on {healthy}, a healthy router, did not page"
-    paged = sorted((x["labels"]["alertname"], x["labels"].get("node"), x["labels"].get("job")) for x in o["pages"])
-    assert paged == [("NodeDown", parent, None), ("TargetDown", healthy, "frr")], f"pages for this outage: {paged}"
+    paged = sorted((x["labels"]["alertname"], x["labels"].get("node"), x["labels"].get("cause")) for x in o["pages"])
+    assert paged == [("NodeDown", parent, parent), ("TargetDown", healthy, f"frr@{healthy}")], f"pages for this outage: {paged}"
     held = [a for a in o["held"] if a["status"]["inhibitedBy"]]
     pages = {("NodeDown", parent), ("TargetDown", healthy)}
     for a in o["held"]:
@@ -112,7 +113,8 @@ def test_every_alert_says_why_what_is_normal_and_what_changed(outage, noc):
     within an hour of that apply."""
     sample = outage["held"]
     assert len(sample) >= SAMPLE, f"only {len(sample)} alerts in the sample"
-    head, named = commit(), 0
+    # The commit HEAD names; an edit not yet committed, at apply or now, adds -dirty and changes nothing applied.
+    head, named = commit().removesuffix("-dirty"), 0
     for a in sample:
         note, what = a["annotations"], f"{a['labels']['alertname']} {a['labels'].get('node', '')}"
         for k in ("why_fired", "baseline", "changes"):
@@ -125,7 +127,8 @@ def test_every_alert_says_why_what_is_normal_and_what_changed(outage, noc):
         assert noc.query(f"count_over_time(({expr})[1h:5s])"), f"{what}: the baseline link shows no history: {expr}"
         node = a["labels"].get("node")
         if node in outage["applied"]:
-            assert f"commit {head} " in note["changes"] and f"applied to {node} " in note["changes"], f"{what}: {note['changes']}"
+            assert re.search(f"commit {head}(-dirty)? ", note["changes"]) and f"applied to {node} " in note["changes"], \
+                f"{what}: {note['changes']}"
             started = calendar.timegm(time.strptime(a["startsAt"][:19], "%Y-%m-%dT%H:%M:%S"))  # RFC 3339, UTC
             assert 0 <= started - outage["applied"][node] < 3600, f"{what}: raised {started - outage['applied'][node]:.0f} s after the apply"
             named += 1
