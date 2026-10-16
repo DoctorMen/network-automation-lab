@@ -1,4 +1,4 @@
-# Apply the rendered (intended) config to every router, changing only the difference.
+# Roll the rendered (intended) config out to the routers, canary first, changing only the difference.
 # Usage: cd ansible && ansible-playbook deploy.yml [--check] [--limit r2]
 #
 # Each router's /etc/frr/frr.conf is build/<router>/frr.conf, bind-mounted read-only,
@@ -6,23 +6,212 @@
 # compares it with the running config and applies only the lines that differ. Because
 # the file it reloads is FRR's own config file, it doesn't try to `write` afterwards
 # (which a read-only mount would refuse).
-- name: Deploy intended FRR configuration
+#
+# The rollout (decision 0010; settings in the inventory's rollout block):
+#   - nothing starts outside the change window
+#   - the canary goes alone first, then every other router at once (`serial: [1, "100%"]`)
+#   - each router saves its running config first: that is the fallback
+#   - after a batch, the health gate (python -m netlab.health) must show no problem the batch added
+#   - the canary must stay healthy through the vetting delay before production starts
+#   - a router whose batch fails goes back to its fallback, and the rollout stops
+#   - netlab.verify then checks that what is installed is what is running
+#
+# BGP passwords are the one thing the intended config can't hold (decision 0016): frr-reload.py
+# reads the running config through the redacting vtysh (tasks/redacting_vtysh.yml), and the
+# passwords are set last, from the secret store, on vtysh's stdin. The fallback is saved and
+# restored through the same vtysh with the password lines left out, so no password is written to the
+# router's disk, and a rollback neither deletes nor sets one, unless the failed change deleted the
+# neighbor itself (see the rescue, RISK-30).
+- name: Roll out intended FRR configuration, canary first
   hosts: routers
   gather_facts: false
+  serial: [1, "100%"]
+  # Stop everything at the first failed router. By default Ansible only stops once every router in
+  # a batch has failed, so a production batch of three would carry on with the other two.
+  any_errors_fatal: true
+  max_fail_percentage: 0
   vars:
     intended: /etc/frr/frr.conf
-  tasks:
-    - name: Show what would change (frr-reload dry run)
-      ansible.builtin.command: /usr/lib/frr/frr-reload.py --test {{ intended }}
-      register: plan
+    fallback: /tmp/rollback/frr.conf
+    netlab: "{{ ansible_playbook_python }} -m netlab"
+  pre_tasks:
+    # `make deploy` runs this straight after `containerlab deploy`, while FRR may still be starting:
+    # until bgpd is up, vtysh prints "bgpd is not running" and exits 1 (seen on a fresh r2 container),
+    # and frr-reload.py or the password task would fail or apply half. A daemon that isn't up yet is
+    # also missing from `show running-config`, so the plan would re-add its lines. So every daemon the
+    # router's daemons file starts must answer first (`show daemons` lists the ones vtysh reaches),
+    # and FRR's start script (watchfrr.sh, which ends with `vtysh -b`, the config load) must be done.
+    # Up to 120 s: zebra or bgpd sometimes crashes as it starts (on GitHub all four routers' zebra
+    # once), and watchfrr starts it again, with its config, only after its minimum restart
+    # interval (60 s) (V-011). netlab/restore.py waits for a throwaway router the same way.
+    # First, so the health baseline below is taken with the routers answering.
+    - name: Wait until every routing daemon answers and FRR has loaded its config (bgpd included)
+      ansible.builtin.command:
+        argv: [sh, -c, "vtysh -c 'show daemons' && ps -o args"]
+      vars:
+        started: "{{ lookup('file', playbook_dir ~ '/../build/' ~ inventory_hostname ~ '/daemons') | regex_findall('^(zebra|\\w+d)=yes', multiline=True) }}"
+      register: daemons
+      until: >-
+        daemons.rc == 0
+        and started | difference((daemons.stdout_lines | first | default('')).split()) == []
+        and daemons.stdout is not search('watchfrr\.sh|vtysh -b')
+      retries: 60
+      delay: 2
       changed_when: false
-      check_mode: false  # read-only, so it also runs under --check and shows the plan
+      check_mode: false
+
+    - name: Refuse to start outside the change window
+      vars:
+        utc: "{{ now(utc=true, fmt='%H:%M') }}"
+        w: "{{ change_window }}"
+      ansible.builtin.assert:
+        # A window like 22:00-04:00 runs past midnight.
+        that: (w.start <= utc < w.end) if w.start < w.end else (utc >= w.start or utc < w.end)
+        fail_msg: "{{ utc }} UTC is outside the change window ({{ w.start }}-{{ w.end }} UTC); nothing was changed"
+        quiet: true
+      run_once: true
+
+    - name: Note the network's problems before this batch changes anything
+      ansible.builtin.command:
+        cmd: "{{ netlab }}.health"
+        chdir: "{{ playbook_dir }}/.."
+      delegate_to: localhost
+      run_once: true
+      register: before
+      changed_when: false
+      failed_when: false
+      check_mode: false  # read-only
+
+  tasks:
+    - ansible.builtin.include_tasks: tasks/redacting_vtysh.yml
+
+    # The plan is drift.yml's own comparison: running config as the redacting vtysh shows it, against
+    # intent plus each password's sha256 tag. A missing or changed password shows as a tag, never in clear.
+    - name: Show what would change (frr-reload dry run)
+      ansible.builtin.include_tasks: tasks/compare_frr.yml
+      vars:
+        config: "{{ playbook_dir }}/../build/{{ inventory_hostname }}/frr.conf"
+        label: intended
+        with_password_tags: true
+        fail_on_difference: false
 
     - name: Print the change plan
       ansible.builtin.debug:
-        msg: "{{ plan.stdout_lines | reject('match', '^=*$') | list }}"
+        msg: "{{ reload_test.stdout_lines | reject('match', '^=*$') | list }}"
 
-    - name: Apply only the difference, without restarting daemons
-      ansible.builtin.command: /usr/lib/frr/frr-reload.py --reload {{ intended }}
-      when: not ansible_check_mode and ('Lines To Delete' in plan.stdout or 'Lines To Add' in plan.stdout)
-      changed_when: true
+    # The rollback reloads this folder with --confdir (see rescue), so vtysh.conf goes in it too.
+    # Outside the block: if saving fails, nothing has changed yet, so the play just stops. Inside
+    # it, the rescue would reload an empty or half-written fallback and delete the router's config.
+    # Through the redacting vtysh with NETLAB_PASSWORDS=drop, the way the apply reads it: the file has
+    # no password line, so none is on the router's disk, and the rollback below leaves passwords alone
+    # (with one exception, RISK-30, in the rescue's comment).
+    - name: Save the running config as this router's fallback
+      ansible.builtin.shell: |
+        set -e
+        umask 077  # docker exec runs with umask 0, which would leave the fallback writable by anyone
+        mkdir -p {{ fallback | dirname }}
+        cp /etc/frr/vtysh.conf {{ fallback | dirname }}/
+        {{ vtysh_dir }}/vtysh -c "show running-config no-header" > {{ fallback }}
+      environment:
+        NETLAB_PASSWORDS: drop
+      when: not ansible_check_mode
+      changed_when: false
+
+    - name: Apply, gate, and roll back on failure
+      when: not ansible_check_mode
+      block:
+        # NETLAB_PASSWORDS=drop hides the password lines from frr-reload.py. Otherwise it sees a password
+        # the intended file doesn't have and deletes it, running `no neighbor ... password <it>` on vtysh's
+        # command line, logging that line to /var/log/frr/frr-reload.log and taking the session down.
+        - name: Apply only the difference, without restarting daemons
+          ansible.builtin.command: /usr/lib/frr/frr-reload.py --reload --bindir {{ vtysh_dir }} {{ intended }}
+          environment:
+            NETLAB_PASSWORDS: drop
+          when: listed | length > 0
+          changed_when: true
+
+        # vtysh -f /dev/stdin reads the two lines from its standard input, so the password is never in a
+        # file or on a command line, and no_log keeps it out of Ansible's output. Giving FRR the password it
+        # already has leaves the session up (measured), so this runs every time. After the apply, which may
+        # be what adds the neighbor, and before the checks, so the gate sees the session with its password.
+        - name: Set BGP passwords from the secret store
+          ansible.builtin.command:
+            cmd: vtysh -f /dev/stdin
+            stdin: "router bgp {{ item.asn }}\n neighbor {{ item.neighbor }} password {{ lookup('file', secrets_dir ~ '/' ~ item.secret) }}\n"
+          loop: "{{ bgp_md5 | default([]) }}"
+          loop_control:
+            label: "{{ item.peer }} ({{ item.secret }})"
+          no_log: true
+          changed_when: false
+
+        - name: Confirm the router now runs the whole intended config
+          ansible.builtin.include_tasks: tasks/compare_frr.yml
+          vars:
+            config: "{{ playbook_dir }}/../build/{{ inventory_hostname }}/frr.conf"
+            label: intended
+            with_password_tags: true
+            mismatch: did not take the whole change
+
+        # Every router in the batch runs the gate (not run_once), so if it fails they all roll back.
+        # Only problems this batch added fail it, so a rollout can still repair a router that was broken.
+        - name: Health gate, waiting up to gate_timeout for the network to settle
+          ansible.builtin.command:
+            cmd: "{{ netlab }}.health --known - --wait {{ gate_timeout }}"
+            chdir: "{{ playbook_dir }}/.."
+            stdin: "{{ before.stdout }}"
+          delegate_to: localhost
+          changed_when: false
+
+        - name: Vetting delay, canary only
+          ansible.builtin.pause:
+            seconds: "{{ vetting_delay }}"
+          when: canary in ansible_play_batch
+
+        - name: The canary must still be healthy after the vetting delay
+          ansible.builtin.command:
+            cmd: "{{ netlab }}.health --known -"
+            chdir: "{{ playbook_dir }}/.."
+            stdin: "{{ before.stdout }}"
+          delegate_to: localhost
+          changed_when: false
+          when: canary in ansible_play_batch
+
+      rescue:
+        # Keep this first. When only some routers of a batch fail, any_errors_fatal ends the play after
+        # the rescue's first task, and the routers that didn't fail keep the change (decision 0010).
+        # frr-reload.py runs `write` after reloading any file other than <confdir>/frr.conf, which the
+        # read-only intent refuses, so it exits 1 after rolling back. Pointing --confdir at the
+        # fallback's own folder makes the fallback that file, so it doesn't try. The fallback has no
+        # password lines and the running config is read the same way (drop), so a password is neither
+        # deleted nor set: it stays whatever the password task last left. Except (RISK-30): a failed
+        # change to the neighbor itself (its remote-as or address, or the local AS) deleted it with its
+        # password, so this re-creates it from the fallback without one, and the session stays down
+        # until the inventory is reverted and make apply runs. Seen in the lab: a wrong remote-as on r2.
+        - name: Roll back to the fallback
+          ansible.builtin.command: /usr/lib/frr/frr-reload.py --confdir {{ fallback | dirname }} --bindir {{ vtysh_dir }} --reload {{ fallback }}
+          environment:
+            NETLAB_PASSWORDS: drop
+          changed_when: true
+
+        # Without this the rescue succeeds, the router counts as "rescued", not failed, and the
+        # rollout carries on to the next batch. A no_log task's output (the password task: vtysh
+        # echoes a line it rejects, password included) is never repeated here.
+        - name: Stop the rollout
+          ansible.builtin.fail:
+            msg: >-
+              {{ inventory_hostname }} failed "{{ ansible_failed_task.name }}" and was rolled back to its
+              pre-change config. The rollout stopped here.
+              {{ '(its output is hidden: no_log)' if ansible_failed_task.no_log | default(false)
+                 else ansible_failed_result.stdout | default(ansible_failed_result.msg | default('')) }}
+              The intent in build/ still holds the change, so revert it in the inventory; until then
+              make drift reports this router.
+
+  post_tasks:
+    - name: Confirm the batch runs what is installed (netlab.verify)
+      ansible.builtin.command:
+        cmd: "{{ netlab }}.verify {{ ansible_play_batch | join(' ') }}"
+        chdir: "{{ playbook_dir }}/.."
+      delegate_to: localhost
+      run_once: true
+      changed_when: false
+      check_mode: false  # read-only

@@ -26,7 +26,9 @@ def test_write_memory_cannot_overwrite_intent(node):
         set_description(r2, "drift-test")
         r2.run("vtysh", "-c", "write memory", check=False)
         assert digest(INTENT) == before, "write memory changed the intended config in build/"
-        assert "drift-test" in r2.vtysh("show running-config"), "the hand change should still be live, for the drift check to catch"
+        # A bool first: on failure pytest prints an assert's operands, and the running config holds a BGP password.
+        live = "drift-test" in r2.vtysh("show running-config")
+        assert live, "the hand change should still be live, for the drift check to catch"
     finally:
         set_description(r2, intended_description())
 

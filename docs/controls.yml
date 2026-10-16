@@ -10,8 +10,13 @@
 #   fails_when  how it stops working, or what it never covered
 #
 # Schedule: .github/workflows/ci.yml runs every test nightly (cron 23 4 * * *), on every push to
-# main and on every pull request. It keeps results/live.xml (JUnit, with a timestamp) for the live
-# tests as a run artifact for 90 days; offline results are in the run's log.
+# main and on every pull request. It keeps results/offline.xml and results/review.xml (JUnit, with a
+# timestamp) as run artifacts for 90 days, and results/live.xml too when the lab job's secret scan
+# passed; when that scan failed, the control-status job fails, naming ACC-4.
+# .github/workflows/drills.yml runs the restore and power drills weekly and keeps theirs the same way. The control-status job in
+# ci.yml reads them all. The four tests that compare a record's date with today (in verdict-log,
+# outside-levers, risk-register and runbooks) run in ci.yml's review job, which the lab job doesn't
+# wait for, so a review falling due turns that job red without stopping the live tests or the backup.
 # GitHub disables scheduled runs in a public repo after 60 days with no repository activity,
 # so a quiet repo can miss its period without any test going red.
 #
@@ -50,7 +55,8 @@ controls:
     fails_when: >-
       It only covers what r2 sends. Nothing filters what r2 accepts (`no bgp ebgp-requires-policy`,
       no inbound route-map), so the ISP could announce a more-specific of a campus prefix and r2
-      would prefer it for traffic r2 forwards.
+      would prefer it for traffic r2 forwards. While an RTBH trigger is on, the attacked /32 goes out
+      on purpose (rtbh-lever); this test runs with none on.
 
   - id: default-route-via-ospf
     claim: "The edge router hands a default route to the core through OSPF"
@@ -82,8 +88,8 @@ controls:
       Someone on a lab link, or on the ISP side, reaching a daemon's vty and changing routing.
       A daemon started without `-A 127.0.0.1` listens on every address (bfdd did, at first).
     fails_when: >-
-      BGP listens on every address, and nothing filters the WAN edge, so r2's port 179 answers from
-      the ISP side. UDP listeners (BFD) are not checked. The vtys have no password: anyone with
+      BGP listens on every address; from the ISP side only the peer's own address reaches it, through
+      r2's edge filter (wan-filter). UDP listeners (BFD) are not checked. The vtys have no password: anyone with
       `docker exec` on the host is root on every node, and that is the real management path.
 
   - id: users-reach-web-and-internet
@@ -107,9 +113,9 @@ controls:
     period: P31D
     threat: A user, or malware on a user's machine, logging in to or brute-forcing servers over SSH.
     fails_when: >-
-      Only traffic that crosses fw1 is filtered. From the ISP side h2:22 is open
-      (`nc -z 10.20.20.10 22` from isp succeeds). A broader accept placed above it wins, and SSH
-      moved to another port is not matched by this rule (the default drop still catches it).
+      Only traffic that crosses fw1 is filtered; the ISP side is r2's job (wan-filter), and r1, r2 and
+      r3 still reach h2:22. A broader accept placed above it wins, and SSH moved to another port is not
+      matched by this rule (the default drop still catches it).
 
   - id: fw1:allow-established
     claim: "The firewall is stateful: a forged TCP ACK from the server LAN, for a connection no user opened, is dropped instead of being let in as return traffic"
@@ -198,9 +204,9 @@ controls:
     threat: An undocumented hand change (a quick fix, a mistake, an intruder) living on a router or the firewall.
     fails_when: >-
       A change made and undone between runs is never seen. `ipv6 forwarding` lines are ignored on purpose (V-009).
-      Kernel state outside FRR and fw1's filter table (an interface set down, a sysctl, a host route,
-      a nat or mangle rule) is not compared, and h1 and h2 are not collected at all
-      (docs/collection-methods.md).
+      Kernel state outside FRR and the filter and raw tables of fw1, r2 and r3 (an interface set down,
+      a sysctl such as rp_filter, a host route, a nat or mangle rule, an iptables rule on r1 or isp) is
+      not compared, and h1 and h2 are not collected at all (docs/collection-methods.md).
 
   - id: unsaved-change
     claim: "A hand change on a router that was never saved fails one run of that drift check, which names the changed line. The test first proves the check passes on the clean lab"
@@ -227,8 +233,8 @@ controls:
     period: P31D
     threat: An ACCEPT rule added by hand on fw1, the quickest way to open a hole nobody reviewed.
     fails_when: >-
-      `iptables -S` lists the filter table only, so a nat, mangle or raw change is backed up but
-      not failed. Counters are not compared.
+      The filter and raw tables are compared; a nat or mangle change is backed up but not failed.
+      Counters are not compared.
 
   - id: intent-read-only
     claim: "A hand change saved with `write memory` can't overwrite the intended config and hide from that drift check"
@@ -241,6 +247,105 @@ controls:
       The protection is the `:ro` bind in the topology; without it this test is the only thing that
       notices. It doesn't stop anyone editing build/ or the inventory on the host, which is a change
       to intent and goes through git review.
+
+  - id: bgp-md5-session
+    claim: "The r2–isp BGP session uses TCP MD5 on both ends, with a random password (a new one every CI run), and a wrong password on the carrier's end takes the session down"
+    test: tests/live/test_secrets.py::test_bgp_session_uses_its_secret_and_a_wrong_one_drops_it
+    period: P31D
+    threat: >-
+      A spoofed or hijacked BGP peer on the hand-off injecting routes or resetting the session, and
+      MD5 that is configured on paper but not enforced.
+    fails_when: >-
+      TCP MD5 (RFC 2385) is weak and obsoleted by TCP-AO, which FRR 8.4.1 lacks. Root on either
+      router can read the key with `ss -tnie` (RISK-8). It protects the session, not the routes:
+      the carrier itself can still announce anything (RISK-1).
+
+  - id: no-plaintext-secret
+    claim: "While `make apply` puts back a hand change and `make drift` runs, no command line, environment, frr-reload log (the routing daemons keep no log file, and their lines reach the container log only while they start, V-005), container log, playbook output, or file in `build/` or `backups/` holds that password in clear, and the session never drops"
+    test:
+      - tests/live/test_secrets.py::test_no_secret_in_env_argv_logs_or_files
+      # Deterministic: it reads the playbooks, so it can't miss a short-lived process.
+      - tests/test_secrets.py::test_secrets_reach_a_router_only_on_stdin
+    period: P31D
+    threat: >-
+      The password leaking where other people read it: a CI artifact, a log, another process's view
+      of /proc, Ansible's temp files, or frr-reload.py's log.
+    fails_when: >-
+      Sampling can miss a process shorter than its interval: /proc on the runner, the routers' command
+      lines included, about 40 times a second, but the routers' environments and Ansible temp files
+      only about twice a second. With the password moved onto vtysh's command line, the live test went
+      red in 9 runs of 10 (5 of 6 in review, then 4 of 4). The offline test catches that change every time, but only in ansible/, and
+      only for a lookup or a variable built from one in group_vars, vars_files, vars or set_fact: a
+      registered result and host_vars are not followed. It reads the playbooks, not what a tool they
+      call does with its input. In CI, other users' /proc environ is
+      closed to the test; each router's own processes are read with docker exec instead. The secret
+      store itself is a plaintext 0600 file (RISK-8). It checks this password only; a new kind of
+      secret needs its own check.
+
+  - id: rollback-keeps-password
+    claim: "A router with a BGP password that fails its health gate, after a change that doesn't touch its BGP neighbor's address or AS numbers, goes back to the config it ran before with the password untouched: the session never drops, and neither the saved fallback, FRR's log, a command line nor the playbook output holds the password. Every playbook task that reads or reloads a router's config does it through the redacting vtysh"
+    test:
+      - tests/live/test_rollout.py::test_rollback_keeps_the_bgp_password_and_writes_it_nowhere
+      # Deterministic: it reads every task in ansible/, the rescue's rollback included.
+      - tests/test_secrets.py::test_every_running_config_read_goes_through_the_redacting_vtysh
+    period: P31D
+    threat: >-
+      A rollback that deletes the password (frr-reload.py sees a line the fallback lacks and removes it,
+      with the password on vtysh's command line and in its log), sets the sha256 tag as the password,
+      or leaves the password in clear in /tmp/rollback on the router.
+    fails_when: >-
+      The live test rolls back r2 alone (--limit r2). A production batch rolling back r2, r3 and isp
+      together with passwords set is not in the suite. A rollback leaves the password whatever the
+      password task last set, so a change that rotated it is not undone. A failed change to the
+      neighbor itself (its remote-as or address, or the local AS) is the exception: frr-reload.py
+      deletes and re-creates the neighbor, the fallback has no password line, and the session stays
+      down until the inventory is reverted and make apply runs (RISK-30, seen in the lab with a wrong
+      remote-as on r2). The offline check reads the commands as written in ansible/, not what a tool
+      they call does.
+
+  - id: secret-never-rendered
+    claim: "The password is never rendered: `build/` names only the secret's file, the store is 0600 and never overwritten, and backups and drift output show a sha256 tag in its place"
+    test:
+      - tests/test_secrets.py::test_no_rendered_file_holds_a_password
+      - tests/test_secrets.py::test_secret_store_is_private_and_never_overwritten
+      - tests/test_secrets.py::test_redacting_vtysh_tags_or_drops_passwords
+      - tests/test_secrets.py::test_bgp_auth_names_a_real_session_and_a_secret_file
+    period: P31D
+    threat: The password ending up in the intent every tool prints, diffs and uploads.
+    fails_when: >-
+      The sha256 tag is safe to publish only because the password is random; a chosen password
+      would make it guessable. The redaction matches FRR 8.4's `neighbor X password` line form only.
+
+  - id: secret-blocked-at-commit
+    claim: "A secret staged in a commit is refused by the gitleaks pre-commit hook, and one committed with `--no-verify` and deleted again is still found by the full-history scan CI runs"
+    test:
+      - tests/test_secrets.py::test_staged_secret_is_blocked_at_commit
+      - tests/test_secrets.py::test_history_scan_finds_a_secret_committed_with_no_verify
+    period: P31D
+    threat: A token or password committed by accident and pushed, then "removed" in a later commit.
+    fails_when: >-
+      The hook works only where `pre-commit install` was run, and --no-verify skips it. The CI scan
+      reports but blocks nothing until branch protection requires the secrets check (RISK-10).
+      gitleaks knows only the patterns it has rules for.
+
+  - id: marked-file-push
+    claim: "A file carrying the confidential marker is refused by the pre-push hook. Pushed anyway with `--no-verify`, the CI scan of the pushed history goes red and names it"
+    test: tests/test_secrets.py::test_marked_file_is_blocked_at_push_and_alerted_by_ci
+    period: P31D
+    threat: Confidential material moved out through a public GitHub repo, by accident or on purpose.
+    fails_when: >-
+      Only files that carry the marker are caught; an unmarked confidential file passes. Pushed with
+      --no-verify, the file is public before the CI alert, which is detection, not prevention. Other
+      routes out (cloud uploads, USB, email) are not covered.
+
+  - id: frr-password-rule
+    claim: "gitleaks' default rules miss a BGP password in an FRR backup; this repo's rule catches it, and lets the sha256 tag through"
+    test: tests/test_secrets.py::test_frr_password_rule_catches_what_default_rules_miss
+    period: P31D
+    threat: A router backup with a password in clear passing the scanner unseen.
+    fails_when: >-
+      The rule knows FRR's `neighbor X password` form only; other vendors' syntax, or OSPF keys if
+      they are ever added, need their own rules.
 
   - id: inventory-validation
     claim: "The inventory can't ship with duplicate IPs, mismatched subnets, overlapping networks, wrong BGP peer addresses, off-subnet gateways or a device with no owner"
@@ -300,6 +405,33 @@ controls:
       Ownership is what the inventory says; a wrong `owner:` is trusted. Retracing stops after 5
       tries, so a hop that never answers is skipped and its segment merged with the next.
 
+  - id: finding-bundle
+    claim: "`make finding` sends the carrier a bundle they can re-run: every command's raw output, an ICMP capture on our hand-off port, FRR support bundles, versions, clocks and RFC citations, and no BGP password. Its `reproduce.sh`, run from a copy with only sh and docker, names the same segment and owner, and says it did not reproduce once the loss is gone. A CI job re-runs it on a runner with no checkout; it first passed on GitHub in run 38831606745 (a pull-request run)"
+    test: tests/live/test_finding.py::test_carrier_finding_reproduces_from_the_bundle_alone
+    period: P31D
+    threat: >-
+      A carrier that can't check our evidence closing the ticket as "no fault found", or a re-run
+      that agrees whatever it measures.
+    fails_when: >-
+      The re-run happens in a lab copy where the fault is recreated by lab/condition.sh; on the real
+      network the carrier would run the same commands against the live fault. A clean CI runner
+      stands in for someone outside the team; no outsider has re-run one yet. The CI job first passed
+      on GitHub in pull-request run 38831606745. The capture has
+      userspace timestamps (about 1 ms) and is taken at our end only, so no one-way claim is made.
+
+  - id: finding-verify
+    claim: "`netlab finding --verify` refuses a bundle with a missing or edited file, an empty support log, no probe in its capture, a missing citation, an image without a digest, or a BGP password, and `reproduce.sh` says Reproduced only when its own run agrees"
+    test:
+      - tests/test_finding.py::test_verify_names_every_gap_in_a_bundle
+      - tests/test_finding.py::test_reproduce_agrees_only_when_its_own_run_does
+      - tests/test_finding.py::test_pcap_counts_only_echo_to_and_from_the_target
+      - tests/test_finding.py::test_only_an_earlier_bundle_is_ever_deleted
+    period: P31D
+    threat: Sending a bundle that can't be re-run or trusted, or that carries a secret.
+    fails_when: >-
+      It checks that the evidence is there and consistent, not that it is right: a measurement taken
+      during a reconvergence is complete and still wrong. The password check knows FRR's line form.
+
   - id: platform-version
     claim: "Every node runs exactly the image (tag and digest), FRR, Alpine and busybox builds the inventory records, and CI pulls that image"
     test:
@@ -317,6 +449,7 @@ controls:
   - id: verdict-log
     claim: "Every odd behaviour in the log has one verdict (my config, normal behaviour, platform bug or lab artifact), the version it was seen on, and a fix or workaround. None may stay unclassified past 5 working days"
     test:
+      - tests/test_verdicts.py::test_verdict_log_is_well_formed
       - tests/test_verdicts.py::test_verdict_log_lints_clean
       - tests/test_verdicts.py::test_unclassified_entry_gets_five_working_days
     period: P31D
@@ -325,7 +458,11 @@ controls:
       on it, or a platform bug is worked around forever without anyone knowing.
     fails_when: >-
       It lints what is written. An odd behaviour nobody logs is never checked, and the verdict
-      itself is only as right as its evidence.
+      itself is only as right as its evidence. The log's structure (every field, a known verdict, a
+      fix or workaround, no id used twice) is checked by make test, so in CI's offline job, which the
+      lab job waits for. The 5-day limit is checked by make review, in CI's review job, which the lab
+      job doesn't wait for: an overdue entry turns the review job red, and on main the control-status
+      job as well, since it reads the review job's results.
 
   - id: decision-records
     claim: "Every design decision has a record naming the constraint, the alternatives (doing nothing included), an outside source, the stake and who decides"
@@ -339,6 +476,47 @@ controls:
     fails_when: >-
       It checks each record has its fields, a 'do nothing' option, an outside source and real
       failure-mode tests, not that the reasoning is sound. A decision made with no record is not seen.
+
+  - id: selection-records
+    claim: "FRR, Containerlab, Ansible, iptables, gitleaks, Docker, GitHub Actions and restic each have a selection record with its constraint, a no-purchase line, staffing, and sources its maker didn't write, a measurement of our own among them. A new image in the inventory, Makefile, hooks or CI fails the check until it has one"
+    test:
+      - tests/test_selections.py::test_every_selection_record_lints_clean
+      - tests/test_selections.py::test_sources_from_the_seller_alone_are_rejected
+      - tests/test_selections.py::test_outside_pages_alone_are_not_enough
+      - tests/test_selections.py::test_missing_no_purchase_line_is_reported
+      - tests/test_selections.py::test_every_tool_has_a_selection_record
+      - tests/test_selections.py::test_image_names_are_found_with_or_without_a_namespace
+      - tests/test_selections.py::test_a_record_may_cite_tests_that_arrive_with_its_tool
+    period: P31D
+    threat: A tool chosen on the seller's word, with nothing to show a skeptic and no cheaper option considered.
+    fails_when: >-
+      The lint checks a source is off the maker's domains, not that it is right or still online.
+      Coverage is every image named outside a comment in the inventory, Makefile, hooks or workflows,
+      plus the tools listed in netlab/records.py (Containerlab, Ansible, iptables, Docker, GitHub
+      Actions). The Python libraries (pytest, Jinja2, PyYAML, pre-commit) and GitHub's own actions
+      have no record of their own, and an image behind a registry port (localhost:5000/app:1) is not
+      detected. Until the lab runs a tool, its record may cite tests that arrive with it
+      (test_a_record_may_cite_tests_that_arrive_with_its_tool).
+
+  - id: risk-register
+    claim: "Every risky config line of a kind `make risks` scans for (no eBGP inbound policy, OSPF without authentication, privileged nodes, any ICMP type through fw1, an out-of-support base OS and more) is covered by a risk register entry with likelihood, impact, reasoning, a compensating test or why there is none, an owner and a review date. An entry whose line is gone is flagged to close, and a decision record that accepts a risk must name its entry. None has been presented to management yet"
+    test:
+      - tests/test_risks.py::test_every_risky_config_line_has_a_risk_record
+      - tests/test_risks.py::test_a_deleted_risk_names_its_config_line
+      - tests/test_risks.py::test_fixing_the_config_flags_the_risk_as_stale
+      - tests/test_risks.py::test_every_risk_a_decision_record_accepts_is_in_the_register
+      - tests/test_risks.py::test_a_selection_record_cites_only_risks_in_the_register
+      - tests/test_risks.py::test_every_risk_record_is_complete
+      - tests/test_risks.py::test_summary_lists_what_management_has_not_seen
+    period: P31D
+    threat: Shortcuts nobody decided on, and accepted risks that outlive the reason they were accepted.
+    fails_when: >-
+      It knows only the risky line kinds in netlab/risks.py; a new kind of shortcut needs a new
+      detector, and a gap with no config line (RISK-9, RISK-10, RISK-12, RISK-20, RISK-27) is tied to nothing. RISK-15's
+      detector reads the hosts' lines in the topology, so collecting the hosts won't flag it stale by
+      itself. Every review_by is 2027-01-15, so CI's review job goes red on 2027-01-16 by design; the
+      lab job doesn't wait for it.
+      It can record who an entry was shown to, but not prove the meeting happened.
 
   - id: sizing
     claim: "The RAM figure below is the newest measurement, and that raw data is committed"
@@ -373,16 +551,17 @@ controls:
       An opening, not a defence: dropping all ICMP would break path MTU discovery and ping, so it
       is let through.
     fails_when: >-
-      It matches every ICMP type in both directions, from anywhere: the ISP side can ping h1
-      (measured), so it can sweep LAN-A for live hosts, and ICMP can carry a tunnel.
+      It matches every ICMP type in both directions, from anywhere fw1 sees. r2 now stops new pings
+      from the internet side, but LAN-B can still ping h1 and sweep LAN-A for live hosts, and ICMP
+      can carry a tunnel.
 
   - id: fw1:allow-internet
     claim: "Users can open connections to the internet range"
     test: tests/live/test_dataplane.py::test_lan_a_reaches_internet
     period: P31D
     threat: >-
-      Connections into LAN-A from the internet side: the rule only matches packets from LAN-A,
-      so it can never open one inbound.
+      Connections into LAN-A from the internet side: the rule only matches packets from LAN-A
+      arriving on the inside interface (eth1), so it can never open one inbound.
     fails_when: >-
       It matches every protocol, so it can't carry --syn: a forged mid-stream ACK from h1 to the
       internet is forwarded and then adopted by conntrack (see fw1:allow-established). Splitting it
@@ -400,4 +579,354 @@ controls:
     fails_when: >-
       firewall.sh runs once at deploy. `make drift` compares fw1's live filter table with it, but
       only when it runs, so a hand change lives until the next run. Traffic that never crosses fw1
-      (the ISP side to LAN-B) is not filtered at all.
+      (the ISP side to LAN-B) is filtered by r2 instead (wan-filter).
+
+  - id: canary-rollback
+    claim: "A router change goes to the canary (r1) first and must pass a health gate: every OSPF neighbor Full, every BGP session Established, every host answering the other. A change that fails it puts the canary back on the config it ran before, and no other router is touched"
+    test: tests/live/test_rollout.py::test_failing_canary_rolls_back_and_blocks
+    period: P31D
+    threat: >-
+      A bad change (a wrong area, a removed interface line, a typo in a template) reaching every
+      router at once, and a broken router left broken until someone notices.
+    fails_when: >-
+      The gate sees only what netlab.health checks: OSPF, BGP and host-to-host ping. A change that
+      breaks a route, a firewall path or a service while those still pass goes through, and so does
+      a fault that shows after the 10 s vetting delay. Production batches are rolled back as a whole
+      only if every router fails its gate together (checked by hand in the lab once, not by a test, and
+      before decision 0016 made the save and the rollback go through the redacting vtysh). If
+      one router fails an earlier step (the apply or the compare), only it rolls back, and the rest of its
+      batch keeps the change (decision 0010, an accepted risk). The rollback restores the running
+      config, not build/, so a restart boots the bad intent; make drift reports it. The rollout only
+      covers the routers: fw1 and the hosts are not in it.
+
+  - id: change-window
+    claim: "Nothing changes outside the change window, and a harmless change passes every gate and reaches every router, so the gate doesn't just fail everything"
+    test: tests/live/test_rollout.py::test_change_waits_for_window_then_reaches_every_router
+    period: P31D
+    threat: >-
+      A change started in the middle of the business day, and a gate so strict that people learn
+      to bypass it.
+    fails_when: >-
+      The lab's window is open all day (the test closes it with -e). The window is checked when
+      each batch starts, so a batch can run past its end, and a window that closes after the
+      canary stops the rollout with only the canary changed. The clock is the control
+      node's, in UTC. Anyone can run frr-reload.py or vtysh on a router directly and skip all of it.
+
+  - id: patch-in-effect
+    claim: "A patch counts as done only when it runs. `make verify` reports `not in effect` for a kernel installed but not booted into, and for an FRR daemon still running the binary an upgrade replaced on disk, until it restarts. The nodes share the host's kernel, so the test installs a newer kernel's module folder on r2 to stand for the upgrade"
+    test:
+      - tests/live/test_verify.py::test_kernel_patch_without_reboot_is_not_in_effect
+      - tests/live/test_verify.py::test_daemon_patch_without_restart_is_not_in_effect
+      - tests/test_verify.py::test_newest_kernel_is_found_by_version
+      - tests/test_verify.py::test_replaced_or_stopped_daemon_is_not_in_effect
+    period: P31D
+    threat: >-
+      A patch reported as applied because the package is installed, while the old kernel or daemon
+      is still the one running, so the vulnerability or bug is still live.
+    fails_when: >-
+      The kernel check compares names under /lib/modules with uname -r, so a kernel installed
+      somewhere else, or a live-patched one, is not seen; the lab nodes install none, so on them it
+      only has something to compare in the test. The daemon check covers FRR's own processes under
+      /usr/lib/frr, not shared libraries an upgrade replaced (needrestart also reads /proc/<pid>/maps
+      for those), and not the host. It runs when called: after each rollout batch, on that batch's
+      routers, and by make verify. CI also applies the kernel rule to the runner's own installed
+      kernel, as a report that doesn't fail the job.
+
+  - id: qos-in-effect
+    claim: "h2's QoS is confirmed from its class counters: the installed rates match the inventory, and five connections to port 80 are counted in the web class. That costs a few kilobytes on a 20 Mbit link. A changed rate or a missing filter is `not in effect`"
+    test: tests/live/test_verify.py::test_qos_change_confirmed_from_class_counters
+    period: P31D
+    threat: >-
+      QoS that is configured but doing nothing (a filter lost, a class at the wrong rate), found
+      only when users complain during the next backup.
+    fails_when: >-
+      The probe checks that connections to the port land in the class, not that the class gets its
+      share under load; that is test_backup_yields_to_web's job. Rates are compared as tc prints
+      them, so the inventory must give whole mbit. Burst, quantum and leaf queues are not checked.
+      Only make verify checks it: the rollout runs netlab.verify on its own routers, and no rollout
+      changes h2's QoS, which is set when the lab deploys.
+
+  - id: bulk-yields
+    claim: "A backup yields to web traffic. h2's port is capped at 20 Mbit, standing for a link that can't be upgraded, and HTB gives web replies a class of their own. During a 15 MB copy from h2 that fills the link, h1's web p95 stays under 50 ms and every byte arrives. Measured in the sandbox lab: 2.7–6.3 ms, against 110–126 ms on one flat queue of the same rate"
+    test: tests/live/test_qos.py::test_backup_yields_to_web
+    period: P31D
+    threat: >-
+      A job that can't be skipped (a backup, a bulk copy) filling a fixed link and making the
+      production service slow for everyone while it runs.
+    fails_when: >-
+      Only h2's egress is shaped, and only traffic from source port 80 is web; requests to h2 and
+      other links are not shaped. One bulk flow and one web client were tested, on veths with MTU
+      9500. The leaf queues are plain FIFOs, because the sandbox kernel has no fq_codel or cake.
+      The 20 Mbit cap is the lab's stand-in for a slow link, not a measured one.
+
+  - id: change-record-parity
+    claim: "The change-record check fails a pull request whose description doesn't say which risks the lab could not cover: that section is missing, empty, still only the template's guidance, or a filler word like `n/a`. Until main is protected, a red check blocks nothing. What the lab can't cover is in [`docs/LAB_PARITY.md`](docs/LAB_PARITY.md)"
+    test:
+      - tests/test_change_record.py::test_a_filled_section_passes
+      - tests/test_change_record.py::test_the_untouched_template_fails
+      - tests/test_change_record.py::test_an_empty_or_filler_section_fails
+      - tests/test_change_record.py::test_a_missing_section_fails
+      - tests/test_change_record.py::test_an_issue_number_does_not_end_the_section
+      - tests/test_change_record.py::test_the_check_reads_the_github_event
+      - tests/test_change_record.py::test_ci_runs_the_check_when_the_description_changes
+    period: P31D
+    threat: >-
+      A change tested in the lab and called safe, when the lab couldn't have shown the thing that
+      breaks it (no switches, no TLS, one kernel), and nobody wrote that down.
+    fails_when: >-
+      main is not protected: a direct push skips the pull request and the check, and a red check
+      doesn't block a merge until branch protection requires it (a repository setting). The check
+      runs the pull request's own copy of netlab/changerecord.py, so a pull request could weaken it.
+      It checks that the section says something, not that it is true or complete.
+
+  - id: wan-filter
+    claim: "From the internet side nothing answers but the published web port (h2:80), and from the ISP's peer address r2's BGP port may answer too. A scan of every campus address on 27 TCP management ports (SSH, telnet, HTTP(S), BGP, NETCONF, every FRR vty), from the ISP's peer address and from another internet address, finds h2:80 open and nothing else, except that from the peer's address, which r2's filter admits to BGP, the test also allows r2's BGP port without requiring it. The same scan from inside finds h2's port 22 and r2's BGP answering, so the closure is r2's edge filter"
+    test: tests/live/test_edge.py::test_wan_scan_finds_only_published_ports
+    period: P31D
+    threat: >-
+      Anyone on the internet reaching a management port (SSH, a router vty, BGP from a stranger's
+      address) or a service nobody decided to publish. Before decision 0012, h2:22 and r2:179 answered
+      from 203.0.113.1.
+    fails_when: >-
+      TCP only: UDP (SNMP, BFD) is not scanned, and a filtered UDP port can't be told from an open one
+      by a connect scan. 27 ports, not all 65535. From the peer's address r2's BGP port passes whether
+      or not it answers, so the test would still pass if r2 answered a SYN without the session's MD5
+      key. It scans from the lab's one ISP. IPv6 is not filtered
+      or scanned: this sandbox has none, but under real containerlab the links may get link-local
+      addresses and bgpd may then listen on [::]:179 for the directly attached ISP (decision 0012).
+      The published port is open to the whole internet by design, so a hole in h2's web server is not
+      this control's to catch. The management-plane fallback half of OROS ACC-7 needs a management
+      path the lab doesn't have yet.
+
+  - id: anti-spoof
+    claim: "A forged source address is refused at every edge we own while real traffic through the same edge passes: fw1 drops what a user sends as a server, r3 drops what the server LAN sends as a user (strict reverse-path filter), and r2 drops private source addresses from the internet, even to the published port"
+    test:
+      - tests/live/test_edge.py::test_lan_a_cannot_forge_its_source
+      - tests/live/test_edge.py::test_server_lan_cannot_forge_its_source
+      - tests/live/test_edge.py::test_internet_cannot_forge_a_private_source
+    period: P31D
+    threat: >-
+      A host sending as someone it isn't, to get past a rule that trusts a source address, to bounce
+      replies at a victim, or to hide where an attack came from (BCP 38). Before decision 0012, 5 of 5
+      SYNs h1 forged as 10.20.20.99 reached h2, and 5 of 5 forged pings reached the ISP.
+    fails_when: >-
+      Subnet-level only: h1 can still send as another LAN-A address, which needs per-port binding on a
+      switch (OROS CON-1). The internet can still forge any public address; r2 drops only RFC 1918
+      sources. r3's check is a sysctl, which `make drift` doesn't compare; the live test reads it. On a
+      host whose conf.all.rp_filter is 2, edge.sh pins it to 0 so eth3's 1 (strict) applies.
+
+  - id: fw1:anti-spoof-inside
+    claim: "fw1's raw table drops anything arriving on the inside interface whose source is not the inside subnet, before any FORWARD rule"
+    test:
+      - tests/live/test_edge.py::test_lan_a_cannot_forge_its_source
+      - tests/test_scope.py::test_anti_spoof_on_every_edge_we_control
+    period: P31D
+    threat: A user sending as a server or as the internet, which allow-icmp and allow-web would otherwise forward.
+    fails_when: >-
+      It trusts the whole inside subnet. It is in the raw table, which the drift check compares since
+      decision 0012; a rule added to nat or mangle is still not compared.
+
+  - id: segmentation
+    claim: "LAN-B is a toy payments segment with a scope register: every device has a scope decision, every in-scope one its PCI DSS clause, and the validator refuses a register the topology contradicts. From every out-of-scope device, LAN-B answers TCP only on published ports and pings only where the register records an exception (h1, for monitoring), and each closed probe answers from inside LAN-B, so the block is policy"
+    test:
+      - tests/live/test_scope.py::test_out_of_scope_cannot_reach_in_scope
+      - tests/test_scope.py::test_every_device_has_a_scope_decision
+      - tests/test_scope.py::test_register_the_topology_contradicts_is_refused
+      - tests/test_scope.py::test_segmentation_probes_every_out_of_scope_device
+    period: P31D
+    threat: >-
+      The payments segment's scope quietly growing: a server added to LAN-B with no decision, a filter
+      called out of scope, or an out-of-scope system that can reach a service it shouldn't.
+    fails_when: >-
+      It is a toy: no card data, no assessor (acceptance is open, decision 0013). It probes the services
+      the inventory lists over TCP, and echo pings. h1's ping exception is wider than its reason (fw1's
+      allow-icmp passes every ICMP type), and whether LAN-A's reach (h2:80 and pings) makes it
+      connected-to is an assessor's call nobody has made. Outbound from LAN-B is not restricted (PCI
+      DSS 1.3.2 not met). The clause wording was checked against a secondary source, not the PCI SSC
+      document.
+
+  - id: edge-drift
+    claim: "A hole opened by hand in r2's internet filter, or an anti-spoof rule deleted from r2's or fw1's raw table, fails the drift check, which names each change"
+    test: tests/live/test_edge.py::test_edge_filter_hand_change_is_flagged
+    period: P31D
+    threat: An ACCEPT added on the internet edge to "just test something", or an anti-spoof rule removed, and never put back.
+    fails_when: >-
+      Same limits as firewall-hand-change: only when `make drift` runs, nat and mangle not compared,
+      counters not compared. r3's rp_filter sysctl is not compared; its filter and raw tables (empty)
+      are, but no test changes them. r1 and isp have no edge.sh, so an iptables rule left on them is
+      not flagged.
+
+  - id: rtbh-lever
+    claim: "The DDoS lever is lined up: one line on r2 makes the ISP blackhole just the attacked host's /32 (community 65100:666), the rest of the campus still routes, the campus still reaches the host, and removing the line restores it"
+    test:
+      - tests/live/test_rtbh.py::test_rtbh_blackholes_only_the_attacked_host
+      - tests/test_scope.py::test_rtbh_is_lined_up_at_both_ends
+    period: P31D
+    threat: >-
+      A flood on one published host filling the ISP link, so everything behind r2 goes down with it,
+      and nothing can be done from our side once the packets have crossed the link.
+    fails_when: >-
+      It completes the attack for that host: the internet can't reach it while the blackhole is on.
+      The ISP here is a lab stand-in that we configure ourselves; a real carrier's community and rules
+      are its own and must be checked with it. A trigger left on is only caught when `make drift` runs.
+
+  - id: outside-levers
+    claim: "Every outside lever (the ISP's blackhole, a source network's abuse desk, a lookalike domain's registrar, the police) has a holder, a contact and the evidence it needs, checked within the last 90 days"
+    test:
+      - tests/test_levers.py::test_contact_sheet_lints_clean
+      - tests/test_levers.py::test_entry_without_evidence_or_contact_is_reported
+      - tests/test_levers.py::test_stale_check_is_reported
+      - tests/test_levers.py::test_ddos_lever_is_the_blackhole_the_lab_configures
+    period: P31D
+    threat: >-
+      Looking for who to call, and what they want, in the middle of an attack; or calling with the
+      wrong evidence and losing a day.
+    fails_when: >-
+      It checks that each entry is filled in and was re-dated within 90 days, not that the contact
+      answers. The ISP contact is a lab stand-in; the others are public channels, checked on 2026-10-15
+      without contacting anyone: ICANN's registrar duties and IC3 by reading their published pages, and
+      RIPE NCC's abuse-contact policy (ripe-705) behind the RDAP abuse contacts only from search results.
+      No hosting provider, payment processor or scrubbing vendor is listed, and the sheet says why.
+      The 90-day check runs in CI's review job, which the lab job doesn't wait for.
+
+  - id: backup-at-destination
+    claim: "A backup is judged where it lands. `make backup` sends every router's config and the firewall's and edge routers' rules, as `make drift` captured them, to a restic repository, then reads the snapshot back from there: one file per config and ruleset, each with the capture's sha256, and `restic check --read-data` clean. Data rotted at the destination fails the job, although `restic backup` itself exits 0"
+    test:
+      - tests/live/test_backup.py::test_backup_is_verified_at_destination
+      - tests/live/test_backup.py::test_corrupt_destination_fails_the_backup
+    period: P31D
+    threat: >-
+      A backup job that reports success while the copy at the destination is incomplete or
+      unreadable, found out on the day of the restore.
+    fails_when: >-
+      It backs up what make drift captured (the routers' configs, fw1's rules, and r2's and r3's edge
+      rules); h1 and h2 are not backed up. In CI the destination is the Actions cache, evicted after
+      7 days without use, and a pull request's run never writes it. The password file sits beside the
+      repository (decision 0014, RISK-29), so anyone who can read the cache can read the backups. Two
+      runs at once each save their own copy; the newer one wins and the other's snapshot is lost
+      (RISK-26).
+
+  - id: backup-no-secret
+    claim: "A capture holding the BGP password in clear is never backed up: `make backup` names the file and the secret, not its value, and stops before restic runs, and a capture whose secret file is missing is refused too, since nothing could tell. Every file in the snapshot it reads back is searched as well, and in CI the backup runs only after the secret scan of `backups/` has passed"
+    test:
+      - tests/test_backup.py::test_a_capture_holding_a_password_is_never_sent
+      - tests/test_backup.py::test_a_secret_at_the_destination_is_named
+      - tests/live/test_backup.py::test_backup_is_verified_at_destination
+    period: P31D
+    threat: >-
+      A password that slipped past the redaction landing in the backup repository, which keeps every
+      snapshot and whose own password sits beside it in the Actions cache.
+    fails_when: >-
+      It searches for the secrets the inventory's bgp_auth names, by their exact value: a secret of
+      another kind, or one written another way (base64, a hash FRR computes from it), is not found.
+      The repository's password is beside it in the cache, so this is what keeps the backups harmless
+      to read (RISK-29).
+
+  - id: backup-target-missing
+    claim: "A missing or unmounted backup target fails the job loudly and nothing is written: the job never creates a repository, which would hide exactly that. In CI the cache restore is set to fail on a miss"
+    test: tests/live/test_backup.py::test_missing_target_fails_loudly
+    period: P31D
+    threat: >-
+      A backup written quietly to local disk (the empty directory of an unmounted mountpoint) or
+      into a brand-new empty repository, so every run looks green and nothing reaches the real target.
+    fails_when: >-
+      It looks for a restic repository (its config file), not for which disk holds it: a repository
+      created by hand on the local disk passes. CI fails until the repository is created once, by
+      hand (drills.yml, input init_backup_repo). That a cache miss fails the restore step
+      (fail-on-cache-miss, in ci.yml and drills.yml) comes from the actions/cache documentation, since
+      pull-request runs skip that step.
+
+  - id: backup-no-skip
+    claim: "A capture missing a router is not backed up without it: the job names the router and sends nothing"
+    test: tests/live/test_backup.py::test_missing_router_is_not_skipped
+    period: P31D
+    threat: A device dropped from the backup without a word (unreachable that night, a collection error), missed only when it is needed.
+    fails_when: >-
+      The device list is the inventory's routers, firewalls and edge routers. A file that is present but old (a
+      stale capture left in backups/) is backed up as it is; `make drift` rewrites every file first,
+      and CI runs them in that order.
+
+  - id: restore-drill
+    claim: "Every router's latest backup boots on a throwaway FRR router with no network, built like the real one from the topology, and `frr-reload.py --test` finds no difference, while the live routers' running configs stay the same. A backup that doesn't load (one that kept `show running-config`'s header) is named. A weekly job is set up to drill against the real destination"
+    test:
+      - tests/live/test_restore.py::test_every_router_restores_cleanly
+      - tests/live/test_restore.py::test_drill_notices_a_bad_backup
+    # OROS REC-3: the last successful drill within 90 days.
+    period: P90D
+    threat: Backups that were never restored and turn out not to load on the day they are needed.
+    fails_when: >-
+      The throwaway router has no links, so the drill shows the config loads, not that the restored
+      router forms adjacencies. Its image, daemons file and sysctls come from build/, not from the
+      backup. A backup missing a line still boots cleanly; that is caught when it is captured
+      (capture-complete) and by the sha256 check at the destination (backup-at-destination). The
+      drills behind this entry ran in the development sandbox against a scratch repository;
+      drills.yml drills against the CI destination in the Actions cache.
+
+  - id: single-item-restore
+    claim: "One item comes back on its own: r2's `router bgp` stanza, from one `restic dump` of one file, pasted into a throwaway router that booted empty, in 2.3 to 2.4 s here against a stated limit of 5 minutes. No full restore, and the live lab is not touched"
+    test: tests/live/test_restore.py::test_single_item_restore_within_limit
+    period: P90D
+    threat: Needing one piece of config back in a hurry and finding that the only way is a full restore.
+    fails_when: >-
+      One item is drilled, the BGP stanza. The time includes booting the throwaway router. On a live
+      router the stanza would go in the same way, but frr-reload.py --reload is the safer way there.
+
+  - id: backup-fresh
+    claim: "The newest backup at the destination is under 36 hours old, so a backup job that has stopped fails the restore drill"
+    test: tests/live/test_restore.py::test_latest_backup_is_recent
+    period: P31D
+    threat: A backup job that stopped (a broken step, a disabled schedule) while the last good backup quietly ages.
+    fails_when: >-
+      It runs with the weekly drill, so a stop is caught up to a week late. It runs on the same
+      GitHub scheduler as the backups: if GitHub disables the repository's schedules (60 days without
+      activity), neither runs and nothing alerts. That needs a check from outside GitHub (RISK-25).
+
+  - id: power-event-drill
+    claim: "After a whole-lab power cycle every node comes back by itself from its startup config: an unsaved change on r2 is gone and OSPF, BFD and BGP are up; once `make apply` has set the BGP password again (it is in no startup config), h1 reaches the web server through fw1 and nothing has drifted. Routing was back 10.8 to 20.2 s after the cut over four runs here. A weekly job is set up to run it"
+    test: tests/live/test_power_event.py::test_power_event_recovers_from_startup_config
+    period: P31D
+    threat: >-
+      A power cut after which a node comes back without its config (fw1's rules live only in the
+      kernel), or with config that only ever lived in its running state.
+    fails_when: >-
+      The cut is a Containerlab redeploy, which also gives every node a fresh filesystem, so it is a
+      colder start than a real power blip. Every node restarts at once; one node coming back while its
+      neighbours stay up is not drilled (`docker restart` loses the node's links, decision 0015,
+      RISK-27). Nothing runs `make apply` by itself after a real power cut, so until someone does, the
+      BGP session stays down against a real carrier, and in the lab it came back with no MD5 (RISK-28). In
+      drills.yml on GitHub the cut is `containerlab deploy --reconfigure`; in the development sandbox it
+      was the stand-in script's whole-lab redeploy (LAB_PARITY.md).
+
+  - id: runbooks
+    claim: "Runbooks for link failure, BGP down, config drift, restoring a router from backup, a power event, carrier loss and a DDoS blackhole at the ISP each name an owner, a coordinator, who updates stakeholders, a review date and their hosts. The check fails on a missing field, a review older than 180 days, or a host that isn't in the inventory or in the runbook's own host list"
+    test:
+      - tests/test_runbooks.py::test_runbooks_lint_clean
+      - tests/test_runbooks.py::test_top_incident_dr_and_power_event_types_have_runbooks
+      - tests/test_runbooks.py::test_unknown_host_is_reported
+      - tests/test_runbooks.py::test_missing_or_stale_review_date_is_reported
+      - tests/test_runbooks.py::test_every_problem_is_reported_at_once
+      - tests/test_runbooks.py::test_hosts_list_covers_every_device_acted_on
+    period: P31D
+    threat: A runbook that names a renamed router, or hasn't been read since the last redesign, followed at 3 a.m.
+    fails_when: >-
+      It checks the front matter and the device names, not that the steps work; only someone running
+      the runbook finds that out, and docs/runbooks/dry-runs.yml has no run yet. Devices are found in
+      clab-<lab>-X names, --limit and SRC=, so a device named only in prose is not checked. The
+      180-day check runs in CI's review job, which the lab job doesn't wait for.
+
+  - id: control-status
+    claim: "Every control in the register has its latest test green and inside its period. `make control-status` reads the dated JUnit results of this run and earlier runs on `main`, newest first, and fails naming any control whose latest result is red, missing or too old. A CI job is set up to run it on `main`"
+    test:
+      - tests/test_control_status.py::test_green_and_fresh_passes
+      - tests/test_control_status.py::test_latest_green_older_than_its_period_fails
+      - tests/test_control_status.py::test_latest_red_fails_even_with_an_older_green
+      - tests/test_control_status.py::test_skips_are_not_evidence
+      - tests/test_control_status.py::test_fetch_reads_newest_runs_first_and_stops_when_every_test_has_a_result
+    period: P31D
+    threat: Controls claimed to an auditor whose tests stopped running, or have been red for weeks, with nobody looking.
+    fails_when: >-
+      It runs in the scheduled workflow it checks: if GitHub stops scheduling, the check stops too and
+      says nothing (RISK-25); the next push to main runs it again. Artifacts are kept 90 days, the longest period. It doesn't run on pull requests.
+      Pull-request runs skip the job, so its first run on GitHub is on main. Fetching earlier runs'
+      artifacts with gh is proven only with a fake gh, on a network that blocks GitHub artifact downloads.
+      It trusts that each named test proves its claim (control-register).

@@ -129,3 +129,19 @@ def test_operator_must_own_a_device(tmp_path):
     def m(raw):
         raw["operator"] = "nobody"
     assert "operator 'nobody' owns no device" in problems(tmp_path, m)
+
+
+def test_canary_must_be_a_router(tmp_path):
+    def m(raw):
+        raw["rollout"]["canary"] = "h1"
+    assert "rollout: canary 'h1' is not a router" in problems(tmp_path, m)
+
+
+def test_qos_classes_must_fit_the_link(tmp_path):
+    """Class rates are what each class is promised, so together they can't exceed the link; one class takes the rest."""
+    def m(raw):
+        raw["qos"]["h2"]["classes"][0]["rate"] = "18mbit"
+        raw["qos"]["h2"]["classes"][1]["default"] = False
+    out = problems(tmp_path, m)
+    assert "qos on h2: the class rates add up to more than the link's 20mbit" in out
+    assert "qos on h2: exactly one class must be the default" in out

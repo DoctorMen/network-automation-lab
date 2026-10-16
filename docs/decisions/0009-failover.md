@@ -30,7 +30,7 @@ failure_modes:
     test: tests/live/test_failover.py::test_bfd_sessions_up
   - mode: BFD false positive (a busy router misses 3 packets in 0.9 s and drops a healthy adjacency)
     mitigation: Accepted risk. FRR's default timers are kept rather than tightened, and nothing alerts on a BFD flap yet
-    test: none (accepted risk, measured by hand, see Consequences)
+    test: none (accepted risk RISK-11 in docs/risks.yml, measured by hand, see Consequences)
   - mode: duplicate router-ID
     mitigation: The router-ID is the loopback, and `netlab validate` rejects a loopback that collides with another loopback or link address
     test: tests/test_inventory.py::test_duplicate_loopback
@@ -39,7 +39,7 @@ failure_modes:
     test: tests/live/test_collection.py::test_unsaved_change_is_flagged
   - mode: single edge router (r2) or single ISP link fails
     mitigation: "Accepted risk, manual step: there is no second edge router or ISP to fail over to. LAN-A to LAN-B traffic only needs r2 while the r1-r3 link is down, so normally only internet access is lost. An engineer checks `show bgp summary` on r2 and `make drift`, then restores with `make apply` or redeploys r2"
-    test: none (accepted risk)
+    test: none (accepted risk RISK-12 in docs/risks.yml)
   - mode: asymmetric return through the stateful fw1
     mitigation: By design. fw1 is single-homed on r1:eth3 and LAN-A is reached only through r1's static route, so both directions of every flow cross the same fw1 whichever core link is in use. The test opens a new web connection after the reroute, and its replies pass fw1 only as ESTABLISHED
     test: tests/live/test_failover.py::test_silent_failure_reroutes_fast

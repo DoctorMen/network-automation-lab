@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -71,6 +72,14 @@ class Inventory:
     @property
     def hosts(self) -> dict:
         return self.raw.get("hosts", {})
+
+    @property
+    def qos(self) -> dict:
+        return self.raw.get("qos", {})
+
+    @property
+    def rollout(self) -> dict:
+        return self.raw.get("rollout", {})
 
     @property
     def devices(self) -> list[str]:
@@ -213,6 +222,52 @@ def validate(inv: Inventory) -> list[str]:
             if rule.get("proto") == "tcp" and rule["action"] == "accept" and not rule.get("syn") and "NEW" in rule.get("state", ["NEW"]):
                 problems.append(f"{label}: TCP accept needs syn: true, or it forwards forged mid-stream packets")
 
+    # tc reads "15mbit"; netlab verify compares the installed rates with these as text.
+    for name, q in inv.qos.items():
+        label = f"qos on {name}"
+        if name not in inv.hosts:
+            problems.append(f"{label}: {name} is not a host")
+        elif q["interface"] != inv.hosts[name]["interface"]:
+            problems.append(f"{label}: {q['interface']} is not {name}'s interface ({inv.hosts[name]['interface']})")
+        rates = [q["rate"]] + [c["rate"] for c in q["classes"]]
+        if not all(re.fullmatch(r"\d+mbit", str(r)) for r in rates):
+            problems.append(f"{label}: write every rate in whole mbit, like 20mbit")
+        elif sum(int(r[:-4]) for r in rates[1:]) > int(rates[0][:-4]):
+            problems.append(f"{label}: the class rates add up to more than the link's {q['rate']}")
+        if [c.get("default", False) for c in q["classes"]].count(True) != 1:
+            problems.append(f"{label}: exactly one class must be the default, for traffic no filter matches")
+        if q.get("probe_from") not in inv.hosts:
+            problems.append(f"{label}: probe_from {q.get('probe_from')!r} is not a host")
+
+    if inv.routers and inv.rollout.get("canary") not in inv.routers:
+        problems.append(f"rollout: canary {inv.rollout.get('canary')!r} is not a router")
+    window = inv.rollout.get("change_window", {})
+    if not all(re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d|24:00", str(window.get(k))) for k in ("start", "end")):
+        problems.append(f"rollout: change_window {window} needs a start and an end as quoted HH:MM (UTC)")
+    for name, h in inv.hosts.items():
+        unknown = set(h.get("published", [])) - set(h.get("services", []))
+        if unknown:
+            problems.append(f"{name}: published port(s) {sorted(unknown)} have no listener in services")
+    for name, r in inv.routers.items():
+        wan = r.get("wan_filter")
+        if wan and wan["interface"] not in {ep.interface for ep in inv.interfaces(name)}:
+            problems.append(f"{name}: wan_filter interface {wan['interface']} is not on any link")
+    problems.extend(rtbh_problems(inv))
+    problems.extend(scope_problems(inv))
+    # A TCP MD5 entry names the two ends of one BGP session, and a secret by file name (not its value).
+    for i, auth in enumerate(inv.raw.get("bgp_auth", [])):
+        label = f"bgp_auth #{i + 1}"
+        ends = auth.get("routers") or []
+        if len(ends) != 2:
+            problems.append(f"{label}: routers must name the two ends of one BGP session")
+        else:
+            for local, remote in (ends, ends[::-1]):
+                peers = [n["peer"] for n in inv.routers.get(local, {}).get("bgp", {}).get("neighbors", [])]
+                if remote not in peers:
+                    problems.append(f"{label}: {local} has no BGP session with {remote}")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", str(auth.get("secret") or "")):
+            problems.append(f"{label}: secret must be a file name such as bgp-r2-isp, not a password")
+
     # Someone has to act when a device breaks, and tools may log in only where the operator owns it.
     for name in inv.devices:
         if not inv.owner(name):
@@ -220,4 +275,84 @@ def validate(inv: Inventory) -> list[str]:
     if inv.operator not in {inv.owner(d) for d in inv.devices}:
         problems.append(f"operator {inv.operator!r} owns no device, so no tool may log in anywhere")
 
+    return problems
+
+
+def bgp_peer_address(inv: Inventory, router: str, peer: str) -> str | None:
+    """The address `router` uses for its BGP session with `peer`, from its neighbor list."""
+    return next((n["address"] for n in inv.routers.get(router, {}).get("bgp", {}).get("neighbors", [])
+                 if n["peer"] == peer), None)
+
+
+def rtbh_problems(inv: Inventory) -> list[str]:
+    """The blackhole lever only works if both ends peer and the community is the provider's to define."""
+    rtbh = inv.raw.get("rtbh")
+    if not rtbh:
+        return []
+    problems = []
+    provider, customer = rtbh.get("provider"), rtbh.get("customer")
+    if not (bgp_peer_address(inv, provider, customer) and bgp_peer_address(inv, customer, provider)):
+        problems.append(f"rtbh: {provider} and {customer} must be BGP neighbors of each other")
+    else:
+        # A community is <AS>:<value>; the blackhole community belongs to the AS that acts on it.
+        asn = inv.asn(inv.routers[provider]["bgp"]["local_as"])
+        if str(rtbh.get("community", "")).split(":")[0] != str(asn):
+            problems.append(f"rtbh: community {rtbh.get('community')!r} is not in the provider's AS {asn}")
+    if not isinstance(rtbh.get("tag"), int):
+        problems.append(f"rtbh: tag {rtbh.get('tag')!r} must be a number")
+    return problems
+
+
+def segment_members(inv: Inventory, segment: str | None) -> dict[str, str]:
+    """Every device with an address on the segment, and that address: its hosts and the router ports facing them."""
+    hosts = {h: v["address"].split("/")[0] for h, v in inv.hosts.items() if v.get("segment") == segment}
+    return {**hosts, **{remote.device: str(remote.address.ip) for h in hosts for _, remote in inv.neighbors(h)}}
+
+
+SCOPE_CATEGORIES = {"cde", "connected-to", "security-impacting"}
+SCOPE_DESIGNS = {"tokenisation", "p2pe", "segmentation", "truncation", "holding less"}
+
+
+def scope_problems(inv: Inventory) -> list[str]:
+    """Every device has a scope decision, and the topology can't contradict it (OROS ATT-1)."""
+    scope = inv.raw.get("scope")
+    if not scope:
+        return []
+    problems = [f"scope: no {key}" for key in ("framework", "segment", "design", "acceptance") if not scope.get(key)]
+    if scope.get("design") and scope["design"] not in SCOPE_DESIGNS:
+        problems.append(f"scope: design {scope['design']!r} is not one of {sorted(SCOPE_DESIGNS)}")
+    systems, out = scope.get("systems") or {}, scope.get("out_of_scope") or []
+    for name in [*systems, *out]:
+        if name not in inv.devices:
+            problems.append(f"scope: {name} is not a device")
+    for name in inv.devices:
+        if name not in systems and name not in out:
+            problems.append(f"scope: {name} has no scope decision (list it under systems or out_of_scope)")
+        elif name in systems and name in out:
+            problems.append(f"scope: {name} is both in and out of scope")
+    for name, entry in systems.items():
+        problems += [f"scope: {name} has no {key}" for key in ("category", "clause", "why") if not (entry or {}).get(key)]
+        if (entry or {}).get("category") and entry["category"] not in SCOPE_CATEGORIES:
+            problems.append(f"scope: {name} category {entry['category']!r} is not one of {sorted(SCOPE_CATEGORIES)}")
+    for exc in scope.get("exceptions") or []:
+        label = f"scope: exception {exc.get('src')} {exc.get('proto')}"
+        if exc.get("src") not in out:
+            problems.append(f"{label}: {exc.get('src')} is not out of scope")
+        # TCP into the segment is decided by each host's `published` list, so only ICMP needs an exception.
+        if exc.get("proto") != "icmp":
+            problems.append(f"{label}: only icmp can be an exception (TCP is what `published` decides)")
+        if not exc.get("why"):
+            problems.append(f"{label}: no why")
+    # Some of it is decided by the topology: everything on the segment is a CDE system, and
+    # everything that filters traffic is in scope, whatever the register says.
+    on_segment = segment_members(inv, scope.get("segment"))
+    if not on_segment:
+        problems.append(f"scope: no host is on segment {scope.get('segment')}")
+    for name in on_segment:
+        if (systems.get(name) or {}).get("category") != "cde":
+            problems.append(f"scope: {name} is on {scope.get('segment')}, so it must be in systems as cde")
+    filters = [*inv.firewalls, *(r for r, v in inv.routers.items() if "wan_filter" in v)]
+    for name in filters:
+        if name not in systems:
+            problems.append(f"scope: {name} filters traffic into the segment, so it must be in systems")
     return problems

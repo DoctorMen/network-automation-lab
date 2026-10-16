@@ -4,12 +4,15 @@
 and the firewall it copies the running state off the box into `backups/` and checks the device
 against its intended config. For the routers it also checks the copy against the device. This page
 lists the method for each device type, the devices that need a method of their own, and what isn't
-collected. It covers OROS REC-2.
+collected. It covers OROS REC-2. `backups/` is staging on the machine that ran the check; `make backup`
+sends every file in the Off-box copy column below to the backup destination, after searching it for
+the lab's secrets, and verifies it there ([backups.md](backups.md)).
 
 | Device type | Nodes | How it's collected | Off-box copy | Checked against running |
 |---|---|---|---|---|
-| Router (FRR 8.4.1) | r1, r2, r3, isp (see below) | `vtysh -c "show running-config no-header"` over `docker exec` (Ansible's Docker connection) | `backups/<router>.conf` | Intent and startup: `frr-reload.py --test` with `build/<router>/frr.conf`. The copy: `frr-reload.py --test` with the copy itself ([`verify_capture.yml`](../ansible/verify_capture.yml)) |
-| Firewall (iptables) | fw1 | `iptables-save` over `docker exec` | `backups/fw1.rules` | Intent and startup: `firewall.sh`'s iptables lines replayed in a new network namespace, then `iptables -S` diffed with the live `iptables -S` |
+| Router (FRR 8.4.1) | r1, r2, r3, isp (see below) | `vtysh -c "show running-config no-header"` over `docker exec` (Ansible's Docker connection), through a vtysh wrapper that prints each BGP password as its sha256 tag | `backups/<router>.conf` | Intent and startup: `frr-reload.py --test` with `build/<router>/frr.conf`. The copy: `frr-reload.py --test` with the copy itself ([`verify_capture.yml`](../ansible/verify_capture.yml)) |
+| Firewall (iptables) | fw1 | `iptables-save` over `docker exec` | `backups/fw1.rules` | Intent and startup: `firewall.sh`'s iptables lines replayed in a new network namespace, then `iptables -S` and `iptables -t raw -S` diffed with the live ones |
+| Edge router rules (iptables) | r2, r3 (the `edge_routers` group: routers with an `edge.sh`) | `iptables-save` over `docker exec`, by the same play as fw1 | `backups/<router>.rules` | Intent and startup: `edge.sh`'s iptables lines, replayed and diffed the same way as fw1's |
 | Host | h1, h2 | Not collected | none | none (gap, below) |
 
 ## Routers
@@ -30,6 +33,12 @@ collected. It covers OROS REC-2.
   `service integrated-vtysh-config` still fails (the capture test checks this), and so would one that
   lost a `password` line (same code path; the lab routers have no password to test it with). The one
   exception is `frr version`, a stamp FRR adds itself.
+- BGP passwords (r2 and isp, [decision 0016](decisions/0016-secrets-guardrails.md)) never reach a backup
+  or a diff. Each play first copies `ansible/files/vtysh_redacted.py` to the router as
+  `/tmp/netlab-bin/vtysh`, and both the pull and `frr-reload.py --bindir` go through it: it replaces
+  `neighbor X password <secret>` with `neighbor X password sha256:<hex>`. Intent gets the same tag
+  from the secret store, so a missing or wrong password still shows as drift, and a copy that lost the
+  line fails the capture check, naming the tag line (checked by hand on r2).
 - `ipv6 forwarding` is ignored in both checks. It mirrors a kernel sysctl that varies by host (GitHub
   runners turn it on), and the lab runs no IPv6. `ip forwarding` is not ignored: a router with IPv4
   forwarding off is broken, so the check should fail ([V-009](verdicts.yml)).
@@ -53,16 +62,18 @@ collected. It covers OROS REC-2.
 - Checked in the FRR image (busybox `unshare`, iptables 1.8.7 legacy): the new namespace has a
   different `net:[...]` inode and starts with empty ACCEPT chains; after the replay, the live
   `iptables-save -c`, counters included, was the same as before apart from its timestamp comments.
-- Limits: `iptables -S` lists the filter table only. `firewall.sh` only writes that table, but a hand
-  change to the nat, mangle or raw table would only show in `backups/fw1.rules`, not fail the check.
+- Limits: the check compares the filter and raw tables (the anti-spoof rules live in raw, decision
+  0012). A hand change to the nat or mangle table would only show in `backups/fw1.rules`, not fail the check.
   Counters aren't compared. `backups/fw1.rules` itself isn't loaded back and compared with the live
   rules, the way the router backups are.
 
-## Router kernel state: not collected (a stated gap)
+## Router kernel state: mostly not collected (a stated gap)
 
-The router checks compare FRR's config, not the Linux kernel underneath it. An iptables rule on a
-router (say, a DROP left behind by an interrupted failover test), an interface set down by hand, or a
-kernel route added outside FRR is not flagged. The live tests notice the effect on traffic, not the
+The router checks compare FRR's config, not the Linux kernel underneath it. The exception is iptables
+on the routers with an `edge.sh` (r2's internet filter, r3, which has no rules, so any rule there is
+drift): their filter and raw tables are compared like fw1's. An iptables rule on r1 or isp (say, a DROP
+left behind by an interrupted failover test), a sysctl such as r3's `rp_filter`, an interface set down
+by hand, or a kernel route added outside FRR is not flagged. The live tests notice the effect on traffic, not the
 change itself. `/etc/frr/daemons`, which says which routing daemons start, is mounted read-only like
 `frr.conf`, so it can't drift on the router, but nothing checks that every daemon it lists is running.
 
@@ -76,7 +87,7 @@ hosts can reach, not how they're configured.
 ## Collection cycle
 
 - CI runs `make drift` nightly, on every push to `main` and on every pull request, after the live tests, and uploads
-  `backups/` in the `results-and-backups` artifact, kept for 90 days.
+  `backups/` in the `results-and-backups` artifact, kept for 90 days, when the run's secret scan passed.
 - For a lab that stays up, run it from cron. Daily keeps it inside REC-2's 24-hour cycle. The cron user
   needs Docker access, and cron's PATH has to include the venv:
 

@@ -1,0 +1,610 @@
+# Risk register (OROS JUS-4): every deliberate shortcut and refused spend in the lab, with why it is
+# accepted. likelihood and impact run 1 (rare, trivial) to 5 (expected, severe), for this lab as it is.
+# `detectors` tie an entry to the config lines it accepts: `make risks` (netlab/risks.py) fails on a risky
+# line no entry covers, and on an entry whose lines are gone, so the register can't drift from the config.
+# presented_to stays "pending" until someone in a management role has seen the entry; then set the date
+# and a link to the record (a PR review, an issue, meeting notes). netlab can't make that true, only list
+# what is still pending.
+# Every review_by is 2027-01-15 on purpose: the register is reviewed as a whole, so on 2027-01-16
+# `make review`, `make risks` and CI's review job all go red together, until each entry has been looked
+# at again and given its next date. The lab job doesn't wait for the review job, so the live tests and
+# the backup keep running meanwhile.
+
+- id: RISK-1
+  kind: accepted-risk
+  title: r2 accepts any route the carrier sends
+  detectors: [ebgp-no-policy]
+  likelihood: 2
+  impact: 3
+  reasoning: >-
+    `no bgp ebgp-requires-policy` with no inbound prefix-list or route-map, so r2 installs whatever the
+    carrier announces. A more-specific such as 10.20.20.0/25 (a carrier mistake or a hijack upstream)
+    would win by longest match on r2. r2 doesn't redistribute BGP into OSPF; it only originates a
+    default, so r1 and r3 keep their own routes. But traffic r2 forwards would follow it: replies to the
+    internet, and LAN-A to LAN-B traffic while the r1-r3 link is down, which runs through r2. Likelihood
+    is low because one carrier peer sends one /24. isp has the same line; it is the carrier stand-in's
+    config, not ours. The fix is an inbound prefix-list on r2 allowing the carrier's /24 and a default.
+  compensating_control: none (nothing limits what the real carrier sends. A leak or an upstream hijack arrives over the authenticated session, so MD5, tests/live/test_secrets.py::test_bgp_session_uses_its_secret_and_a_wrong_one_drops_it, stops only a spoofed peer. Accepted on likelihood, one peer sending one /24)
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-2
+  kind: accepted-risk
+  title: every lab node runs as a privileged container
+  detectors: [privileged-node]
+  likelihood: 1
+  impact: 4
+  reasoning: >-
+    Containerlab 0.68.0 starts every node with Privileged true
+    (https://github.com/srl-labs/containerlab/blob/v0.68.0/runtime/docker/docker.go#L510), and the
+    stand-in used where Containerlab can't run does the same. Root inside a privileged container is close
+    to root on the host. Likelihood is low: the nodes run only the pinned FRR image, nothing untrusted is
+    executed in them, and CI runs on a throwaway runner. On a shared laptop the impact is the laptop.
+  compensating_control: tests/live/test_platform.py::test_running_version_matches_inventory
+  compensates: every run checks the nodes still run the exact pinned image and versions
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-3
+  kind: accepted-risk
+  title: OSPF has no authentication
+  detectors: [ospf-no-auth]
+  likelihood: 1
+  impact: 3
+  reasoning: >-
+    Any device that can send OSPF hellos on a core link could form an adjacency and inject routes. The
+    core links are point-to-point veth pairs with nothing else on them, and OSPF is passive on both host
+    LANs, so a host can't speak OSPF to a router. Adding keys would add a second secret to deliver the
+    way decision 0016 delivers the BGP one.
+  compensating_control: tests/live/test_routing.py::test_host_lans_are_passive
+  compensates: no OSPF hellos on the host LANs, so the only devices that can reach OSPF are the routers
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-4
+  kind: accepted-risk
+  title: fw1 forwards every ICMP type
+  detectors: [icmp-any-type]
+  likelihood: 2
+  impact: 1
+  reasoning: >-
+    allow-icmp accepts all ICMP in both directions, so redirects, timestamp requests and ICMP tunnels
+    pass as well as echo, time-exceeded and unreachable, which `make locate` and path MTU discovery need.
+    Impact is low: ICMP carries no service here, and every TCP and UDP port not listed is still dropped.
+    The fix is matching --icmp-type for the types the lab uses.
+  compensating_control: tests/live/test_controls.py::test_default_drop_blocks_unlisted_port
+  compensates: everything that isn't ICMP and isn't listed still hits the default drop
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-5
+  kind: accepted-risk
+  title: the router image's base OS is out of security support
+  detectors: [eosl-base]
+  likelihood: 2
+  impact: 2
+  reasoning: >-
+    frrouting/frr:v8.4.1 is built on Alpine 3.15.6, whose security support ended on 2023-11-01
+    (https://endoflife.date/alpine-linux), so known vulnerabilities in its packages will not be fixed.
+    The nodes run no internet-facing service except h2's two test listeners, and the lab holds no data.
+    Moving to a newer FRR image is a re-test of every drill, planned as its own change.
+  compensating_control: tests/live/test_platform.py::test_running_version_matches_inventory
+  compensates: the image is pinned by digest and checked every run, so it can't change under us unseen
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-6
+  kind: accepted-risk
+  title: Ansible's SSH host key checking is off
+  detectors: [host-key-checking-off]
+  likelihood: 1
+  impact: 1
+  reasoning: >-
+    Moot today: every host uses the Docker connection, which doesn't use SSH. It would matter if an SSH
+    inventory were ever added under this ansible.cfg, so it stays on the register until then.
+  compensating_control: none (moot with the Docker connection; nothing connects over SSH)
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-7
+  kind: accepted-risk
+  title: the drift check ignores IPv6 forwarding
+  detectors: [drift-filter]
+  likelihood: 1
+  impact: 1
+  reasoning: >-
+    `ipv6 forwarding` mirrors a kernel sysctl that differs by host (GitHub runners turn it on), and the
+    lab uses no IPv6, so the line is dropped before comparing. A hand change to it would go unseen.
+    IPv4 forwarding is not filtered.
+  compensating_control: tests/live/test_collection.py::test_unsaved_change_is_flagged
+  compensates: every other line, IPv4 forwarding included, is still compared on every run
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-8
+  kind: accepted-risk
+  title: the BGP password is a 0600 file, not a vault, and TCP MD5 is the only option
+  detectors: [secret-file]
+  likelihood: 2
+  impact: 2
+  reasoning: >-
+    The secret store is one 0600 file per secret in a 0700 folder (.secrets/ here, $RUNNER_TEMP in CI),
+    readable by the account that runs the lab; there is no vault and no GitHub secret. Root on r2 or isp
+    can also print the key with `ss -tnie`. TCP MD5 (RFC 2385) is obsoleted by TCP-AO (RFC 5925), but
+    FRR 8.4.1 offers only `neighbor X password`. Impact is limited: using the key needs a position on the
+    r2-isp link as well, and CI makes a new random one every run.
+  compensating_control: tests/test_secrets.py::test_secret_store_is_private_and_never_overwritten
+  compensates: 0600 from creation, never overwritten, never printed; tests/live/test_secrets.py checks no copy appears anywhere else
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-9
+  kind: refused-spend
+  title: no paid GitHub secret protection for custom patterns
+  likelihood: 2
+  impact: 2
+  reasoning: >-
+    GitHub's custom secret-scanning patterns need an organization-owned repository on GitHub Team or
+    Enterprise with Secret Protection; this is a personal public repo. Free gitleaks hooks and a
+    full-history CI job do the same for this repo's two custom rules. What the spend would add is
+    GitHub blocking at push time for everyone, even with hooks not installed or skipped.
+  compensating_control: tests/test_secrets.py::test_marked_file_is_blocked_at_push_and_alerted_by_ci
+  compensates: the push hook refuses a marked file, and the CI scan of the pushed history alerts if it was skipped
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-10
+  kind: accepted-risk
+  title: the secret scan only advises until branch protection requires it
+  likelihood: 2
+  impact: 3
+  reasoning: >-
+    `git commit --no-verify` and `git push --no-verify` skip the hooks, and main is not protected, so a
+    red `secrets` job reports a leak but blocks nothing. The repository setting (require the secrets,
+    offline and lab checks on main) is the owner's to turn on; it can't be set from the repo.
+  compensating_control: tests/test_secrets.py::test_history_scan_finds_a_secret_committed_with_no_verify
+  compensates: the history scan still finds a secret committed past the hook, on every push to any branch and nightly
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-11
+  kind: accepted-risk
+  title: BFD runs at FRR's default timers and nothing alerts on a flap
+  detectors: [bfd-default-timers]
+  likelihood: 1
+  impact: 2
+  reasoning: >-
+    300 ms x 3 means a router that misses three BFD packets in 0.9 s drops a healthy OSPF adjacency
+    (decision 0009). Measured with r1 and r3 capped at 0.2 and 0.05 CPU, the r1-r2 session logged no
+    down events, so likelihood is low here. A false drop costs about a second: traffic reroutes over the
+    other core link, and the adjacency comes back on the next OSPF hello. No alert says it happened.
+  compensating_control: tests/live/test_failover.py::test_silent_failure_reroutes_fast
+  compensates: a dropped adjacency reroutes within 3 s over the other core link, so a false drop is a blip, not an outage
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-12
+  kind: accepted-risk
+  title: one edge router and one ISP link, and fw1 and r1 alone in front of LAN-A
+  likelihood: 2
+  impact: 3
+  reasoning: >-
+    There is no second edge router or ISP (decision 0009), so r2 or its ISP link failing loses internet
+    access until an engineer restores it with `make apply` or redeploys r2; r2 originates its default
+    with `always`, so it keeps attracting that traffic and drops it. fw1 and r1 are single points of
+    failure for LAN-A, the price of a single-homed stateful firewall. LAN-A to LAN-B traffic needs r2
+    only while the r1-r3 link is down. A second ISP is a cost this lab doesn't have a reason to pay.
+  compensating_control: tests/live/test_routing.py::test_bgp_sessions_established
+  compensates: every run checks the ISP session is up, and `make drift` names a router that differs from intent
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-13
+  kind: accepted-risk
+  title: fw1's conntrack picks up a TCP flow from its middle
+  detectors: [conntrack-loose]
+  likelihood: 2
+  impact: 2
+  reasoning: >-
+    fw1 runs with the kernel default nf_conntrack_tcp_loose=1, so conntrack starts tracking a TCP flow
+    from any packet, not only a SYN. Once an accept rule forwards one mid-stream packet, the replies pass
+    allow-established as ESTABLISHED (measured: a forged ACK h1 -> 203.0.113.1:179 counted
+    allow-internet 1, then the ISP's RST back counted allow-established 1; docs/controls.yml,
+    fw1:allow-established). allow-web's --syn stops it for port 80, and a forged packet into LAN-A
+    matches no accept rule, so it never starts a flow. It matters together with RISK-14. Setting
+    nf_conntrack_tcp_loose=0 in firewall.sh would close it, at the cost of dropping connections that
+    were open before conntrack forgot them (a flush or a firewall restart).
+  compensating_control: tests/live/test_controls.py::test_unsolicited_inbound_ack_is_dropped
+  compensates: a forged ACK into LAN-A, for a connection no user opened, still hits the default drop
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-14
+  kind: accepted-risk
+  title: fw1's allow-internet accepts every protocol, so it can't require --syn
+  detectors: [accept-any-protocol]
+  likelihood: 2
+  impact: 2
+  reasoning: >-
+    allow-internet matches any packet from LAN-A to 203.0.113.0/24, whatever the protocol, and --syn
+    needs -p tcp. So a forged mid-stream ACK from h1 to the internet range is forwarded, and conntrack
+    then adopts the flow (RISK-13). It needs a host inside LAN-A that is already misbehaving, and it
+    reaches only the range users may reach anyway. Splitting the rule into a TCP rule with syn: true
+    plus a UDP rule would close it, at the cost of dropping the other protocols users can send now. The
+    inventory check already refuses a TCP accept rule without syn: true.
+  compensating_control: tests/live/test_controls.py::test_unsolicited_inbound_ack_is_dropped
+  compensates: the rule only matches packets leaving LAN-A, and a forged packet coming in still hits the default drop
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-15
+  kind: accepted-risk
+  title: h1 and h2 are not collected, so a hand change on a host goes unseen
+  detectors: [host-not-collected]
+  likelihood: 2
+  impact: 1
+  reasoning: >-
+    The hosts have no config of their own: their address and default route are the topology's exec
+    lines, applied again on every deploy, and `make drift` reads back only the routers and fw1
+    (docs/collection-methods.md). A hand change on a host, such as an extra route, isn't flagged. The
+    hosts stand in for users and a server, enforce no policy and are rebuilt by every deploy. The fix is
+    a play that reads `ip addr` and `ip route` on each host and compares them with those lines. When it
+    exists, close this entry by hand: the detector reads the topology, not drift.yml.
+  compensating_control: tests/live/test_dataplane.py::test_lan_a_reaches_server_lan
+  compensates: every run checks what the hosts can reach, so a hand change that breaks a path fails a test
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-16
+  kind: accepted-risk
+  title: a fault that shows after the canary's 10 s vetting delay reaches production
+  detectors: [short-vetting-delay]
+  likelihood: 2
+  impact: 3
+  reasoning: >-
+    The canary must stay healthy through the vetting delay before every other router gets the change
+    (decision 0010), and the lab's delay is 10 s so CI can afford it. A fault that takes longer to show,
+    such as a neighbor lost only when the 40 s OSPF dead timer runs out, or a route that leaks slowly,
+    passes the canary and reaches r2, r3 and isp in one batch. A real canary soaks for hours, which a
+    CI job can't. Raising vetting_delay to a minute or more closes this entry (the detector stops matching).
+  compensating_control: tests/live/test_rollout.py::test_failing_canary_rolls_back_and_blocks
+  compensates: a change that breaks the canary at once is rolled back there and reaches no other router
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-17
+  kind: accepted-risk
+  title: a production router that fails a step other than the gate rolls back alone
+  detectors: [batch-rolls-back-alone]
+  likelihood: 1
+  impact: 3
+  reasoning: >-
+    After the canary, r2, r3 and isp change in one batch. If one of them fails frr-reload's apply, the
+    password task or the compare with intent while the others don't, only it rolls back:
+    any_errors_fatal ends the play after the rescue's first task, so the other routers keep a change
+    the gate never checked, and nothing rolls them back (decision 0010; checked with mock hosts and
+    ansible-core 2.21.5). The rollout exits non-zero. A rescue that rolls back the whole batch is more
+    than a few lines to get right and would be untested.
+  compensating_control: tests/live/test_rollout.py::test_failing_canary_rolls_back_and_blocks
+  compensates: the canary has already taken the same change and passed the gate, and a failed rollout exits non-zero
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-18
+  kind: accepted-risk
+  title: the rollout's in-effect check fails on what was broken before the change
+  detectors: [verify-without-baseline]
+  likelihood: 2
+  impact: 2
+  reasoning: >-
+    netlab.verify runs after each batch (decision 0010). Unlike the health gate it keeps no list of
+    problems known before the change, so a daemon already stopped or a kernel already waiting for a
+    reboot fails the rollout after the batch has changed, and nothing rolls back. On the canary that
+    stops every rollout after r1; on a production router every rollout changes every router and then
+    fails. Run make verify before make apply and fix what it reports first.
+  compensating_control: tests/live/test_verify.py::test_daemon_patch_without_restart_is_not_in_effect
+  compensates: the check itself names what is not in effect, so the failure says what to fix
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-19
+  kind: accepted-risk
+  title: h2's web class matches source port 80 only
+  detectors: [qos-by-source-port]
+  likelihood: 1
+  impact: 1
+  reasoning: >-
+    The HTB filter puts whatever leaves h2 from port 80 in the web class (decision 0011). Bulk traffic
+    sent from port 80 would get web's priority, and web served on any other port would queue as bulk.
+    h2 serves web on port 80 only, and nothing else on it uses that port.
+  compensating_control: tests/live/test_verify.py::test_qos_change_confirmed_from_class_counters
+  compensates: every run checks that connections to h2:80 land in the web class and the rates match the inventory
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-20
+  kind: accepted-risk
+  title: a blackhole can be left on after the attack
+  likelihood: 2
+  impact: 3
+  reasoning: >-
+    The RTBH trigger is one static route an operator adds on r2 during an attack (decision 0012,
+    docs/runbooks/ddos-rtbh.md). While it is on, the internet can't reach that host, so a trigger
+    forgotten after the attack is an outage nobody is told about. The trigger is never in the intent,
+    so `make drift` fails and names it while it is on (checked by hand on 2026-10-15), but only when
+    drift runs. No config line holds it, so no detector can.
+  compensating_control: tests/live/test_collection.py::test_unsaved_change_is_flagged
+  compensates: a line on a router that isn't in its intent fails the drift check, which names it
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-21
+  kind: accepted-risk
+  title: nothing filters IPv6 on the internet edge
+  detectors: [edge-ipv4-only]
+  likelihood: 1
+  impact: 2
+  reasoning: >-
+    r2's edge.sh writes iptables rules only, and the WAN scan is IPv4 only (decision 0012). This sandbox
+    has no IPv6, but under real containerlab the links may get link-local addresses, and bgpd may then
+    listen on [::]:179. Only the directly attached ISP can reach a link-local address, and BGP from it is
+    allowed anyway. The fix is matching ip6tables rules in edge.sh, and a scan over IPv6.
+  compensating_control: tests/live/test_edge.py::test_wan_scan_finds_only_published_ports
+  compensates: over IPv4, every campus address is scanned from the internet side on every run
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-22
+  kind: accepted-risk
+  title: a LAN-A host can still send as another LAN-A address
+  detectors: [subnet-anti-spoof]
+  likelihood: 2
+  impact: 2
+  reasoning: >-
+    fw1's raw table drops what arrives on the user side from outside 10.10.10.0/24 (decision 0012), so
+    no user can send as a server or as the internet. It can't tell one user from another: that needs
+    per-port binding on a switch (OROS CON-1), and the lab has no switch. A user forging a neighbour's
+    address gets the same rules the neighbour has, nothing more.
+  compensating_control: tests/live/test_edge.py::test_lan_a_cannot_forge_its_source
+  compensates: a LAN-A host sending as a server address is dropped at fw1 on every run
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-23
+  kind: accepted-risk
+  title: r2 accepts every ICMP type from the internet
+  detectors: [edge-icmp-any-type]
+  likelihood: 2
+  impact: 1
+  reasoning: >-
+    wan-icmp lets any ICMP from the ISP side in to r2 itself, so the carrier can ping the link and path
+    MTU discovery works. Timestamp requests and other types are answered too. ICMP redirects are ignored
+    because r2 forwards (the kernel's accept_redirects is off for a forwarding interface). Nothing on r2
+    is reached over ICMP. The fix is --icmp-type for echo-request and the error types.
+  compensating_control: tests/live/test_edge.py::test_wan_scan_finds_only_published_ports
+  compensates: every TCP management port on r2 is still closed from the internet side
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-24
+  kind: accepted-risk
+  title: r3's reverse-path filter is a sysctl that `make drift` doesn't read back
+  detectors: [sysctl-not-collected]
+  likelihood: 1
+  impact: 2
+  reasoning: >-
+    edge.sh sets strict rp_filter on r3's LAN-B interface with sysctl (decision 0012). The drift check
+    compares iptables lines, not kernel settings, so `sysctl -w net.ipv4.conf.eth3.rp_filter=0` by hand
+    would let LAN-B forge LAN-A sources again with nothing flagging it until the next live run.
+  compensating_control: tests/live/test_edge.py::test_server_lan_cannot_forge_its_source
+  compensates: every run forges a LAN-A source from h2 and counts r3's reverse-path drops
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-25
+  kind: accepted-risk
+  title: GitHub can stop the nightly backups, the weekly drills and the control check together
+  detectors: [scheduled-workflow]
+  likelihood: 3
+  impact: 3
+  reasoning: >-
+    In a public repository GitHub disables scheduled workflows after 60 days without activity, and a
+    person must enable them again. Then the nightly CI run (and its backup), the weekly restore and
+    power drills and the control-status check all stop, and nothing says so: the check that would
+    notice runs in the workflow that stopped (decision 0014). A dead-man's switch outside GitHub would
+    catch it, but the lab has no always-on host to run one. Likely for a repository that goes quiet.
+  compensating_control: tests/test_control_status.py::test_latest_green_older_than_its_period_fails
+  compensates: >-
+    the next push to main runs ci.yml's control-status job, which fails naming every control whose
+    latest result is older than its period (31 days, 90 for the restore drill); nothing runs when
+    nothing at all happens in the repository
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-26
+  kind: accepted-risk
+  title: of two CI runs at once, one run's backup snapshot is lost
+  detectors: [backup-cache-per-run]
+  likelihood: 2
+  impact: 1
+  reasoning: >-
+    Each run restores the newest copy of the restic repository from the Actions cache, adds its
+    snapshot and saves the result under its own key (decision 0014). Two runs at once (the nightly run
+    and a push) start from the same copy, and the next run restores only the newer of the two saves,
+    so the other run's snapshot is gone. Everything before it is intact, and it holds configs that the
+    next night's snapshot holds again. A concurrency group would queue the runs, but it also cancels a
+    queued run when a third arrives.
+  compensating_control: tests/live/test_restore.py::test_latest_backup_is_recent
+  compensates: one snapshot is lost, not the repository; if backups stop altogether the restore drill fails when the newest is 36 hours old
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-27
+  kind: accepted-risk
+  title: one router restarting while its neighbours stay up is never drilled
+  likelihood: 3
+  impact: 2
+  reasoning: >-
+    The power drill restarts the whole lab at once (decision 0015). A Containerlab node restarted on
+    its own comes back without its links on both ends, so a single router's crash or upgrade restart,
+    the more common event, can't be drilled here. What it would show is how its neighbours handle it
+    going away and coming back. No config line holds it, so no detector can.
+  compensating_control: tests/live/test_failover.py::test_silent_failure_reroutes_fast
+  compensates: >-
+    to its neighbours a router that stops is links that stop answering, which is drilled: BFD drops it
+    in about a second and traffic takes the other path; that a router comes back from its startup
+    config is the power drill's
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-28
+  kind: accepted-risk
+  title: after a power cut or restart the BGP password is gone until someone runs `make apply`
+  detectors: [password-runtime-only]
+  likelihood: 2
+  impact: 4
+  reasoning: >-
+    The password is set through vtysh's stdin and is in no startup config (decision 0016), so a router
+    that restarts comes back without it. Against a real carrier, which keeps its key, the session stays
+    down and the campus has no internet until a person runs `make apply` (step 3 of the power-event
+    runbook); nothing runs it by itself. In the lab both ends lose it, and the session came back in 7 s
+    with no MD5 on either end (2026-10-15), so it runs unauthenticated until then. Putting the
+    password in the startup config would put it in clear in the one folder that must be safe to print.
+  compensating_control: tests/live/test_power_event.py::test_power_event_recovers_from_startup_config
+  compensates: >-
+    the weekly drill cuts the power, runs `make apply` as the runbook says, and fails unless the session
+    comes back with authentication enabled on both ends
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-29
+  kind: accepted-risk
+  title: the backup repository's password is kept beside it in the Actions cache
+  detectors: [backup-password-in-cache]
+  likelihood: 3
+  impact: 1
+  reasoning: >-
+    No repository secret can be set from here, so drills.yml's one-time init writes a random restic
+    password into the same cache as the repository (decision 0014). Any workflow run in this repository
+    can restore that cache, a pull request's own copy of a workflow included, and so read every backup.
+    Impact is low because the backups hold configs rendered from the public inventory, with the BGP
+    password only as the sha256 tag of 128 random bits. A pull request's run can't write main's cache.
+  compensating_control: tests/test_backup.py::test_a_capture_holding_a_password_is_never_sent
+  compensates: >-
+    the repository can only ever hold the redacted capture: `make backup` refuses a capture holding a
+    lab secret in clear before restic runs, and searches every file it reads back from the snapshot
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-30
+  kind: accepted-risk
+  title: the rollback of a failed change to a BGP neighbor itself brings the neighbor back without its password
+  detectors: [rollback-without-password]
+  likelihood: 2
+  impact: 4
+  reasoning: >-
+    The fallback is saved with its password lines dropped, so no password is on the router's disk and a
+    rollback leaves a password as it is (decision 0016). A change to the neighbor itself (its remote-as
+    or address, or the local AS) is different: frr-reload.py deletes the neighbor, password and all, and
+    re-creates it, and the rollback then re-creates the old one from a fallback that has no password
+    line. Against a carrier that keeps its key, the session stays down until the inventory is reverted
+    and `make apply` runs. Seen in the lab on 2026-10-16: a wrong remote-as on r2 failed the gate, the
+    rollback put the right remote-as back with no MD5, and the session stayed in Connect until make
+    apply. Setting the passwords again in the rescue would cover a new remote-as, but not a renumbered
+    neighbor, whose old address has no secret in the new inventory.
+  compensating_control: tests/live/test_secrets.py::test_bgp_session_uses_its_secret_and_a_wrong_one_drops_it
+  compensates: >-
+    the rollout stops and names the router and the BGP session it lost, and the live suite fails on any
+    session end without a password the next time it runs on that lab
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null

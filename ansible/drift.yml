@@ -9,12 +9,15 @@
   vars:
     backup_dir: "{{ playbook_dir }}/../backups"
   tasks:
+    - ansible.builtin.include_tasks: tasks/redacting_vtysh.yml
+
     # FRR 8.4.1 prints four lines before the config: "Building configuration...", a blank line,
     # "Current configuration:" and "!". They aren't config, and vtysh rejects a file that starts
     # with them, so a backup that kept them could not be loaded back. `no-header` drops them
     # (it's how frr-reload.py reads the running config too).
+    # Through the redacting vtysh: a BGP password reaches the backup as its sha256 tag.
     - name: Pull running config
-      ansible.builtin.command: vtysh -c "show running-config no-header"
+      ansible.builtin.command: "{{ vtysh_dir }}/vtysh -c \"show running-config no-header\""
       register: running
       changed_when: false
 
@@ -41,6 +44,7 @@
         config: "{{ playbook_dir }}/../build/{{ inventory_hostname }}/frr.conf"
         label: intended
         mismatch: has drifted from intended config
+        with_password_tags: true
 
 # Load each backup just taken back on its router in test mode.
 - ansible.builtin.import_playbook: verify_capture.yml
@@ -49,12 +53,15 @@
 # rendered firewall.sh is its startup config. Running firewall.sh again would flush and rebuild
 # the live chain, so its iptables lines are replayed inside `unshare -n` instead: a new network
 # namespace with its own empty iptables tables. The live rules are never touched.
-- name: Back up firewall rules and detect drift
-  hosts: firewalls
+# Routers with an edge.sh (the edge_routers group: r2's internet filter, r3's reverse-path filter) get
+# the same check against that script. The filter and raw tables are both compared, because the
+# anti-spoof rules live in raw (decision 0012).
+- name: Back up firewall and edge router rules and detect drift
+  hosts: firewalls:edge_routers
   gather_facts: false
   vars:
     backup_dir: "{{ playbook_dir }}/../backups"
-    firewall_sh: "{{ playbook_dir }}/../build/{{ inventory_hostname }}/firewall.sh"
+    firewall_sh: "{{ playbook_dir }}/../build/{{ inventory_hostname }}/{{ rules_script | default('firewall.sh') }}"
   tasks:
     - name: Pull the live ruleset
       ansible.builtin.command: iptables-save
@@ -85,12 +92,12 @@
         mode: "0644"
 
     - name: Replay them in a fresh network namespace
-      ansible.builtin.shell: unshare -n sh -ec '. /tmp/intended-rules.sh; iptables -S' > /tmp/intended.rules
+      ansible.builtin.shell: unshare -n sh -ec '. /tmp/intended-rules.sh; iptables -S; iptables -t raw -S' > /tmp/intended.rules
       changed_when: false
 
     # A line diff, not a set comparison: rule order is policy.
     - name: Diff the live rules against the replayed intent
-      ansible.builtin.shell: iptables -S | diff -u /tmp/intended.rules -
+      ansible.builtin.shell: (iptables -S; iptables -t raw -S) | diff -u /tmp/intended.rules -
       register: rule_diff
       changed_when: false
       failed_when: rule_diff.rc > 1  # 1 means the rules differ, which the next task reports

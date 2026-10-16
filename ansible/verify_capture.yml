@@ -12,6 +12,10 @@
   vars:
     capture: "{{ playbook_dir }}/../backups/{{ inventory_hostname }}.conf"
   tasks:
+    - ansible.builtin.include_tasks: tasks/redacting_vtysh.yml
+
+    # The backup holds each BGP password as its sha256 tag, and so does the running config as the
+    # redacting vtysh shows it, so the two compare line for line.
     - name: Compare running config with the saved copy
       ansible.builtin.include_tasks: tasks/compare_frr.yml
       vars:

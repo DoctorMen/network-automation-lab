@@ -27,7 +27,48 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - run: make validate render
-      - run: make test
+      - run: make test  # also writes results/offline.xml (JUnit, timestamped)
+      - name: Upload offline test results (dated evidence for the control-status check)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: offline-results
+          path: results/offline.xml
+          if-no-files-found: error
+          retention-days: 90
+      - name: The runner's own kernel, by netlab.verify's rule (lab nodes install no kernel to check)
+        continue-on-error: true  # a reboot the runner is waiting for is GitHub's to do, so this reports, not gates
+        run: |
+          python3 - <<'EOF'
+          import os, platform
+          from netlab.verify import kernel_status
+          verdict = kernel_status(platform.release(), os.listdir("/lib/modules"))
+          print("runner kernel:", verdict)
+          raise SystemExit("not in effect" in verdict)
+          EOF
+
+  review:
+    name: Dated reviews (verdicts, outside levers, risks, runbooks)
+    # Not in the lab job's needs: a verdict unclassified past 5 working days, or a lever, risk or
+    # runbook past its review date, turns this job red by name, while the live tests, the drift check
+    # and the backup still run. These are the tests `make test` leaves out (pytest marker review).
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: make review  # also writes results/review.xml (JUnit, timestamped)
+      - name: Upload review results (dated evidence for the control-status check)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-results
+          path: results/review.xml
+          if-no-files-found: error
+          retention-days: 90
 
   lab:
     name: Deploy the lab and test it live
@@ -35,6 +76,9 @@ jobs:
     # Pinned, so the nightly run doesn't move to a new kernel or Docker without a commit.
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    # control-status reads it: when the scan failed, this run's live results were never uploaded.
+    outputs:
+      secret_scan: ${{ steps.secret-scan.outcome }}
     env:
       CLAB_VERSION: "0.68.0"
     steps:
@@ -48,6 +92,15 @@ jobs:
         run: bash -c "$(curl -sL https://get.containerlab.dev)" -- -v "$CLAB_VERSION"
       - name: Pull router image
         run: docker pull frrouting/frr:v8.4.1
+      - name: Create this run's BGP password
+        # No GitHub secret exists, so every run gets a new random one, 0600 in a 0700 folder outside
+        # the checkout. `make deploy` sets it on r2 and isp through vtysh's stdin (decision 0016).
+        run: |
+          echo "NETLAB_SECRETS=$RUNNER_TEMP/netlab-secrets" >> "$GITHUB_ENV"
+          NETLAB_SECRETS="$RUNNER_TEMP/netlab-secrets" make secrets
+          # Masked: if a value ever reached this log, GitHub would print *** instead. echo is a shell
+          # builtin, so the value is on no command line.
+          for f in "$RUNNER_TEMP"/netlab-secrets/*; do echo "::add-mask::$(cat "$f")"; done
       - name: Deploy
         id: deploy
         run: make deploy
@@ -57,7 +110,63 @@ jobs:
         # Runs even when a live test failed, so every run still backs up the configs.
         if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: make drift
+      - name: Secret scan of this run's backups, results and build/
+        id: secret-scan
+        # Runs after drift, so it sees every file this run wrote. gitleaks knows the patterns; the
+        # grep knows this run's actual password, read from its file (-f), never from a command line.
+        # The backup runs only when this passed, so a password that reached backups/ never reaches restic,
+        # and results/, backups/ and the finding bundle are uploaded only when it passed: not when it
+        # failed, and not when it was skipped or cancelled, since then nothing scanned them.
+        # grep exits 1 for no match, 0 for a match and 2 for an error (it may have matched as well), so
+        # only 1 is clean. A folder this run never wrote (drift failed early) is left out, not an error.
+        if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
+        run: |
+          make gitleaks
+          for f in "$NETLAB_SECRETS"/*; do
+            rc=0; grep -rlF -f "$f" $(ls -d backups results build 2>/dev/null) || rc=$?
+            if [ "$rc" != 1 ]; then echo "::error::this run's BGP password is in the files above, or a file could not be read (grep exit $rc)"; exit 1; fi
+          done
+      # The backup destination is a restic repository kept between runs in the Actions cache. It is
+      # created once by hand (drills.yml, input init_backup_repo) and never here: a job that creates
+      # its target when none is found can't tell a lost target from a first run. A cache miss fails
+      # the step. Pull requests skip it: a PR's cache is scoped to the PR, so main could never use it.
+      # The key names this attempt, which has saved nothing yet, so restore-keys finds the newest
+      # repository. The run id alone would prefix-match an earlier attempt's save and bring back that
+      # older repository, dropping every snapshot saved since.
+      - name: Restore the backup repository (fails if it is missing)
+        id: backup-repo
+        if: ${{ !cancelled() && steps.secret-scan.outcome == 'success' && github.event_name != 'pull_request' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/backup
+          key: restic-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: restic-
+          fail-on-cache-miss: true
+      - name: Back up configs to restic and verify them at the destination
+        id: backup
+        # make backup also searches the capture, and the snapshot it reads back, for this run's password
+        # (from NETLAB_SECRETS), and sends nothing if the capture holds it.
+        if: ${{ !cancelled() && steps.backup-repo.outcome == 'success' }}
+        run: make backup BACKUP_REPO="$RUNNER_TEMP/backup/repo" BACKUP_PASSWORD="$RUNNER_TEMP/backup/password"
+      # A key per attempt: keys can't be overwritten, and a re-run keeps its run id.
+      - name: Keep the repository for the next run
+        id: keep-repo
+        if: ${{ !cancelled() && steps.backup.outcome == 'success' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/backup
+          key: restic-${{ github.run_id }}-${{ github.run_attempt }}
+      # actions/cache/save only warns when the upload fails, so look the new key up: a miss fails here.
+      - name: Check the repository reached the cache
+        if: ${{ !cancelled() && steps.keep-repo.outcome == 'success' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/backup
+          key: restic-${{ github.run_id }}-${{ github.run_attempt }}
+          lookup-only: true
+          fail-on-cache-miss: true
       - name: Measure RAM (raw data for docs/sizing)
+        id: measure
         continue-on-error: true  # a sizing reading is evidence, not a network test
         run: |
           # Drop the committed runner file first, so the artifact and the log only ever hold this run's reading.
@@ -69,10 +178,16 @@ jobs:
         run: |
           for r in r1 r2 r3 isp; do
             echo "=== $r"; docker exec clab-netauto-$r vtysh -c "show ip route" -c "show ip ospf neighbor" -c "show bfd peers brief" -c "show bgp summary" || true
+            # A daemon's own log stops reaching docker logs once it runs (V-005), but frrcommon.sh and watchfrr
+            # still print here a crash at start ('zebra crashed in startup', 'Failed to start zebra!') and a
+            # daemon that never came up.
+            echo "--- $r processes and container log"; docker exec clab-netauto-$r ps -o pid,args || true
+            docker logs --tail 60 clab-netauto-$r 2>&1 || true
           done
           docker exec clab-netauto-fw1 iptables -vnL FORWARD || true
+          docker exec clab-netauto-r2 sh -c 'iptables -vnL; iptables -t raw -vnL' || true
       - name: Upload test results and config backups
-        if: always()
+        if: ${{ always() && steps.secret-scan.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: results-and-backups
@@ -81,8 +196,17 @@ jobs:
             backups/
           if-no-files-found: ignore
           retention-days: 90
+      - name: Upload the finding bundle (re-run by the reproduce job)
+        if: ${{ always() && steps.secret-scan.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: finding-bundle
+          path: results/finding/
+          if-no-files-found: ignore
+          retention-days: 90
       - name: Upload sizing data
-        if: always()
+        # Only after a measurement: if it was skipped, the folder still holds the committed file.
+        if: ${{ always() && steps.measure.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: sizing-data
@@ -91,3 +215,72 @@ jobs:
       - name: Destroy
         if: always()
         run: make destroy || true
+
+  reproduce:
+    name: Re-run the finding from its bundle alone (clean runner)
+    # A runner that never saw the repo stands in for someone outside the team (OROS PRV-3): it gets
+    # the bundle the lab job uploaded, stands up the lab from the bundle's copy, and re-runs it.
+    needs: lab
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CLAB_VERSION: "0.68.0"
+    steps:
+      # No actions/checkout: nothing from the repo, only the bundle.
+      - uses: actions/download-artifact@v4
+        with:
+          name: finding-bundle
+          path: finding
+      - name: Install Containerlab
+        run: bash -c "$(curl -sL https://get.containerlab.dev)" -- -v "$CLAB_VERSION"
+      - name: Stand up the lab from the bundle (Containerlab pulls the image the topology names)
+        run: sudo containerlab deploy -t finding/lab/topology.clab.yml
+      - name: On a healthy lab the bundle must say it did not reproduce
+        # Exit 1 is "Did not reproduce". 0 would mean the check can't fail; 2 means it couldn't tell.
+        run: |
+          rc=0; sh finding/reproduce.sh || rc=$?
+          if [ "$rc" != 1 ]; then echo "::error::expected Did not reproduce (exit 1), got exit $rc"; exit 1; fi
+      - name: Recreate the fault (lab only) and re-run the finding
+        run: |
+          sh finding/lab/condition.sh
+          sh finding/reproduce.sh
+      - name: Upload the re-run's raw output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: finding-rerun
+          path: finding/rerun-*/
+          if-no-files-found: ignore
+
+  control-status:
+    name: Every control's latest test is green and inside its period
+    needs: [offline, review, lab]
+    # Main's claims, proven by main's runs. A pull request's run tests other code, so it is skipped.
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read  # list earlier runs on main and download their JUnit artifacts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: This run's results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*results*"
+          path: build/evidence/${{ github.run_id }}
+      - name: Check every control in docs/controls.yml
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: make control-status
+      # A failed scan withholds this run's live results, so the check above read an earlier run's in
+      # their place and can be green although this run's live tests failed.
+      - name: This run's secret scan passed (OROS ACC-4)
+        if: ${{ !cancelled() && needs.lab.outputs.secret_scan == 'failure' }}
+        run: |
+          echo "::error::ACC-4: this run's secret scan failed, so its live results were not uploaded and the check above read an earlier run's in their place"
+          exit 1

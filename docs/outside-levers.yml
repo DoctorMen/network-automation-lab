@@ -1,0 +1,83 @@
+# Outside levers (OROS REC-7): threats we can't stop from inside the campus, who holds the lever that
+# can, how to reach them and what they need before they act. Read it before the attack, not during.
+#
+#   threat    what it looks like from here
+#   lever     what the holder can do about it
+#   holder    who holds the lever
+#   contact   how to reach them. "Lab stand-in" marks the ISP, which is a node in this lab; an
+#             employer replaces it with the contract's NOC line
+#   evidence  what they ask for: gather it before calling
+#   checked   when the contact and the evidence list were last confirmed, and `how`
+#
+# tests/test_levers.py fails when an entry has no contact or evidence list, or was checked more than
+# cycle_days ago, so the sheet goes red in CI instead of going stale quietly.
+# Not listed: a payment processor (the toy payments segment takes no payments; a real one adds its
+# acquirer's fraud desk), a scrubbing or CDN vendor (no contract; the blackhole below is the
+# on-demand lever, with no always-on fee), and a lookalike site's hosting provider as an entry of its
+# own (its abuse desk is the RDAP abuse contact of the site's address, found as in the probing entry,
+# and the registrar can suspend the name whoever hosts it).
+cycle_days: 90
+
+levers:
+  - threat: DDoS against a published host (h2:80 is the only one, decision 0012)
+    lever: >-
+      Remote-triggered blackhole at the ISP, community 65100:666. One line on r2 tags the attacked
+      host's /32, and the ISP drops traffic to it inside its own network, before it reaches our link.
+      The host goes dark to the internet; the link and everything else behind it stay up, and the
+      campus still reaches the host. Lifting it is the same line with `no`. docs/runbooks/ddos-rtbh.md
+    holder: AS65100 carrier NOC (our ISP)
+    contact: >-
+      Self-service over our BGP session, no call needed to pull it. To confirm the service or escalate:
+      the carrier NOC (lab stand-in: the isp node's owner in inventory/network.yml; in production,
+      the NOC phone and ticket address in the ISP contract)
+    evidence:
+      - the attacked address (a /32 inside our announced 10.0.0.0/8) and when the attack started, in UTC
+      - its size from our side, from r2's eth3 counters (`ip -s link show eth3`, twice, a minute apart)
+      - attack type if known (SYN flood, UDP reflection) and a sample of source addresses
+      - when we will lift the blackhole, so it isn't left on
+    checked: 2026-10-15
+    how: >-
+      The lever itself: tests/live/test_rtbh.py::test_rtbh_blackholes_only_the_attacked_host, nightly
+      in CI. The contact is a lab stand-in, so there was nothing to dial
+
+  - threat: Probing of unpublished hosts (scans the internet edge drops)
+    lever: The network the scan comes from can stop its customer or host; its abuse desk is the way in
+    holder: the operator of the source network
+    contact: >-
+      The abuse contact RDAP or whois returns for the source address (`whois <address>`, the abuse-c or
+      abuse-mailbox field). Regional registries require one on every allocation (RIPE NCC ripe-705)
+    evidence:
+      - source addresses, with UTC timestamps and the timezone stated
+      - destination addresses and ports, and how many packets (r2's wan-drop and wan-drop-local counters)
+      - that the targets are not published (decision 0012), so this is not a customer using a service
+    checked: 2026-10-15
+    how: >-
+      Desk check: RIPE NCC's abuse-contact policy (ripe-705) confirmed from search results, not read
+      in full. The counters named exist on r2:
+      tests/live/test_edge.py::test_wan_scan_finds_only_published_ports
+
+  - threat: A lookalike domain (phishing users or customers with a name close to ours)
+    lever: The lookalike's registrar can suspend it; a UDRP complaint (WIPO and others) can transfer it
+    holder: the registrar that sponsors the lookalike domain
+    contact: >-
+      The registrar abuse email and phone in the lookalike's RDAP or whois record. ICANN's 2013
+      Registrar Accreditation Agreement, section 3.18, makes every accredited registrar publish one and
+      investigate reports (https://www.icann.org/en/resources/compliance/complaints/registrars/abuse)
+    evidence:
+      - the lookalike domain and its RDAP or whois output, saved with the date
+      - screenshots of the site or the phishing email with full headers, with UTC times
+      - the real domain or mark it imitates, and since when we have used it
+    checked: 2026-10-15
+    how: Desk check of ICANN's registrar abuse page, which states the 3.18 duties
+
+  - threat: Crime behind any of the above (extortion DDoS, fraud, an intrusion)
+    lever: Police can investigate, preserve evidence held by others and act across borders
+    holder: national cybercrime reporting service
+    contact: In the US, the FBI's Internet Crime Complaint Center, https://www.ic3.gov; elsewhere, the national equivalent
+    evidence:
+      - a timeline in UTC, from first sign to now
+      - extortion or ransom messages as received, headers included
+      - source addresses, domains and any payment details asked for or made
+      - preserved logs and backups, with how they were kept unchanged
+    checked: 2026-10-15
+    how: Desk check that ic3.gov is the FBI's reporting site and takes complaints online

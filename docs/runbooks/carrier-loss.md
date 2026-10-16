@@ -1,9 +1,25 @@
+---
+owner: campus NOC
+coordinator: NOC shift lead
+comms: NOC shift lead updates the service desk; the carrier ticket goes out only with the finding bundle from make finding (results/finding/)
+last_reviewed: 2026-10-15
+hosts: [h1, r1, r2, isp]
+written_by: Claude (AI assistant)
+---
 # Runbook: loss toward the internet, ours or the carrier's?
 
 Users report loss to something outside. The network team is the first suspect and the carrier's own
 test usually says "clean". So clear our own segments first, then hand the carrier a finding they can
 re-run, using only devices we own. We can't log into the carrier's router and don't need to.
 (OROS 0.3 PRV-2.)
+
+## Who does what
+
+- **Responder** (on-call network engineer): steps 1 to 4, from devices we own only, then `make finding`
+  for the bundle the carrier gets (below).
+- **Coordinator** (NOC shift lead): reads the verdict, and opens the carrier ticket with that bundle or
+  keeps it ours.
+- **Comms** (NOC shift lead): tells the service desk whose fault it looks like, and when that is confirmed.
 
 ## Steps
 
@@ -59,9 +75,18 @@ be on the return path. In this lab the return path is the same one.
 
 ## What to send the carrier
 
-- `build/finding.json`: per-segment loss, the exact commands, probe count, threshold, and the UTC
-  start time. They can run the same pings from their side and compare.
-- The edge view: loss from our own edge router to their side, with no campus link in between.
+`make finding SRC=h1 DST=203.0.113.1` runs the same measurement and writes all of it to
+`results/finding/`, checked before it says it is complete ([decision 0017](../decisions/0017-finding-bundle.md)).
+Send that folder. FINDING.md is the one page to read first; `sh reproduce.sh` in any copy of the folder
+re-runs the measurement with nothing but sh and docker and says `Reproduced` or `Did not reproduce`.
+It holds:
+
+- `build/finding.json`'s figures, plus every command's raw output (raw/), the method (METHOD.md),
+  versions (versions.txt) and clocks (time.txt), and RFC 792, RFC 6673 and RFC 1812 for what backs it.
+  They can run the same pings from their side and compare.
+- The edge view: loss from our own edge router to their side, with no campus link in between, and a
+  capture of ICMP on our hand-off port (pcap/) while r2 pings past it: every echo request leaves, and
+  the replies that are missing went missing beyond our port.
 - Our edge port counters (`ip -s link show eth3` on r2): zero errors, zero drops.
 - The circuit ID, both ends of the hand-off (198.51.100.0 ours, 198.51.100.1 theirs), and when it started.
 - The ask: test from their side of the hand-off toward 198.51.100.0, 200 pings at 20 ms.

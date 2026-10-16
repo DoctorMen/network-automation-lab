@@ -1,5 +1,6 @@
-"""Lint the lab's written records: decision records (docs/decisions/) and the verdict log
-(docs/verdicts.yml). Like the inventory check, it collects every problem, not just the first."""
+"""Lint the lab's written records: decision records (docs/decisions/), tool selection records
+(docs/selections/) and the verdict log (docs/verdicts.yml). Like the inventory check, it collects
+every problem, not just the first."""
 from __future__ import annotations
 
 import re
@@ -80,6 +81,87 @@ def lint_decision(path: Path) -> list[str]:
     for heading in ("Context", "Decision", "Consequences"):
         if not re.search(rf"^[#*\s]*{heading}\b", body, re.M):
             problems.append(f"{label}: body has no {heading} section")
+    return problems
+
+
+SELECTION_FIELDS = ("kind", "id", "title", "date", "status", "decider", "constraint", "choice", "alternatives",
+                    "no_purchase", "staffing", "vendor_domains", "independent_sources", "uses")
+# What the lab runs, so what needs a selection record: every image named in these files, and the tools below.
+RUN_FILES = ("inventory/network.yml", "Makefile", ".pre-commit-config.yaml", ".github/workflows/*.yml")
+# An image and its tag, with or without a namespace: frrouting/frr:v8.4.1, alpine:3.20, python:3.12.
+# Not part of a URL, path or digest, not sha256:<hex> or localhost:8080, and names start with a letter,
+# so a time (04:00) or an address and port (10.0.0.1:80) isn't one. Comments are skipped (h2:22).
+IMAGE = re.compile(r"(?<![\w./@:-])(?!(?:sha256|localhost):)"
+                   r"((?:[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*/)*[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*):v?\d[\w.-]*(?![\w./:-])")
+COMMENT = re.compile(r"(?:^|(?<=\s))#.*", re.M)
+# Tools that aren't images: the file, and the text in it, that show the lab really uses each one.
+TOOLS = {"containerlab": (".github/workflows/ci.yml", "containerlab"), "ansible": ("requirements-ansible.txt", "ansible"),
+         "iptables": ("templates/firewall.sh.j2", "iptables"), "docker": ("Makefile", "docker run"),
+         "github-actions": (".github/workflows/ci.yml", "runs-on:")}
+
+
+def tools_in_use() -> set[str]:
+    """Every image the lab, the hooks or CI run, and every tool in TOOLS the repo really uses."""
+    images = {m for pattern in RUN_FILES for path in sorted(ROOT.glob(pattern))
+              for m in IMAGE.findall(COMMENT.sub("", path.read_text()))}
+    return images | {tool for tool, (file, text) in TOOLS.items() if text in (ROOT / file).read_text()}
+
+
+def lint_selections(folder: str | Path, in_use: set[str] | None = None) -> list[str]:
+    """Tool selection records (docs/selections/, OROS JUS-3): each choice judged against its
+    constraint, with a no-purchase line and at least one source the tool's own maker didn't write.
+    in_use: the tools the lab runs (default: tools_in_use())."""
+    folder = Path(folder)
+    in_use = tools_in_use() if in_use is None else in_use
+    records = sorted(folder.glob("*.md"))
+    problems = [] if records else [f"{folder}: no selection records"]
+    for path in records:
+        label = path.name
+        parts = path.read_text().split("---\n", 2)
+        meta = yaml.safe_load(parts[1]) if len(parts) == 3 and not parts[0] else None
+        if not isinstance(meta, dict):
+            problems.append(f"{label}: no YAML front matter between --- lines")
+            continue
+        problems += [f"{label}: missing {f}" for f in SELECTION_FIELDS if not meta.get(f)]
+        if meta.get("kind") and meta["kind"] != "selection":
+            problems.append(f"{label}: kind {meta['kind']!r} is not selection")
+        if meta.get("id") and meta["id"] != path.stem:
+            problems.append(f"{label}: id {meta['id']!r} does not match the file name")
+        if meta.get("date") and not isinstance(meta["date"], date):
+            problems.append(f"{label}: date {meta['date']!r} is not YYYY-MM-DD")
+        alternatives = meta.get("alternatives") or []
+        if len(alternatives) < 2:
+            problems.append(f"{label}: needs at least two alternatives")
+        for alt in alternatives:
+            if not (isinstance(alt, dict) and alt.get("name") and alt.get("why_not")):
+                problems.append(f"{label}: alternative {alt!r} needs a name and a why_not")
+
+        # Independent of the seller: an outside page not on the maker's own domains, or a test or data
+        # file of our own (a benchmark we ran). At least one of ours, so no choice rests on reading alone.
+        vendor = [str(d).lower() for d in meta.get("vendor_domains") or []]
+        # A record may land before its tool does (another change brings both). Until the lab runs the
+        # tool, a test or file it cites may be one that comes with it; once it runs, each must exist.
+        ahead = not set(meta.get("uses") or []) & in_use
+        independent = ours = 0
+        for source in meta.get("independent_sources") or []:
+            ref = str(source).split()[0]
+            if re.match(r"https?://", ref):
+                if any(d in ref.lower() for d in vendor):
+                    problems.append(f"{label}: {ref} is the seller's own site, not an independent source")
+                else:
+                    independent += 1
+            elif names_a_test(ref) or ("::" not in ref and (ROOT / ref).is_file()) or ahead:
+                independent += 1
+                ours += 1
+            else:
+                problems.append(f"{label}: source {ref} is neither a URL nor a test or file in this repo")
+        if meta.get("independent_sources") and not independent:
+            problems.append(f"{label}: no independent source")
+        elif meta.get("independent_sources") and not ours:
+            problems.append(f"{label}: no measurement of our own (a test or data file in this repo)")
+        for heading in ("Context", "Decision", "Consequences"):
+            if not re.search(rf"^[#*\s]*{heading}\b", parts[2], re.M):
+                problems.append(f"{label}: body has no {heading} section")
     return problems
 
 

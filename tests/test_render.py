@@ -4,11 +4,27 @@ from pathlib import Path
 
 import yaml
 
+from netlab.backup import IMAGE as RESTIC_IMAGE
 from netlab.inventory import load
 from netlab.render import render_all, render_firewall, render_router
 
 INVENTORY = Path(__file__).resolve().parent.parent / "inventory" / "network.yml"
 inv = load(INVENTORY)
+
+
+class OneKeyLoader(yaml.SafeLoader):
+    """YAML that refuses a key given twice in one mapping. PyYAML keeps the last one without a word, so
+    a second `exec:` on a node would silently drop the first list."""
+
+
+def _mapping(loader, node, deep=False):
+    keys = [loader.construct_object(k, deep=deep) for k, _ in node.value]
+    if twice := sorted({k for k in keys if keys.count(k) > 1}):
+        raise yaml.constructor.ConstructorError(None, None, f"duplicate key(s) {twice}", node.start_mark)
+    return loader.construct_mapping(node, deep=deep)
+
+
+OneKeyLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapping)
 
 
 def test_core_router_runs_ospf_on_router_links_only():
@@ -48,7 +64,7 @@ def test_daemons_match_protocols():
 def test_firewall_default_drop_and_rule_order():
     script = render_firewall(inv, "fw1")
     assert "iptables -P FORWARD DROP" in script
-    names = [line.split("--comment ")[1].strip('"') for line in script.splitlines() if "--comment" in line]
+    names = [line.split("--comment ")[1].strip('"') for line in script.splitlines() if line.startswith("iptables -A FORWARD")]
     assert names == ["allow-established", "allow-icmp", "allow-web", "deny-ssh-to-servers", "allow-internet", "default-drop"]
 
 
@@ -84,8 +100,49 @@ def test_render_is_deterministic(tmp_path):
 
 
 def test_ci_pulls_the_image_the_inventory_names():
-    """CI deploys the image the inventory records, so the live version check tests the real thing."""
+    """CI deploys the image the inventory records, so the live version check tests the real thing. The
+    drills workflow pulls that image too, and exactly the restic image netlab.backup runs."""
     ci = yaml.safe_load((INVENTORY.parents[1] / ".github" / "workflows" / "ci.yml").read_text())
     steps = [step for job in ci["jobs"].values() for step in job["steps"]]
     pulls = [step["run"].split()[-1] for step in steps if step.get("run", "").startswith("docker pull")]
+    drills = yaml.safe_load((INVENTORY.parents[1] / ".github" / "workflows" / "drills.yml").read_text())["jobs"]
+    drill_pulls = {job: [line.split()[-1] for step in drills[job]["steps"] for line in step.get("run", "").splitlines()
+                         if line.strip().startswith("docker pull")] for job in drills}
+    assert drill_pulls == {"backup-init": [RESTIC_IMAGE], "drills": [inv.platform["image"], RESTIC_IMAGE]}
     assert pulls == [inv.platform["image"]]
+
+
+def test_canary_goes_first_with_the_rollout_settings(tmp_path):
+    """deploy.yml takes routers in inventory order, one and then the rest, so the canary must be first."""
+    raw = yaml.safe_load(INVENTORY.read_text())
+    raw["rollout"]["canary"] = "r3"  # not first in the inventory
+    (tmp_path / "net.yml").write_text(yaml.safe_dump(raw, sort_keys=False))
+    render_all(load(tmp_path / "net.yml"), tmp_path / "build")
+    routers = yaml.safe_load((tmp_path / "build" / "ansible_inventory.yml").read_text())["all"]["children"]["routers"]
+    assert list(routers["hosts"]) == ["r3", "r1", "r2", "isp"]
+    assert routers["vars"] == raw["rollout"]
+
+
+def test_h2_port_is_shaped_with_a_web_class(tmp_path):
+    render_all(inv, tmp_path)
+    steps = yaml.safe_load((tmp_path / "topology.clab.yml").read_text())["topology"]["nodes"]["h2"]["exec"]
+    tc = [s for s in steps if s.startswith("tc ")]
+    assert tc == [
+        "tc qdisc add dev eth1 root handle 1: htb default 20",
+        "tc class add dev eth1 parent 1: classid 1:1 htb rate 20mbit",
+        "tc class add dev eth1 parent 1:1 classid 1:10 htb rate 15mbit ceil 20mbit prio 0",
+        "tc class add dev eth1 parent 1:1 classid 1:20 htb rate 5mbit ceil 20mbit prio 1",
+        "tc filter add dev eth1 parent 1: protocol ip prio 1 u32 match ip sport 80 0xffff flowid 1:10",
+    ]
+    assert not [s for s in yaml.safe_load((tmp_path / "topology.clab.yml").read_text())["topology"]["nodes"]["h1"]["exec"]
+                if s.startswith("tc ")], "only hosts with a qos block are shaped"
+
+
+def test_every_node_has_one_exec_list(tmp_path):
+    """Each node's deploy steps are one exec list with no key given twice: h2's address, route and QoS, r2's and r3's edge.sh, fw1's firewall.sh."""
+    render_all(inv, tmp_path)
+    nodes = yaml.load((tmp_path / "topology.clab.yml").read_text(), Loader=OneKeyLoader)["topology"]["nodes"]
+    assert {n: v["exec"] for n, v in nodes.items() if n in inv.routers and "exec" in v} == {"r2": ["sh /edge.sh"], "r3": ["sh /edge.sh"]}
+    assert nodes["fw1"]["exec"] == ["sh /firewall.sh"]
+    h2 = nodes["h2"]["exec"]
+    assert h2[0].startswith("ip addr add ") and h2[1].startswith("ip route replace default ") and h2[2].startswith("tc qdisc add ")

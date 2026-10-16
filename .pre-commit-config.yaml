@@ -1,0 +1,23 @@
+# Secret guardrails (OROS CON-7): gitleaks from its pinned image, with this repo's .gitleaks.toml.
+# Install once per clone:  pip install pre-commit && pre-commit install
+# The commit hook scans what is staged; the push hook scans the whole history, so a commit made
+# with --no-verify is still stopped at push. `git push --no-verify` skips both, which is why the
+# CI `secrets` job (.github/workflows/secrets.yml) runs the same history scan on every push to any
+# branch, every pull request and nightly (docs/decisions/0016).
+default_install_hook_types: [pre-commit, pre-push]
+repos:
+  - repo: local
+    hooks:
+      - id: gitleaks-staged
+        name: gitleaks (staged changes)
+        language: docker_image
+        entry: zricethezav/gitleaks:v8.21.2 git --pre-commit --staged --redact --verbose --no-banner
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: gitleaks-history
+        name: gitleaks (whole history)
+        language: docker_image
+        entry: zricethezav/gitleaks:v8.21.2 git --redact --verbose --no-banner
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
