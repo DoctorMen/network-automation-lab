@@ -72,6 +72,9 @@ jobs:
     timeout-minutes: 20
     env:
       CLAB_VERSION: "0.68.0"
+      # Each job's last make line also pings this outside check (decision 0022), on scheduled runs only,
+      # so a push or a pull request never stands in for a night that didn't run.
+      HEARTBEAT_URL: ${{ github.event_name == 'schedule' && secrets.HEARTBEAT_URL || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -35,7 +35,7 @@ def rules_for(alert):
 
 def test_one_rule_per_object_the_inventory_implies():
     """A BGP rule per session on a router we own, an OSPF and a BFD rule per adjacency, a web rule per check, a
-    flap rule per router, a SourceSilent rule per source: counted from the inventory, not written down."""
+    flap rule per router interface, a SourceSilent rule per source: counted from the inventory, not written down."""
     owned = [r for r in inv.routers if inv.owner(r) == inv.operator]
     sessions = [(r, n["address"]) for r in owned for n in inv.routers[r].get("bgp", {}).get("neighbors", [])]
     adjacencies = [(r, remote.device) for r in owned for _, remote in inv.neighbors(r) if remote.device in inv.ospf_neighbors(r)]
@@ -43,7 +43,8 @@ def test_one_rule_per_object_the_inventory_implies():
     assert sorted((r["labels"]["node"], r["labels"]["neighbor"]) for r in rules_for("OSPFNeighborDown")) == sorted(adjacencies)
     assert sorted((r["labels"]["node"], r["labels"]["neighbor"]) for r in rules_for("BFDPeerDown")) == sorted(adjacencies)
     assert len(rules_for("WebContentWrong")) == len(inv.monitoring["web"])
-    assert sorted(r["labels"]["node"] for r in rules_for("InterfaceFlapped")) == sorted(owned)
+    assert sorted((r["labels"]["node"], r["labels"]["device"]) for r in rules_for("InterfaceFlapped")) == \
+        sorted((r, ep.interface) for r in owned for ep in inv.interfaces(r))
     assert sorted((r["labels"]["node"], r["labels"]["source"]) for r in rules_for("SourceSilent")) == \
         sorted((s["node"], s["source"]) for s in monitoring.log_sources(inv))
     assert "isp" not in {r["labels"].get("node") for r in monitoring.alert_rules(inv)}, "the carrier's router is not ours to page on"
@@ -77,9 +78,11 @@ def test_an_alert_keeps_its_identity_while_its_series_comes_and_goes():
 
 
 def test_flap_rule_uses_the_carrier_counter_on_the_routers_own_interfaces():
+    """Each interface's rule reads its own carrier-change counter, and fires once the carrier is back up."""
     for r in rules_for("InterfaceFlapped"):
-        ifaces = sorted(ep.interface for ep in inv.interfaces(r["labels"]["node"]))
-        assert "increase(node_network_carrier_changes_total" in r["expr"] and f'device=~"{"|".join(ifaces)}"' in r["expr"]
+        sel = f'{{node="{r["labels"]["node"]}",device="{r["labels"]["device"]}"}}'
+        assert r["expr"] == f"increase(node_network_carrier_changes_total{sel}[{monitoring.FLAP_WINDOW}s]) > 0 " \
+                            f"and node_network_carrier{sel} == 1"
 
 
 def test_source_silent_bound():
@@ -120,8 +123,8 @@ def test_rendered_configs_match_the_inventory(tmp_path):
     noc = tmp_path / monitoring.host(inv)
     prom = yaml.safe_load((noc / "prometheus.yml").read_text())
     assert prom["global"]["scrape_interval"] == f"{inv.monitoring['interval']}s"
-    assert {j["job_name"] for j in prom["scrape_configs"]} == {"frr", "node", "web", "icmp", "logs"}
-    assert yaml.safe_load((noc / "rules.yml").read_text())["groups"][0]["rules"] == monitoring.alert_rules(inv)
+    assert {j["job_name"] for j in prom["scrape_configs"]} == {"frr", "node", "web", "icmp", "logs", "pushgateway"}
+    assert yaml.safe_load((noc / "rules.yml").read_text()) == monitoring.rule_groups(inv)
     vector = yaml.safe_load((noc / "vector.yaml").read_text())
     remap = vector["transforms"]["syslog_node"]["source"]
     assert json.loads(remap.split("nodes = ", 1)[1].splitlines()[0]) == monitoring.source_addresses(inv)

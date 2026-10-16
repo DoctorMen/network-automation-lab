@@ -48,7 +48,7 @@ failure_modes:
     mitigation: monitoring/coverage.yml lists every read the tests, tools, playbooks and runbooks make, as exported, derived or gap, and every collector; the lint fails on anything unlisted
     test: tests/test_coverage.py::test_an_unlisted_read_fails
   - mode: the NOC goes blind with the network, because its checks travel the campus links they watch
-    mitigation: Accepted. An unreachable exporter raises TargetDown, and per-object rules fire on absent(); dependency inhibition (one page per cause) is a later build (OROS DEC-5)
+    mitigation: Accepted. An unreachable exporter raises TargetDown, and per-object rules fire on absent(); dependency inhibition (one page per cause) is decision 0021
     test: none (accepted risk RISK-31 in docs/risks.yml)
   - mode: anyone on the campus reads the exporters or the NOC's endpoints
     mitigation: Accepted. Exporters answer only on the router's loopback and the NOC's services on 127.0.0.1; neither has TLS or a password

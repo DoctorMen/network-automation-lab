@@ -381,10 +381,20 @@ def monitoring_problems(inv: Inventory) -> list[str]:
             problems.append(f"monitoring: image {name} {image!r} needs a pinned version tag")
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", str((mon.get("digests") or {}).get(name))):
             problems.append(f"monitoring: image {name} has no digest (sha256:...) under digests")
+    path = mon.get("alert_path") or {}
     for key, value in (("interval", mon.get("interval")), ("reboot_window", mon.get("reboot_window")),
-                       ("heartbeat", logs.get("heartbeat")), ("silent_after", logs.get("silent_after"))):
+                       ("group_wait", mon.get("group_wait")),
+                       ("heartbeat", logs.get("heartbeat")), ("silent_after", logs.get("silent_after")),
+                       ("alert_path every", path.get("every")), ("alert_path silent_after", path.get("silent_after"))):
         if not (isinstance(value, int) and value > 0):
             problems.append(f"monitoring: {key} {value!r} must be a whole number of seconds")
+    # Unattended jobs (decision 0022): each name is a pushgateway group and a JobMissed rule.
+    names = [j.get("name") for j in mon.get("jobs") or []]
+    for j in mon.get("jobs") or []:
+        if not re.fullmatch(r"[a-z][a-z0-9-]*", str(j.get("name"))) or names.count(j.get("name")) > 1:
+            problems.append(f"monitoring: job name {j.get('name')!r} must be unique, lower case letters, digits and -")
+        if not all(isinstance(j.get(k), int) and j[k] > 0 for k in ("every", "grace")):
+            problems.append(f"monitoring: job {j.get('name')}: every and grace must be whole numbers of seconds")
     for check in mon.get("web") or []:
         host = inv.hosts.get(check.get("host"), {})
         if check.get("port") not in host.get("services", []):
@@ -393,11 +403,15 @@ def monitoring_problems(inv: Inventory) -> list[str]:
         return problems
     # A source is silent when its last line is older than silent_after. Shorter than the heartbeat plus two
     # scrapes and a healthy source would trip it. NOT-3's bound is twice the heartbeat, and the alert needs
-    # up to three intervals and Alertmanager's 1 s group_wait on top of silent_after to reach the pager.
-    beat, silent, interval = logs["heartbeat"], logs["silent_after"], mon["interval"]
-    if not beat + 2 * interval < silent <= 2 * beat - 3 * interval - 1:
+    # up to three intervals, Alertmanager's group_wait and a second on top of silent_after to reach the pager.
+    beat, silent, interval, wait = logs["heartbeat"], logs["silent_after"], mon["interval"], mon["group_wait"]
+    if not beat + 2 * interval < silent <= 2 * beat - 3 * interval - wait - 1:
         problems.append(f"logging: silent_after {silent} must be over heartbeat + 2 x interval ({beat + 2 * interval}) "
-                        f"and at most twice the heartbeat less 3 x interval + 1 s ({2 * beat - 3 * interval - 1})")
+                        f"and at most twice the heartbeat less 3 x interval, group_wait and 1 s ({2 * beat - 3 * interval - wait - 1})")
+    # Watchdog's mail goes out every `every` s, on Alertmanager's 5 s flush: one late mail must not page.
+    if not path["silent_after"] > 2 * path["every"] + interval:
+        problems.append(f"monitoring: alert_path silent_after {path['silent_after']} must be over twice its every "
+                        f"plus one interval ({2 * path['every'] + interval})")
     for app in logs.get("apps") or []:
         label = f"logging: app {app.get('host')}/{app.get('name')}"
         if app.get("port") not in inv.hosts.get(app.get("host"), {}).get("services", []):

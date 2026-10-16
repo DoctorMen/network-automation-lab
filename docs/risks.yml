@@ -621,7 +621,8 @@
     route leaked traffic, and a second LAN only for monitoring would hide the failures users see. When
     r2 or the r1-r2 and r2-r3 links fail together, the NOC loses its view of r1, r3, fw1 and h2 at once:
     each pages on its own (TargetDown, the per-object rules on absent(), SourceSilent), so the cause is
-    one page among many. Grouping those into one page per cause is a later build (OROS DEC-5).
+    one page among many. Decision 0021 now holds back what depends on a failed device or link, so it
+    pages once (RISK-42, RISK-43).
   compensating_control: tests/test_monitoring.py::test_state_rules_catch_admin_down_and_a_missing_series
   compensates: a series the NOC stops receiving pages as down, so blindness is never silence
   owner: DoctorMen
@@ -728,6 +729,100 @@
     reach the store. A compromise on h1 that never crosses fw1 is not logged anywhere central.
   compensating_control: tests/live/observe/test_arrival.py::test_synthetic_event_from_every_source_reaches_the_store
   compensates: fw1, LAN-A's only way out, is a source, and its test event reaches the store on every observe run
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-40
+  kind: accepted-risk
+  title: the NOC watches itself, so its own death raises nothing inside it
+  likelihood: 2
+  impact: 3
+  reasoning: >-
+    JobMissed and AlertPathSilent run on the NOC's own Prometheus and page through its own Alertmanager,
+    and the mailbox that proves the mail path sits on the same host (decision 0022). If Prometheus,
+    Alertmanager or the whole NOC stops, neither can fire. Only a receiver outside the NOC that expects
+    the pings would notice. HEARTBEAT_URL is that receiver, for the jobs and the nightly run, but nobody
+    has set it up yet, and nothing outside the lab expects the Watchdog. The mail path outside the NOC
+    (a relay, a provider) is not in the lab.
+  compensating_control: tests/test_jobs.py::test_success_without_a_noc_warns_and_still_pings_the_heartbeat
+  compensates: a job's success still pings HEARTBEAT_URL when the NOC can't take it, so an outside check sees the job even with the NOC down
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-41
+  kind: accepted-risk
+  title: a silence added by hand in Alertmanager skips the file's checks until make silence runs
+  likelihood: 2
+  impact: 2
+  reasoning: >-
+    Alertmanager takes any silence through its API, amtool or its web page, however wide and however
+    long. monitoring/silences.yml and its checks (decision 0020) hold only the silences written there.
+    Nothing stops a person on shift from silencing a whole router by hand; make silence then names it and
+    fails, but only when someone runs it or make deploy runs it. Closing the API to everyone but make
+    silence would need a proxy in front of Alertmanager.
+  compensating_control: tests/test_silence.py::test_a_silence_added_by_hand_is_reported
+  compensates: make silence lists every active silence the file doesn't hold, with who set it and when it ends, and fails
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-42
+  kind: accepted-risk
+  title: a real failure behind a cause waits until the cause has cleared
+  likelihood: 2
+  impact: 2
+  reasoning: >-
+    While a cause fires, every alert that lists it in deps is held back (decision 0021), whether it
+    follows from the cause or is a second failure behind it. A cause's marker keeps firing 75 s after it
+    recovers, so the dependents still recovering behind it don't page. A failure that is still true then
+    pages, up to 75 s later than it would have on its own. Telling the two apart needs a view from
+    beyond the cause, which an in-band NOC doesn't have (RISK-31).
+  compensating_control: tests/live/observe/test_outage.py::test_a_parent_failure_pages_once_and_a_killed_service_pages_again
+  compensates: a failure on a part that doesn't depend on the cause still pages at once, and nothing held back pages late once the cause has cleared
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-43
+  kind: accepted-risk
+  title: the NOC's own uplink pages as its first hop, and the NOC's services are outside the dependency model
+  likelihood: 2
+  impact: 1
+  reasoning: >-
+    The dependency graph runs from noc, so the link from noc to r2 has no far end the NOC can watch past
+    it: when it fails, everything goes quiet behind r2, and the one page is NodeDown for r2. blackbox,
+    Prometheus and Alertmanager run beside noc and are not vertices in the graph; blackbox down pages
+    once for each job it serves.
+  compensating_control: tests/test_dependencies.py::test_dependencies_come_from_the_inventory_graph
+  compensates: r2, the NOC's first hop, covers every other device in the model, so a dead uplink is still one page
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-44
+  kind: accepted-risk
+  title: a job's success is its own word, and the pushgateway keeps it in memory
+  likelihood: 2
+  impact: 2
+  reasoning: >-
+    Each unattended job's last make line pushes its success to the pushgateway (decision 0022). Make
+    runs it only after every earlier line succeeded, but a job whose steps pass while doing too little
+    still reports success. The pushgateway keeps what was pushed in memory, so a redeploy starts it empty
+    and the window then counts from the NOC's start: a job that never ran since pages one window later.
+  compensating_control: tests/test_jobs.py::test_every_job_reports_success_as_its_last_step
+  compensates: each job's success line is the last line of its make target, so a failed step sends nothing
   owner: DoctorMen
   review_by: 2027-01-15
   presented_to: pending

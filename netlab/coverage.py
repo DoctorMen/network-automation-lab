@@ -45,7 +45,8 @@ ARG = "<arg>"
 # Programs that read the device (a runbook's inline code is only a command when it starts with one).
 DEVICE_PROGRAMS = {"vtysh", "show", "ip", "iptables", "iptables-save", "tc", "ping", "traceroute", "netstat", "nstat"}
 PROMQL_WORDS = {"absent", "and", "or", "unless", "on", "by", "without", "increase", "rate", "time", "sum", "count", "max", "min",
-                "min_over_time", "max_over_time", "ignoring", "group_left", "group_right", "bool", "offset"}
+                "min_over_time", "max_over_time", "ignoring", "group_left", "group_right", "bool", "offset", "vector",
+                "topk", "bottomk"}
 
 
 def normalize(text: str) -> str:
@@ -369,10 +370,14 @@ def found(root: Path = ROOT) -> tuple[dict, list]:
 
 
 def rule_metrics(inv) -> set[str]:
+    """Every metric a rule's expression, or a query in its annotations (the DEC-1 context), reads."""
     names = set()
-    for r in monitoring.alert_rules(inv):
-        expr = re.sub(r'\{[^}]*\}|\[[^\]]*\]|"[^"]*"|\b(by|on|without|ignoring)\s*\([^)]*\)', " ", r["expr"])
-        names |= {w for w in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", expr) if w not in PROMQL_WORDS}
+    for g in monitoring.rule_groups(inv)["groups"]:
+        for r in g["rules"]:
+            queries = [r["expr"], *(q for a in r["annotations"].values() for q in re.findall(r"query `([^`]*)`", a))]
+            for q in queries:
+                expr = re.sub(r'\{[^}]*\}|\[[^\]]*\]|"[^"]*"|\b(by|on|without|ignoring)\s*\([^)]*\)', " ", q)
+                names |= {w for w in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", expr) if w not in PROMQL_WORDS}
     return names - {"node"}
 
 
@@ -414,7 +419,8 @@ def check(coverage: dict, reads: dict, odd: list, inv) -> list[str]:
     for job in monitoring.prometheus_config(inv)["scrape_configs"]:
         if job["job_name"] not in collectors:
             problems.append(f"Prometheus job {job['job_name']} is a scraper monitoring/coverage.yml does not list")
-    listed = {m for c in collectors.values() for m in c.get("metrics") or []}
+    # after_push: a metric that exists only once a job has pushed it (its JobMissed fires without it).
+    listed = {m for c in collectors.values() for m in [*(c.get("metrics") or []), *(c.get("after_push") or [])]}
     for c, v in collectors.items():
         if not v.get("reads"):
             problems.append(f"collector {c}: says nothing about what it reads")

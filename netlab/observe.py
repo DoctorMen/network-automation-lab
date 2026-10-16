@@ -1,21 +1,26 @@
-"""What the NOC sees, read from the host (decisions 0018 and 0019).
+"""What the NOC sees, read from the host (decisions 0018 to 0022).
 
-python -m netlab.observe alerts       what Prometheus has firing, and what the pager (the sink) received
-python -m netlab.observe testevent    a marked line from every log source over its real path, and when
-                                      each reached the central store (OROS NOT-3's synthetic event)
+python -m netlab.observe alerts         what Prometheus has firing, and what the pager (the sink) received
+python -m netlab.observe testevent      a marked line from every log source over its real path, and when
+                                        each reached the central store (OROS NOT-3's synthetic event)
+python -m netlab.observe success JOB    an unattended job's last step: its success, pushed to the NOC's
+                                        pushgateway, and to $HEARTBEAT_URL/JOB when that is set (NOT-4)
+python -m netlab.observe applied NODE   `make apply`'s last step: the commit now applied to each router (DEC-1)
 
-Prometheus, Alertmanager, Loki and the webhook sink listen on 127.0.0.1 inside noc's network
-namespace only, so every request here goes through `docker exec` into noc, the way an operator on the
-NOC's own box would make it. The live tests in tests/live/observe/ use the same client.
+Prometheus, Alertmanager, Loki, the pushgateway, the mailbox and the webhook sink listen on 127.0.0.1
+inside noc's network namespace only, so every request here goes through `docker exec` into noc, the way an
+operator on the NOC's own box would make it. The live tests in tests/live/observe/ use the same client.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
 import urllib.parse
+import urllib.request
 import uuid
 from pathlib import Path
 
@@ -26,6 +31,23 @@ from . import monitoring
 
 ROOT = Path(__file__).resolve().parent.parent
 TAG = "netlab-testevent"
+SUCCESS = "netlab_job_last_success_timestamp_seconds"
+# busybox wget on noc can only GET, so anything that writes goes through the node's own python3.
+SEND = ("import sys, urllib.request\n"
+        "req = urllib.request.Request(sys.argv[1], data=sys.stdin.buffer.read(), method=sys.argv[2],"
+        " headers={'Content-Type': sys.argv[3]})\n"
+        "print(urllib.request.urlopen(req, timeout=20).read().decode())\n")
+
+
+def exposition(metric: str, samples: list[tuple[dict, float]]) -> str:
+    """Prometheus' text format for one gauge, what a pushgateway takes."""
+    def esc(v):
+        return str(v).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+    lines = [f"# TYPE {metric} gauge"]
+    for labels, value in samples:
+        inner = ",".join(f'{k}="{esc(v)}"' for k, v in labels.items())
+        lines.append(f"{metric}{{{inner}}} {value}" if inner else f"{metric} {value}")
+    return "\n".join(lines) + "\n"
 
 
 class Noc:
@@ -40,6 +62,14 @@ class Noc:
         if out.returncode:
             raise RuntimeError(f"GET {url} on {self.container}: {out.stderr.strip() or out.returncode}")
         return json.loads(out.stdout)
+
+    def send(self, port: int, path: str, body: str, method: str = "POST", content_type: str = "text/plain") -> str:
+        url = f"http://127.0.0.1:{port}{path}"
+        out = subprocess.run(["docker", "exec", "-i", self.container, "python3", "-c", SEND, url, method, content_type],
+                             input=body, capture_output=True, text=True, timeout=30)
+        if out.returncode:
+            raise RuntimeError(f"{method} {url} on {self.container}: {(out.stderr.strip().splitlines() or [out.returncode])[-1]}")
+        return out.stdout
 
     # Prometheus
     def query(self, expr: str) -> list[dict]:
@@ -57,6 +87,11 @@ class Noc:
         return [a for a in alerts if (state is None or a["state"] == state)
                 and all(a["labels"].get(k) == v for k, v in labels.items())]
 
+    def firing(self, state: str | None = "firing") -> list[dict]:
+        """Every alert Prometheus has in this state (None: pending too), except Watchdog, the alert path's
+        heartbeat, which always fires (decision 0022)."""
+        return [a for a in self.alerts(state) if a["labels"]["alertname"] != "Watchdog"]
+
     def rules(self) -> list[dict]:
         groups = self.get(monitoring.PORTS["prometheus"], "/api/v1/rules")["data"]["groups"]
         return [r for g in groups for r in g["rules"]]
@@ -64,17 +99,48 @@ class Noc:
     def targets(self) -> list[dict]:
         return self.get(monitoring.PORTS["prometheus"], "/api/v1/targets")["data"]["activeTargets"]
 
+    # Alertmanager
+    def am_alerts(self, **labels) -> list[dict]:
+        """Every alert Alertmanager holds, silenced and inhibited ones included: {labels, annotations,
+        status: {state, silencedBy, inhibitedBy}, ...}."""
+        return [a for a in self.get(monitoring.PORTS["alertmanager"], "/api/v2/alerts")
+                if all(a["labels"].get(k) == v for k, v in labels.items())]
+
+    def silences(self) -> list[dict]:
+        return self.get(monitoring.PORTS["alertmanager"], "/api/v2/silences")
+
+    def add_silence(self, matchers: dict, starts: str, ends: str, by: str, comment: str) -> str:
+        """An equality-only silence (RFC 3339 times); returns its id."""
+        body = {"matchers": [{"name": k, "value": v, "isRegex": False, "isEqual": True} for k, v in matchers.items()],
+                "startsAt": starts, "endsAt": ends, "createdBy": by, "comment": comment}
+        return json.loads(self.send(monitoring.PORTS["alertmanager"], "/api/v2/silences", json.dumps(body),
+                                    content_type="application/json"))["silenceID"]
+
+    def expire_silence(self, silence_id: str) -> None:
+        self.send(monitoring.PORTS["alertmanager"], f"/api/v2/silence/{silence_id}", "", method="DELETE")
+
+    # The pushgateway and the mailbox
+    def push(self, group: dict, body: str) -> None:
+        """Replace one pushgateway group (job=..., then any other key) with this text-format body."""
+        path = "/metrics/" + "/".join(f"{k}/{urllib.parse.quote(str(v), safe='')}" for k, v in group.items())
+        self.send(monitoring.PORTS["pushgateway"], path, body, method="PUT")
+
+    def mail(self) -> list[dict]:
+        """The mailbox's newest messages first: {ID, Created (RFC 3339), Subject, ...}."""
+        return self.get(monitoring.PORTS["mailbox"], "/api/v1/messages", limit=200)["messages"]
+
     # The pager
     def notifications(self, since: float = 0, **labels) -> list[dict]:
-        """Each alert the sink received after `since`, as {received, status, labels}: one entry per alert in
-        each notification Alertmanager sent."""
+        """Each alert the sink received after `since`, as {received, status, labels, annotations}: one entry
+        per alert in each notification Alertmanager sent."""
         out = []
         for n in self.get(monitoring.PORTS["sink"], "/"):
             if n["received"] < since:
                 continue
             for a in n["notification"]["alerts"]:
                 if all(a["labels"].get(k) == v for k, v in labels.items()):
-                    out.append({"received": n["received"], "status": a["status"], "labels": a["labels"]})
+                    out.append({"received": n["received"], "status": a["status"], "labels": a["labels"],
+                                "annotations": a.get("annotations", {})})
         return out
 
     # The central store
@@ -102,13 +168,13 @@ class Noc:
 
     def settled(self, sources: list[dict]) -> bool:
         """The NOC as a fresh deploy leaves it: Loki ready, every scrape answering, every log source
-        (expected_state.json's monitoring.sources) heard from, and nothing firing. A NOC still starting
-        (Prometheus not answering yet) is not settled."""
+        (expected_state.json's monitoring.sources) heard from, and nothing firing but Watchdog. A NOC still
+        starting (Prometheus not answering yet) is not settled."""
         try:
             targets = self.targets()
             heard = {(s["node"], s["source"]) for s in self.query("log_last_seen_seconds")}
             return bool(self.ready() and targets and all(t["health"] == "up" for t in targets)
-                        and all((s["node"], s["source"]) in heard for s in sources) and not self.alerts())
+                        and all((s["node"], s["source"]) in heard for s in sources) and not self.firing())
         except (RuntimeError, ValueError, subprocess.TimeoutExpired):
             return False
 
@@ -151,12 +217,68 @@ def testevent(inv: Inventory, lab: str, timeout: float = 60) -> list[dict]:
     return sent
 
 
+def success(inv: Inventory, lab: str, job: str, at: float | None = None) -> int:
+    """A job's success, as its last step: so a job that failed, hung or never started sends none, and
+    JobMissed pages once its window passes. Without a NOC (the lab job's make deploy-network) only a
+    warning; a NOC that should have got it pages instead. HEARTBEAT_URL, when set, is an outside check
+    (a healthchecks.io-style ping URL) that alerts on its own when the ping stops, the NOC included."""
+    if job not in [j["name"] for j in inv.monitoring.get("jobs") or []]:
+        print(f"{job} is not a job inventory/network.yml lists under monitoring.jobs", file=sys.stderr)
+        return 2
+    at = time.time() if at is None else at
+    try:
+        Noc(lab, monitoring.host(inv)).push({"job": job}, exposition(SUCCESS, [({}, at)]))
+        print(f"{job}: success recorded on the NOC")
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
+        print(f"warning: {job}'s success did not reach the NOC ({exc}). Expected when no NOC runs; "
+              "otherwise JobMissed will page", file=sys.stderr)
+    url = os.environ.get("HEARTBEAT_URL")
+    if url:
+        try:
+            urllib.request.urlopen(f"{url.rstrip('/')}/{job}", timeout=10).read()
+            print(f"{job}: heartbeat sent")  # never the URL: its key is the secret
+        except OSError as exc:
+            print(f"{job}: the heartbeat ping failed ({type(exc).__name__})", file=sys.stderr)
+            return 1
+    return 0
+
+
+def git(*args: str) -> str:
+    out = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+def commit() -> str:
+    """What this checkout is: the commit, marked -dirty when the tree has changes not committed."""
+    return git("describe", "--always", "--dirty", "--abbrev=12") or "unknown"
+
+
+def applied(inv: Inventory, lab: str, nodes: list[str]) -> int:
+    """The commit `make apply` just applied, one pushgateway group per router, for the changes annotation
+    on every alert about it (OROS DEC-1). Its history stays in Prometheus, one series per commit."""
+    labels, now, noc = {"commit": commit(), "subject": git("log", "-1", "--format=%s")[:80]}, time.time(), Noc(lab, monitoring.host(inv))
+    try:
+        for n in nodes:
+            noc.push({"job": "netlab_apply", "node": n}, exposition(monitoring.APPLIED, [(labels, now)]))
+        print(f"applied {labels['commit']} recorded on the NOC for {' '.join(nodes)}")
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
+        print(f"warning: the applied commit did not reach the NOC ({exc}). Expected when no NOC runs", file=sys.stderr)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="netlab.observe")
-    p.add_argument("command", choices=["alerts", "testevent"])
+    p.add_argument("command", choices=["alerts", "testevent", "success", "applied"])
+    p.add_argument("names", nargs="*", help="success: the job; applied: the routers")
     p.add_argument("--inventory", default=str(ROOT / "inventory" / "network.yml"))
     args = p.parse_args(argv)
     inv, lab = load(args.inventory), lab_name()
+    if args.command == "success":
+        if len(args.names) != 1:
+            p.error("success takes one job name")
+        return success(inv, lab, args.names[0])
+    if args.command == "applied":
+        return applied(inv, lab, args.names)
     noc = Noc(lab, monitoring.host(inv))
     if args.command == "alerts":
         firing = noc.alerts()
