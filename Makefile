@@ -6,7 +6,7 @@ LAB_ENV ?= local
 NOTE    ?=
 
 .PHONY: help validate render test deploy live drift apply locate measure destroy all
-.PHONY: secrets gitleaks finding risks deploy-network observe coverage testevent alerts
+.PHONY: secrets gitleaks finding risks deploy-network observe coverage testevent alerts silence
 
 help:            ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-15s %s\n", $$1, $$2}'
@@ -20,9 +20,10 @@ render: validate ## Generate configs, topology and expected state into build/
 test:            ## Offline tests (no lab needed)
 	$(PY) -m pytest -q tests --ignore=tests/live --junitxml=results/offline.xml
 
-deploy: render secrets ## Render, start the lab with Containerlab, then set what isn't rendered (BGP passwords)
+deploy: render secrets ## Render, start the lab with Containerlab, then set what isn't rendered (BGP passwords, silences)
 	$(CLAB) deploy -t $(TOPO) --reconfigure
 	$(MAKE) apply
+	$(MAKE) silence
 
 deploy-network: render secrets ## As deploy, but the network's own nodes only: no NOC sidecars (CI's lab job)
 	$(CLAB) deploy -t $(TOPO) --reconfigure --node-filter $$($(PY) -m netlab nodes)
@@ -43,8 +44,16 @@ testevent:       ## Send a marked line from every log source and show where it a
 alerts:          ## What is firing now, and what the NOC's pager (the webhook sink) has received
 	$(PY) -m netlab.observe alerts
 
+silence:         ## Check monitoring/silences.yml (one object, time-boxed, a reason and a record) and add each to Alertmanager
+	$(PY) -m netlab.silence
+
+# Each unattended job's last line reports its success to the NOC (and HEARTBEAT_URL, when set). Make runs
+# it only when every line before it succeeded, so a job that fails or never starts sends nothing (NOT-4).
+SUCCESS = $(PY) -m netlab.observe success
+
 drift:           ## Back up routers and firewall, fail on drift or on a backup missing running config
 	cd ansible && ansible-playbook drift.yml
+	$(SUCCESS) drift
 
 apply:           ## Roll intended config out, canary first; roll back and stop on a failed health gate (diff only, no restarts)
 	cd ansible && ansible-playbook deploy.yml
@@ -89,15 +98,18 @@ POWER_CYCLE     ?= $(CLAB) deploy -t $(TOPO) --reconfigure
 
 backup:          ## Send backups/ (from make drift) to BACKUP_REPO and verify it there; fails if the repo is missing
 	$(PY) -m netlab.backup run --repo "$(BACKUP_REPO)" --password-file "$(BACKUP_PASSWORD)"
+	$(SUCCESS) backup
 
 backup-init:     ## Create the restic repository at BACKUP_REPO, once, by hand (make backup never does)
 	$(PY) -m netlab.backup init --repo "$(BACKUP_REPO)" --password-file "$(BACKUP_PASSWORD)"
 
 restore-drill:   ## Boot every router's latest backup on throwaway routers, and restore one stanza on its own
 	BACKUP_REPO="$(BACKUP_REPO)" BACKUP_PASSWORD="$(BACKUP_PASSWORD)" $(PY) -m pytest -v tests/live/test_restore.py --junitxml=results/restore-drill.xml
+	$(SUCCESS) restore-drill
 
 power-drill:     ## Power-cycle the whole lab and check it comes back by itself from startup config
 	POWER_CYCLE="$(POWER_CYCLE)" $(PY) -m pytest -v tests/live/test_power_event.py --junitxml=results/power-drill.xml
+	$(SUCCESS) power-drill
 
 control-status:  ## Fail if any control's latest test is red or older than its period (reads CI runs with gh)
 	$(PY) -m netlab.control_status

@@ -36,7 +36,7 @@ def test_sidecars_run_their_pinned_image_in_their_nodes_namespace(lab_name, mon)
 def test_every_target_answers_and_every_rule_is_loaded(noc):
     down = [(t["labels"]["job"], t["labels"].get("node"), t["lastError"]) for t in noc.targets() if t["health"] != "up"]
     assert not down, f"targets not answering: {down}"
-    rendered = yaml.safe_load((BUILD / "noc" / "rules.yml").read_text())["groups"][0]["rules"]
+    rendered = [r for g in yaml.safe_load((BUILD / "noc" / "rules.yml").read_text())["groups"] for r in g["rules"]]
     loaded = noc.rules()
     # Prometheus prints each expression back in its own form, so the rules are compared by name and labels.
     assert sorted((r["alert"], sorted(r["labels"].items())) for r in rendered) == \

@@ -1,9 +1,10 @@
-"""The NOC's checks, generated from the inventory (decisions 0018 and 0019).
+"""The NOC's checks, generated from the inventory (decisions 0018 to 0022).
 
 Nothing here is a hand-written expected value: the scrape targets, the alert rules (one per BGP
-session, OSPF neighbor, BFD peer, web check, router and log source), the log sources with their
-last-seen windows, the collector's map from source address to node, and the sidecars the topology
-starts all come from inventory/network.yml. render() writes them into build/noc/ and build/monitoring/.
+session, OSPF neighbor, BFD peer, web check, router interface, log source and unattended job), the log
+sources with their last-seen windows, the collector's map from source address to node, what each alert
+depends on, and the sidecars the topology starts all come from inventory/network.yml. render() writes
+them into build/noc/ and build/monitoring/.
 
 A later build extends it here: a label in target_labels() reaches every target and so every alert,
 a rule appended in alert_rules() goes into rules.yml, a source in log_sources() gets its own
@@ -12,6 +13,7 @@ SourceSilent rule, and a sidecar in sidecars() is started by the topology.
 from __future__ import annotations
 
 import ipaddress
+import urllib.parse
 from pathlib import Path
 
 import yaml
@@ -22,14 +24,24 @@ ROOT = Path(__file__).resolve().parent.parent
 # Where the services listen. Everything in noc's network namespace talks over 127.0.0.1, so from the
 # campus only the collector's syslog (UDP 514) and forwarder (TCP 6000) ports answer on noc.
 PORTS = {"frr": 9342, "node": 9100, "prometheus": 9090, "alertmanager": 9093, "blackbox": 9115,
-         "loki": 3100, "collector_metrics": 9598, "syslog": 514, "forward": 6000, "sink": 9095}
+         "loki": 3100, "collector_metrics": 9598, "syslog": 514, "forward": 6000, "sink": 9095,
+         "pushgateway": 9091, "smtp": 1025, "mailbox": 8025, "mail_hook": 9596}
 # Each exporter job on a router we own: the image key in the inventory and its port.
 EXPORTERS = {"frr": "frr_exporter", "node": "node_exporter"}
 # Seconds a rule's condition must hold before it fires (Prometheus `for`). State checks wait two scrapes,
 # so one lost scrape isn't a page; a flap, a pending reboot past its window and a silent source are
 # already settled facts when their expression turns true.
+# A cause's page (NodeDown, LinkDown) waits like a state check; its marker (CauseSeen) fires at once, because
+# it only has to be in Alertmanager before what depends on it (decision 0021). A missed job and a silent alert
+# path are settled facts too, and Watchdog always fires.
 WAIT = {"TargetDown": 15, "BGPSessionDown": 10, "OSPFNeighborDown": 10, "BFDPeerDown": 10, "WebContentWrong": 10,
-        "InterfaceFlapped": 0, "PendingRebootOverdue": 0, "SourceSilent": 0}
+        "InterfaceFlapped": 0, "PendingRebootOverdue": 0, "SourceSilent": 0,
+        "NodeDown": 10, "LinkDown": 10, "CauseSeen": 0, "JobMissed": 0, "AlertPathSilent": 0, "Watchdog": 0}
+# Seconds InterfaceFlapped looks back over the carrier-change counter: six scrapes.
+FLAP_WINDOW = 30
+# Seconds between evaluations of the cause markers (their own rule group), so a cause reaches Alertmanager
+# well inside group_wait of what depends on it.
+CAUSE_EVERY = 1
 # Seconds between each router's rewrites of its pending-reboot file (agent.sh), which node_exporter reads.
 TEXTFILE_EVERY = 15
 # node_exporter's own default netstat fields, plus TcpExt_IPReversePathFilter: the packets a strict
@@ -77,12 +89,18 @@ def log_sources(inv: Inventory) -> list[dict]:
     heartbeat for syslog (OROS NOT-3's default, which the inventory check holds silent_after to). An app's
     normal gap is the NOC's own web check, one interval, too short to page on twice over without paging on
     one late scrape, so its bound is stated: its silent_after plus the time to evaluate and deliver."""
-    detect = 3 * inv.monitoring["interval"] + 2
+    detect = deliver(inv)
     syslog = [{"node": d, "source": "syslog", "silent_after": inv.logging["silent_after"], "within": 2 * inv.logging["heartbeat"]}
               for d in syslog_sources(inv)]
     apps = [{"node": a["host"], "source": a["name"], "silent_after": a["silent_after"], "within": a["silent_after"] + detect}
             for a in inv.logging.get("apps", [])]
     return syslog + apps
+
+
+def deliver(inv: Inventory) -> int:
+    """Seconds from a rule's condition holding (after its `for`) to the page: up to one scrape and one
+    evaluation to see it, one more evaluation, Alertmanager's group_wait, and a second for the webhook."""
+    return 3 * inv.monitoring["interval"] + inv.monitoring["group_wait"] + 1
 
 
 def source_addresses(inv: Inventory) -> dict[str, str]:
@@ -148,10 +166,139 @@ def selector(**labels) -> str:
     return "{" + ",".join(f'{k}="{v}"' for k, v in labels.items()) + "}"
 
 
-def rule(alert: str, expr: str, labels: dict, summary: str) -> dict:
-    # Rule labels name the object, so each object is its own alert. `summary` is the only annotation for
-    # now; a later build adds why_fired, baseline and changes here (OROS DEC-1).
-    return {"alert": alert, "expr": expr, "for": f"{WAIT[alert]}s", "labels": labels, "annotations": {"summary": summary}}
+# --- What each alert depends on (OROS DEC-5, decision 0021) -------------------------------------------------
+
+def link_id(link) -> str:
+    return f"{link.a.device}:{link.a.interface}-{link.b.device}:{link.b.interface}"
+
+
+def link_at(inv: Inventory, device: str, interface: str):
+    return next(l for l in inv.links if (device, interface) in ((l.a.device, l.a.interface), (l.b.device, l.b.interface)))
+
+
+def graph(inv: Inventory) -> dict[str, set[str]]:
+    """Devices and links as one graph. Each link is a vertex of its own between its two ends, so a link can
+    be what everything behind it depends on, the way a router can."""
+    adj = {d: set() for d in inv.devices}
+    for link in inv.links:
+        adj[link_id(link)] = {link.a.device, link.b.device}
+        for ep in (link.a, link.b):
+            adj[ep.device].add(link_id(link))
+    return adj
+
+
+def dominators(inv: Inventory) -> dict[str, set[str]]:
+    """{vertex: every device and link the NOC can't reach it without}. Each vertex is taken out in turn and
+    whatever the NOC then no longer reaches depends on it: one breadth-first search per vertex, a fraction
+    of a second for hundreds of nodes, and nothing to keep up by hand when a node or link is added."""
+    adj, root = graph(inv), host(inv)
+
+    def reach(without):
+        seen, todo = {root}, [root]
+        while todo:
+            for n in adj[todo.pop()]:
+                if n != without and n not in seen:
+                    seen.add(n)
+                    todo.append(n)
+        return seen
+    everything, dom = reach(None), {v: set() for v in adj}
+    for u in adj:
+        if u != root:
+            for v in everything - reach(u) - {u}:
+                dom[v].add(u)
+    return dom
+
+
+def causes(inv: Inventory, dom: dict | None = None) -> dict[str, dict]:
+    """Every failure the NOC can see for itself, each of which pages once and holds back what depends on it:
+    - each device it pings (each log source): it stops answering;
+    - each link with an end whose node_exporter the NOC still reaches without that link: an end's
+      operstate is not up (the NOC's own uplink has no such end, so its failure pages as its first hop);
+    - each collector other alerts are read through, whose rules fire on absent() when it stops answering:
+      frr_exporter on each router, and the log collector.
+    {id: {signal, expr, condition, normal, labels, summary}}."""
+    dom = dom if dom is not None else dominators(inv)
+    out = {}
+    for d in syslog_sources(inv):
+        signal = f"probe_success{selector(job='icmp', node=d)}"
+        out[d] = {"signal": signal, "expr": f"{signal} == 0", "condition": "== 0", "normal": "1 (answers ping)",
+                  "labels": target_labels(inv, d), "summary": f"{d} does not answer the NOC's ping"}
+    routers = exporter_routers(inv)
+    for link in inv.links:
+        ends = [ep for ep in (link.a, link.b) if ep.device in routers and link_id(link) not in dom[ep.device]]
+        if ends:
+            signal = " or ".join(f"node_network_up{selector(node=ep.device, device=ep.interface)}" for ep in ends)
+            out[link_id(link)] = {"signal": signal, "expr": f"min({signal}) == 0", "condition": "== 0 on either end",
+                                  "normal": "1 on every end", "labels": {**target_labels(inv, ends[0].device), "link": link_id(link)},
+                                  "summary": f"link {link_id(link)} is down"}
+    for r in routers:
+        signal = f"up{selector(job='frr', node=r)}"
+        out[f"frr@{r}"] = {"signal": signal, "expr": f"{signal} == 0", "condition": "== 0", "normal": "1",
+                           "labels": {**target_labels(inv, r), "job": "frr"}, "summary": f"frr_exporter on {r} does not answer its scrape"}
+    signal = "up{job=\"logs\"}"
+    out[f"logs@{host(inv)}"] = {"signal": signal, "expr": f"{signal} == 0", "condition": "== 0", "normal": "1",
+                                "labels": {"job": "logs"}, "summary": "the log collector does not answer its scrape"}
+    return out
+
+
+class Dependencies:
+    """The deps label each alert carries: every cause its objects can't be seen without, themselves included,
+    written /a/b/c/ so one regex finds any one of them. Alertmanager holds back an alert while a cause in its
+    deps fires (one inhibit rule per cause, templates/monitoring/alertmanager.yml.j2)."""
+
+    def __init__(self, inv: Inventory):
+        self.inv, self.dom = inv, dominators(inv)
+        self.causes = causes(inv, self.dom)
+
+    def link_objects(self, link) -> set[str]:
+        """A link, and each of its ends that doesn't depend on it. An end behind the link (h2 behind r3's
+        eth3) is lost because the link is: its own failure is the link's consequence, not a cause of it."""
+        lid = link_id(link)
+        return {lid} | {ep.device for ep in (link.a, link.b) if lid not in self.dom[ep.device]}
+
+    def label(self, objects, own: str | None = None, extra=()) -> str:
+        """A cause's own page leaves itself out, and so everything it covers is held back by something else
+        first: two causes never hold each other's page back (tests/test_monitoring.py checks)."""
+        found = {c for x in objects for c in ({x} | self.dom[x]) if c in self.causes} | set(extra)
+        found.discard(own)
+        return "/" + "".join(f"{c}/" for c in sorted(found))
+
+
+# --- Every alert says why it fired, what is normal and what changed (OROS DEC-1, decision 0020) -----------
+
+# Pushed by `make apply` after a router's change passes its gate (ansible/deploy.yml): the commit applied.
+APPLIED = "netlab_config_applied_timestamp_seconds"
+
+
+def graph_link(expr: str) -> str:
+    """This expression over the last 7 days on the NOC's Prometheus (its --web.external-url)."""
+    return "{{ $externalURL }}/graph?" + urllib.parse.urlencode({"g0.expr": expr, "g0.tab": "0", "g0.range_input": "7d"})
+
+
+def context(inv: Inventory, signal: str, condition: str, normal: str, node: str | None) -> dict:
+    """Three annotations, which Prometheus fills in each time it evaluates the alert: the rule's condition and
+    the signal's value now, the value it normally has with a link to its last 7 days, and the last config
+    commit applied to the node (to any router, for a node `make apply` doesn't change) with a link to every
+    apply in 7 days."""
+    now = "{{ with query `" + signal + "` }}{{ range . }}{{ .Value }} {{ end }}{{ else }}no series{{ end }}"
+    sel = selector(node=node) if node in inv.routers else ""
+    scope = f"to {node}" if sel else "to the lab's routers"
+    last = ("{{ with query `bottomk(1, time() - " + APPLIED + sel + ")` }}{{ range . }}commit {{ .Labels.commit }} "
+            "({{ .Labels.subject }}) applied to {{ .Labels.node }} {{ .Value | humanizeDuration }} ago{{ end }}"
+            "{{ else }}no config apply recorded " + scope + "{{ end }}")
+    return {"why_fired": f"{signal} {condition}; now: {now}",
+            "baseline": f"normally {normal}; this signal over the last 7 days: {graph_link(signal)}",
+            "changes": f"last config change {scope}: {last}; every apply in the last 7 days: {graph_link(APPLIED + sel)}"}
+
+
+def rule(inv: Inventory, alert: str, expr: str, labels: dict, summary: str, signal: str, condition: str,
+         normal: str, keep: int | None = None) -> dict:
+    """Rule labels name the object, so each object is its own alert, and carry what it depends on (deps)."""
+    out = {"alert": alert, "expr": expr, "for": f"{WAIT[alert]}s"}
+    if keep:
+        out["keep_firing_for"] = f"{keep}s"
+    return {**out, "labels": labels,
+            "annotations": {"summary": summary, **context(inv, signal, condition, normal, labels.get("node"))}}
 
 
 def per_object(metric: str, keys: dict, test: str) -> str:
@@ -163,49 +310,147 @@ def per_object(metric: str, keys: dict, test: str) -> str:
     return f"max by ({', '.join(keys)}) ({metric}{sel} {test}) or absent({metric}{sel})"
 
 
+def keep_firing(inv: Inventory) -> int:
+    """Seconds a cause's page keeps firing after its signal recovers, still holding back what depends on it:
+    the slowest dependent to recover is a log source's SourceSilent, which clears on its next heartbeat."""
+    return inv.logging["heartbeat"] + 3 * inv.monitoring["interval"]
+
+
+def cause_rules(inv: Inventory) -> list[dict]:
+    """A marker per cause, CauseSeen, which fires the moment its signal does (no `for`), in a rule group of
+    its own evaluated every CAUSE_EVERY seconds. It never pages (Alertmanager routes it nowhere); it only has
+    to be in Alertmanager before the alerts that depend on it are first sent, group_wait after they fire."""
+    return [rule(inv, "CauseSeen", c["expr"], {**c["labels"], "cause": cid}, f"cause marker: {c['summary']}",
+                 c["signal"], c["condition"], c["normal"])
+            for cid, c in causes(inv).items()]
+
+
 def alert_rules(inv: Inventory) -> list[dict]:
     """One rule per object the inventory says should be up. Each also fires if its series is missing
     (absent), so a session or neighbor deleted from the config alerts too, not just one that is down.
     Each carries its node's owner and role as rule labels, so every alert about it has them, from either
-    half of the rule (the hook for routing and silencing by role later, OROS DEC-1 and DEC-4)."""
-    mon, rules = inv.monitoring, []
-    rules.append(rule("TargetDown", "up == 0", {}, "{{ $labels.job }} on {{ $labels.node }} does not answer its scrape"))
+    half of the rule (the hook for routing and silencing by role, OROS DEC-1 and DEC-4), and the causes
+    it depends on (deps, OROS DEC-5)."""
+    mon, rules, model = inv.monitoring, [], Dependencies(inv)
+    keep, noc = keep_firing(inv), host(inv)
+    logs = f"logs@{noc}"
+    # A cause's own page: what it covers is held back while it fires, and for `keep` seconds after.
+    for cid, c in model.causes.items():
+        if cid in inv.devices:
+            rules.append(rule(inv, "NodeDown", c["expr"], {**c["labels"], "cause": cid, "deps": model.label({cid}, own=cid)},
+                              c["summary"], c["signal"], c["condition"], c["normal"], keep))
+        elif "link" in c["labels"]:
+            link = next(l for l in inv.links if link_id(l) == cid)
+            rules.append(rule(inv, "LinkDown", c["expr"], {**c["labels"], "cause": cid, "deps": model.label(model.link_objects(link), own=cid)},
+                              c["summary"], c["signal"], c["condition"], c["normal"], keep))
+    for r in exporter_routers(inv):
+        for job in EXPORTERS:
+            cid = f"{job}@{r}"
+            signal = f"up{selector(job=job, node=r)}"
+            labels = {**target_labels(inv, r), "job": job, **({"cause": cid} if cid in model.causes else {}), "deps": model.label({r})}
+            rules.append(rule(inv, "TargetDown", f"{signal} == 0", labels, f"{job} on {r} does not answer its scrape",
+                              signal, "== 0", "1", keep if cid in model.causes else None))
+    # The NOC's own services: one rule per job, since every target of a blackbox job is one exporter.
+    for job in ("web", "icmp", "logs", "pushgateway"):
+        signal = f"min(up{selector(job=job)})"
+        labels = {"job": job, **({"cause": logs} if job == "logs" else {}), "deps": "/"}
+        rules.append(rule(inv, "TargetDown", f"{signal} == 0", labels, f"the NOC's {job} job does not answer its scrape",
+                          signal, "== 0", "1", keep if job == "logs" else None))
     for s in bgp_peers(inv):
         # frr_exporter: 1 Established, 0 down, 2 administratively down. `== 0` would miss a local shutdown.
-        rules.append(rule("BGPSessionDown", per_object("frr_bgp_peer_state", {"node": s["node"], "peer": s["address"]}, "!= 1"),
-                          {**target_labels(inv, s["node"]), "peer": s["address"], "peer_name": s["peer"]},
-                          f"BGP {s['node']} -> {s['peer']} ({s['address']}) is not Established: {{{{ $value }}}} (0 down, 2 admin down)"))
+        keys = {"node": s["node"], "peer": s["address"]}
+        link = next(l for l in inv.links if {str(l.a.address.ip), str(l.b.address.ip)} >= {s["address"]}
+                    and s["node"] in (l.a.device, l.b.device))
+        rules.append(rule(inv, "BGPSessionDown", per_object("frr_bgp_peer_state", keys, "!= 1"),
+                          {**target_labels(inv, s["node"]), "peer": s["address"], "peer_name": s["peer"],
+                           "deps": model.label({s["node"], *model.link_objects(link)}, extra={f"frr@{s['node']}"})},
+                          f"BGP {s['node']} -> {s['peer']} ({s['address']}) is not Established: {{{{ $value }}}} (0 down, 2 admin down)",
+                          f"frr_bgp_peer_state{selector(**keys)}", "!= 1, or missing", "1 (Established)"))
     for n in ospf_neighbors(inv):
         # Adjacencies (Full), not neighbors: a neighbor stuck in ExStart still counts as a neighbor.
         # The series' own iface label names the interface; the rule adds the neighbor's name.
-        rules.append(rule("OSPFNeighborDown", per_object("frr_ospf_neighbor_adjacencies", {"node": n["node"], "iface": n["interface"]}, "< 1"),
-                          {**target_labels(inv, n["node"]), "neighbor": n["neighbor"]},
-                          f"OSPF {n['node']} has no Full adjacency with {n['neighbor']} on {n['interface']}"))
+        keys = {"node": n["node"], "iface": n["interface"]}
+        link = link_at(inv, n["node"], n["interface"])
+        rules.append(rule(inv, "OSPFNeighborDown", per_object("frr_ospf_neighbor_adjacencies", keys, "< 1"),
+                          {**target_labels(inv, n["node"]), "neighbor": n["neighbor"],
+                           "deps": model.label({n["node"], *model.link_objects(link)}, extra={f"frr@{n['node']}"})},
+                          f"OSPF {n['node']} has no Full adjacency with {n['neighbor']} on {n['interface']}",
+                          f"frr_ospf_neighbor_adjacencies{selector(**keys)}", "< 1, or missing", "1 (Full)"))
     for b in bfd_peers(inv):
-        rules.append(rule("BFDPeerDown", per_object("frr_bfd_peer_state", {"node": b["node"], "peer": b["address"]}, "!= 1"),
-                          {**target_labels(inv, b["node"]), "neighbor": b["neighbor"], "peer": b["address"]},
-                          f"BFD {b['node']} -> {b['neighbor']} ({b['address']}) is not up"))
+        keys = {"node": b["node"], "peer": b["address"]}
+        link = next(l for l in inv.links if b["address"] in (str(l.a.address.ip), str(l.b.address.ip)))
+        rules.append(rule(inv, "BFDPeerDown", per_object("frr_bfd_peer_state", keys, "!= 1"),
+                          {**target_labels(inv, b["node"]), "neighbor": b["neighbor"], "peer": b["address"],
+                           "deps": model.label({b["node"], *model.link_objects(link)}, extra={f"frr@{b['node']}"})},
+                          f"BFD {b['node']} -> {b['neighbor']} ({b['address']}) is not up",
+                          f"frr_bfd_peer_state{selector(**keys)}", "!= 1, or missing", "1 (up)"))
     for w in mon.get("web") or []:
-        rules.append(rule("WebContentWrong", f"probe_success{selector(job='web', node=w['host'])} == 0",
-                          {**target_labels(inv, w["host"]), "port": str(w["port"])},
-                          f"{w['host']}:{w['port']} does not return a page matching {w['expect']}"))
+        signal = f"probe_success{selector(job='web', node=w['host'])}"
+        rules.append(rule(inv, "WebContentWrong", f"{signal} == 0",
+                          {**target_labels(inv, w["host"]), "port": str(w["port"]), "deps": model.label({w["host"]})},
+                          f"{w['host']}:{w['port']} does not return a page matching {w['expect']}",
+                          signal, "== 0", f"1 (a page matching {w['expect']})"))
     for r in exporter_routers(inv):
-        # The carrier-change counter catches a flap shorter than a scrape, which a state poll misses.
-        devices = "|".join(sorted(ep.interface for ep in inv.interfaces(r)))
-        rules.append(rule("InterfaceFlapped",
-                          f'increase(node_network_carrier_changes_total{{node="{r}",device=~"{devices}"}}[1m]) > 0',
-                          target_labels(inv, r), f"{r} {{{{ $labels.device }}}} lost carrier in the last minute"))
+        for ep in inv.interfaces(r):
+            # The carrier-change counter catches a flap shorter than a scrape, which a state poll misses. It
+            # fires once the carrier is back: a link still down is LinkDown's page, not a flap.
+            keys = {"node": r, "device": ep.interface}
+            signal = f"increase(node_network_carrier_changes_total{selector(**keys)}[{FLAP_WINDOW}s])"
+            rules.append(rule(inv, "InterfaceFlapped", f"{signal} > 0 and node_network_carrier{selector(**keys)} == 1",
+                              {**target_labels(inv, r), "device": ep.interface,
+                               "deps": model.label({r, *model.link_objects(link_at(inv, r, ep.interface))})},
+                              f"{r} {ep.interface} lost carrier in the last {FLAP_WINDOW} s", signal,
+                              "> 0 with the carrier back up", "0"))
     window = mon["reboot_window"]
-    rules.append(rule("PendingRebootOverdue",
-                      f"node_reboot_required == 1 and on(node) (time() - node_reboot_required_since_seconds > {window})",
-                      {}, f"{{{{ $labels.node }}}} has run an older kernel than it has installed for over {window} s"))
+    for r in exporter_routers(inv):
+        signal = f"time() - node_reboot_required_since_seconds{selector(node=r)}"
+        rules.append(rule(inv, "PendingRebootOverdue", f"node_reboot_required{selector(node=r)} == 1 and on(node) ({signal} > {window})",
+                          {**target_labels(inv, r), "deps": model.label({r})},
+                          f"{r} has run an older kernel than it has installed for over {window} s",
+                          signal, f"> {window} while node_reboot_required is 1", "node_reboot_required 0"))
     for s in log_sources(inv):
         sel = selector(node=s["node"], source=s["source"])
-        rules.append(rule("SourceSilent", f"max by (node, source) (time() - log_last_seen_seconds{sel} > {s['silent_after']}) "
-                                          f"or absent(log_last_seen_seconds{sel})",
-                          {**target_labels(inv, s["node"]), "source": s["source"]},
-                          f"no {s['source']} line from {s['node']} has reached the collector for over {s['silent_after']} s"))
+        rules.append(rule(inv, "SourceSilent", f"max by (node, source) (time() - log_last_seen_seconds{sel} > {s['silent_after']}) "
+                                               f"or absent(log_last_seen_seconds{sel})",
+                          {**target_labels(inv, s["node"]), "source": s["source"], "deps": model.label({s["node"]}, extra={logs})},
+                          f"no {s['source']} line from {s['node']} has reached the collector for over {s['silent_after']} s",
+                          f"time() - log_last_seen_seconds{sel}", f"> {s['silent_after']}, or missing",
+                          f"under {s['silent_after']} s"))
+    rules += deadman_rules(inv, logs)
     return rules
+
+
+# --- Dead-man's switch: jobs and the alert path itself (OROS NOT-4, decision 0022) -------------------------
+
+def since_start(expr: str) -> str:
+    """expr, or the NOC's start time when nothing has arrived since it started (the pushgateway starts with
+    it): `time() - since_start(last)` then grows from the start, so something that never ran pages too."""
+    return f"({expr} or on() max(process_start_time_seconds{selector(job='pushgateway')}))"
+
+
+def deadman_rules(inv: Inventory, logs: str) -> list[dict]:
+    """JobMissed per unattended job, Watchdog, and AlertPathSilent. A job's success is what it pushes as its
+    last step, so a job that failed, hung or never started looks the same: no success in its window.
+    Watchdog always fires and goes out by mail; AlertPathSilent reads where that mail arrives (Mailpit's
+    webhook into the collector) and pages over the webhook, the other channel."""
+    out, mon = [], inv.monitoring
+    for j in mon.get("jobs") or []:
+        window = j["every"] + j["grace"]
+        metric = f"netlab_job_last_success_timestamp_seconds{selector(job=j['name'])}"
+        out.append(rule(inv, "JobMissed", f"time() - {since_start(f'max({metric})')} > {window}",
+                        {"job": j["name"], "deps": "/"},
+                        f"{j['name']} has not reported a success for over {window} s (it runs every {j['every']} s)",
+                        f"time() - {metric}", f"> {window} ({j['every']} s plus {j['grace']} s grace), or no success since the NOC started",
+                        f"under {j['every']} s"))
+    path, mail = mon["alert_path"], f"log_last_seen_seconds{selector(node=host(inv), source='mail')}"
+    out.append(rule(inv, "Watchdog", "vector(1)", {}, f"always firing: the alert path's heartbeat, mailed every {path['every']} s",
+                    f"time() - {mail}", "(Watchdog itself always fires: vector(1))", f"under {path['every']} s since the last mail"))
+    out.append(rule(inv, "AlertPathSilent", f"time() - {since_start(f'max({mail})')} > {path['silent_after']}",
+                    {"channel": "mail", "deps": f"/{logs}/"},
+                    f"no alert mail has reached the NOC's mailbox for over {path['silent_after']} s: the mail path is broken",
+                    f"time() - {mail}", f"> {path['silent_after']}, or no mail since the NOC started",
+                    f"under {path['every']} s"))
+    return out
 
 
 def blackbox_job(name: str, module: str, targets: list[dict]) -> dict:
@@ -232,11 +477,15 @@ def prometheus_config(inv: Inventory) -> dict:
                                          for t in probe_targets(inv)])
     # The collector's own per-source metrics (log_last_seen_seconds{node,source}).
     logs = {"job_name": "logs", "static_configs": [{"targets": [f"127.0.0.1:{PORTS['collector_metrics']}"]}]}
+    # What jobs and `make apply` push (decisions 0020 and 0022). honor_labels keeps the job label each push
+    # names (drift, backup), not this scrape's.
+    pushed = {"job_name": "pushgateway", "honor_labels": True,
+              "static_configs": [{"targets": [f"127.0.0.1:{PORTS['pushgateway']}"]}]}
     return {
         "global": {"scrape_interval": interval, "evaluation_interval": interval, "scrape_timeout": f"{inv.monitoring['interval'] - 1}s"},
         "rule_files": ["/etc/prometheus/rules.yml"],
         "alerting": {"alertmanagers": [{"static_configs": [{"targets": [f"127.0.0.1:{PORTS['alertmanager']}"]}]}]},
-        "scrape_configs": [*jobs, *web, icmp, logs],
+        "scrape_configs": [*jobs, *web, icmp, logs, pushed],
     }
 
 
@@ -267,7 +516,8 @@ def sidecars(inv: Inventory) -> dict[str, dict]:
     out[f"{noc}-prometheus"] = {"netns": noc, "image": images["prometheus"],
                                 "binds": [f"{noc}/prometheus.yml:/etc/prometheus/prometheus.yml:ro", f"{noc}/rules.yml:/etc/prometheus/rules.yml:ro"],
                                 "cmd": f"--config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus "
-                                       f"--web.listen-address=127.0.0.1:{PORTS['prometheus']}"}
+                                       f"--web.listen-address=127.0.0.1:{PORTS['prometheus']} "
+                                       f"--web.external-url=http://127.0.0.1:{PORTS['prometheus']}"}
     # An empty cluster address turns off the gossip port Alertmanager would otherwise open on every address.
     out[f"{noc}-alertmanager"] = {"netns": noc, "image": images["alertmanager"],
                                   "binds": [f"{noc}/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro"],
@@ -279,6 +529,13 @@ def sidecars(inv: Inventory) -> dict[str, dict]:
                           "cmd": "-config.file=/etc/loki/loki.yaml"}
     out[f"{noc}-collector"] = {"netns": noc, "image": images["vector"], "binds": [f"{noc}/vector.yaml:/etc/vector/vector.yaml:ro"],
                                "cmd": "--config /etc/vector/vector.yaml"}
+    # Where unattended jobs and `make apply` push their success (decisions 0020 and 0022).
+    out[f"{noc}-pushgateway"] = {"netns": noc, "image": images["pushgateway"], "binds": [],
+                                 "cmd": f"--web.listen-address=127.0.0.1:{PORTS['pushgateway']}"}
+    # The NOC's mailbox, where Alertmanager's mail arrives; it tells the collector of each new mail (decision 0022).
+    out[f"{noc}-mailbox"] = {"netns": noc, "image": images["mailpit"], "binds": [],
+                             "cmd": f"--smtp 127.0.0.1:{PORTS['smtp']} --listen 127.0.0.1:{PORTS['mailbox']} "
+                                    f"--webhook-url http://127.0.0.1:{PORTS['mail_hook']}/ --quiet"}
     for app in inv.logging.get("apps") or []:
         # Not root: the image's default user is, so the node sets nobody's uid and gid.
         out[f"{app['host']}-{app['name']}-forwarder"] = {
@@ -292,6 +549,7 @@ def expected(inv: Inventory) -> dict:
     """What the live tests read back: exporters, sources, checks and the alerts the rules can raise."""
     if not inv.monitoring:
         return {}
+    deps = Dependencies(inv)
     return {
         "host": host(inv),
         "collector": collector(inv),
@@ -309,13 +567,27 @@ def expected(inv: Inventory) -> dict:
         "sidecars": sorted(sidecars(inv)),
         # Each sidecar image's tag and the digest it must resolve to.
         "digests": {inv.monitoring["images"][k]: inv.monitoring["digests"][k] for k in inv.monitoring["images"]},
-        "alerts": sorted({r["alert"] for r in alert_rules(inv)}),
-        # How long after the object changes its alert may take to reach the pager: up to one scrape and one
-        # evaluation to see it, `for` to hold, one more evaluation, and Alertmanager's group_wait (1 s).
-        # The pending-reboot file is rewritten every TEXTFILE_EVERY seconds on top of that.
-        "alert_within": {a: w + 3 * inv.monitoring["interval"] + 2 + (TEXTFILE_EVERY if a == "PendingRebootOverdue" else 0)
+        "alerts": sorted({r["alert"] for r in [*alert_rules(inv), *cause_rules(inv)]}),
+        # How long after the object changes its alert may take to reach the pager: `for` to hold, plus
+        # deliver() (scrape, evaluations, group_wait). The pending-reboot file is rewritten every
+        # TEXTFILE_EVERY seconds on top of that.
+        "alert_within": {a: w + deliver(inv) + (TEXTFILE_EVERY if a == "PendingRebootOverdue" else 0)
                          for a, w in WAIT.items()},
+        "group_wait": inv.monitoring["group_wait"],
+        # One page per cause (decision 0021): each cause with what depends on it, and how long its page keeps
+        # firing after it recovers.
+        "causes": {cid: {"labels": c["labels"], "covers": sorted(v for v in deps.dom if cid in deps.dom[v])}
+                   for cid, c in deps.causes.items()},
+        "keep_firing": keep_firing(inv),
+        "jobs": inv.monitoring.get("jobs") or [],
+        "alert_path": inv.monitoring["alert_path"],
     }
+
+
+def rule_groups(inv: Inventory) -> dict:
+    """rules.yml: the alerts, and the cause markers in a group of their own evaluated every CAUSE_EVERY s."""
+    return {"groups": [{"name": "netlab", "rules": alert_rules(inv)},
+                       {"name": "causes", "interval": f"{CAUSE_EVERY}s", "rules": cause_rules(inv)}]}
 
 
 def dump(doc: dict) -> str:
@@ -329,10 +601,10 @@ def render(inv: Inventory, env, write, out: Path) -> None:
         return
     noc, logs = host(inv), inv.logging
     write(f"{noc}/prometheus.yml", dump(prometheus_config(inv)))
-    write(f"{noc}/rules.yml", dump({"groups": [{"name": "netlab", "rules": alert_rules(inv)}]}))
+    write(f"{noc}/rules.yml", dump(rule_groups(inv)))
     write(f"{noc}/blackbox.yml", dump(blackbox_config(inv)))
     ctx = dict(inv=inv, ports=PORTS, collector=collector(inv), logs=logs, addresses=source_addresses(inv),
-               textfile_every=TEXTFILE_EVERY)
+               textfile_every=TEXTFILE_EVERY, mon=inv.monitoring, causes=sorted(causes(inv)))
     for name in ("alertmanager.yml", "loki.yaml", "vector.yaml"):
         write(f"{noc}/{name}", env.get_template(f"monitoring/{name}.j2").render(**ctx))
     write(f"{noc}/sink.py", (ROOT / "templates" / "monitoring" / "sink.py").read_text())

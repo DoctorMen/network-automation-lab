@@ -22,8 +22,9 @@ def mon(expected):
 
 @pytest.fixture(scope="session")
 def noc(lab_name, mon):
-    """The NOC, settled: every scrape answering, Loki ready, every log source heard from, and nothing firing.
-    A lab started without its sidecars (make deploy-network) has no NOC, and these tests can't run there."""
+    """The NOC, settled: every scrape answering, Loki ready, every log source heard from, and nothing firing
+    but Watchdog, the alert path's heartbeat, which always fires (decision 0022). A lab started without its
+    sidecars (make deploy-network) has no NOC, and these tests can't run there."""
     sidecar = f"clab-{lab_name}-{mon['sidecars'][0]}"
     if subprocess.run(["docker", "inspect", sidecar], capture_output=True).returncode:
         pytest.skip(f"{sidecar} is not running: the NOC's tests need the full lab (make deploy), not make deploy-network")
@@ -33,11 +34,16 @@ def noc(lab_name, mon):
         targets = n.targets()
         heard = {(s["node"], s["source"]) for s in n.query("log_last_seen_seconds")}
         return (n.ready() and targets and all(t["health"] == "up" for t in targets)
-                and all((s["node"], s["source"]) in heard for s in mon["sources"]) and not n.alerts())
+                and all((s["node"], s["source"]) in heard for s in mon["sources"]) and not firing(n))
     # Right after a deploy the first heartbeat may have gone out before OSPF had a route to the NOC; the
     # next one is a heartbeat later. If it never settles, the tests say what is wrong.
     wait_for(settled, timeout=mon["heartbeat"] + 60, interval=3)
     return n
+
+
+def firing(noc, state="firing"):
+    """Every alert Prometheus has in this state, except Watchdog, which fires all the time."""
+    return [a for a in noc.alerts(state) if a["labels"]["alertname"] != "Watchdog"]
 
 
 def quiet(noc, alert, timeout=90, **labels):

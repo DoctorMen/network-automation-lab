@@ -210,3 +210,14 @@
       run_once: true
       changed_when: false
       check_mode: false  # read-only
+
+    # Last, once the batch is in and verified: the commit each router now runs, which every NOC alert about
+    # it shows as its latest change (OROS DEC-1, decision 0020). Without a NOC this only warns.
+    - name: Record the applied commit on the NOC (netlab.observe applied)
+      ansible.builtin.command:
+        cmd: "{{ netlab }}.observe applied {{ ansible_play_batch | join(' ') }}"
+        chdir: "{{ playbook_dir }}/.."
+      delegate_to: localhost
+      run_once: true
+      changed_when: false
+      when: not ansible_check_mode

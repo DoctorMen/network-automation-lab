@@ -18,6 +18,8 @@ platform:
   blackbox_exporter: v0.25.0
   vector: 0.40.1
   loki: 3.1.1
+  pushgateway: v1.9.0
+  mailpit: v1.20
 
 # Every Prometheus job, and what it reads. No check depends on a scraper that isn't here: the lint fails
 # on a job this list lacks, and on an alert rule that uses a metric no collector lists.
@@ -49,8 +51,18 @@ collectors:
     metrics: [probe_success]
   logs:
     exporter: vector (the collector on noc)
-    reads: its own count and last-seen time of the lines each source sent
+    reads: its own count and last-seen time of the lines each source sent, and of each mail the NOC's mailbox
+      (Mailpit) reports receiving (source mail, the alert path's heartbeat)
     metrics: [log_last_seen_seconds, log_lines_total]
+  pushgateway:
+    exporter: the pushgateway on noc (decisions 0020 and 0022)
+    # Nothing here is read from a device: each value is what a job or `make apply` pushed as its last step.
+    reads: each unattended job's last success time (netlab.observe success) and the commit `make apply` last
+      applied to each router (netlab.observe applied), plus the pushgateway's own start time
+    metrics: [netlab_config_applied_timestamp_seconds, process_start_time_seconds]
+    # Only there once a job has run since the NOC started; JobMissed fires without it (decision 0022), and
+    # tests/live/observe/test_deadman.py checks a real make drift brings it.
+    after_push: [netlab_job_last_success_timestamp_seconds]
   up:
     exporter: Prometheus itself
     reads: whether each scrape above answered

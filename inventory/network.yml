@@ -167,6 +167,9 @@ monitoring:
   # Seconds between scrapes, and between rule evaluations. Short so CI sees an alert in seconds; a real
   # NOC would run 30 to 60.
   interval: 5
+  # Seconds Alertmanager holds a new alert before its first page, so a cause found in the same seconds
+  # (a router or link down) is there to hold it back (decision 0021).
+  group_wait: 5
   # Pinned images; each has a selection record in docs/selections/.
   images:
     prometheus: prom/prometheus:v2.53.0
@@ -176,6 +179,8 @@ monitoring:
     node_exporter: prom/node-exporter:v1.8.2
     loki: grafana/loki:3.1.1
     vector: timberio/vector:0.40.1-alpine
+    pushgateway: prom/pushgateway:v1.9.0
+    mailpit: axllent/mailpit:v1.20
   # What each tag resolved to when it was pulled (docker image inspect, RepoDigests). A tag can be re-pushed;
   # tests/live/observe/test_noc.py fails if a sidecar runs anything else.
   digests:
@@ -186,12 +191,27 @@ monitoring:
     node_exporter: sha256:4032c6d5bfd752342c3e631c2f1de93ba6b86c41db6b167b9a35372c139e7706
     loki: sha256:e689cc634841c937de4d7ea6157f17e29cf257d6a320f1c293ab18d46cfea986
     vector: sha256:a29c5e3eeea49ea0a927d598f7e88624ff18ebd35df827772a337c96684c9ce5
+    pushgateway: sha256:98a458415f8f5afcfd45622d289a0aa67063563bec0f90d598ebc76783571936
+    mailpit: sha256:7eef0f38dbc85e4e264f2edf5d70fbb694826791e05cb2cae4fc9e3282f968f5
   # The right content, not just a 200. h2 serves a listing of its root directory, and every listing
   # has the same title, so the check needs an entry only the real one has.
   web:
     - { host: h2, port: 80, expect: 'href="etc/"' }
   # Seconds a newer kernel may sit installed but not booted before PendingRebootOverdue fires.
   reboot_window: 3600
+  # Jobs that run unattended (OROS NOT-4, decision 0022). Each one's last step reports its success to the
+  # NOC's pushgateway (`python -m netlab.observe success <job>`), and JobMissed pages once the last success
+  # is older than every + grace seconds: a job that fails, hangs or never starts all look the same.
+  # every matches the job's schedule in .github/workflows/ (ci.yml nightly, drills.yml weekly).
+  jobs:
+    - { name: drift, every: 86400, grace: 7200 }
+    - { name: backup, every: 86400, grace: 7200 }
+    - { name: restore-drill, every: 604800, grace: 7200 }
+    - { name: power-drill, every: 604800, grace: 7200 }
+  # The alert path's own heartbeat (NOT-4): Watchdog always fires and goes out by mail every `every`
+  # seconds to the NOC's mailbox (Mailpit). AlertPathSilent pages over the webhook, the second channel,
+  # once no mail has arrived for silent_after seconds.
+  alert_path: { every: 10, silent_after: 30 }
 
 logging:
   # Every log source sends a heartbeat line this often (seconds): its normal gap. SourceSilent fires
