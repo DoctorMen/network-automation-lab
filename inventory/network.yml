@@ -214,9 +214,9 @@ logging:
     syslog_kb: 8192       # each router, firewall and server's syslog
   # Apps whose own log is forwarded as the app writes it, by a forwarder that doesn't run as root.
   # h2's web server writes an access line per request. `cut` names the kinds of line its forwarder drops
-  # before they leave the host (decision 0026): web-check is the NOC's own successful check of this app
-  # (the check's GET from the NOC, answered 200), a line every interval and most of this log. The forwarder
-  # counts what it cuts and sends one line per heartbeat's worth, so that log's normal gap is the heartbeat.
+  # before they leave the host (decision 0026): web-check is the NOC's web check of this app (the check's
+  # request line from the NOC's address, answered 200), a line every interval and most of this log. The
+  # forwarder counts what it cuts and sends one line per heartbeat's worth, so that log's normal gap is the heartbeat.
   # Uncut, the checks alone would spend about twice this log's budget.
   apps:
     - { host: h2, name: http, port: 80, silent_after: 90, budget_kb: 512, cut: [web-check] }

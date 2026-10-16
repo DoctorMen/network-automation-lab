@@ -10,6 +10,10 @@
 #
 # Blind spots are what the detection misses in this lab as built: traffic that never reaches its sensor,
 # objects it doesn't watch, failures shorter than its wait, and what it trusts without checking.
+#
+# A detection that looks back further than the review (its wait, a range it reads, or an age it compares
+# with the clock) could not have paged on the review's workload, so its 0 measures nothing. Its
+# beyond_review says what stands for its figure, and make test fails if one has none.
 
 review:
   # OROS NOT-6's default review cycle is quarterly. make test fails once the last review is older.
@@ -52,7 +56,7 @@ detections:
       - "One vantage point: the NOC's LAN, through r2 and r3. A user's path from LAN-A through fw1 and r1 is not probed."
       - "One page and one port: only GET / on port 80, matched on href=\"etc/\"; h2's port 22 and every other page are unchecked."
       - "A page slower than a user would accept still passes if it answers inside the probe's 3 s timeout."
-      - "The NOC's own successful checks are cut at h2's forwarder (decision 0026), so the access log in the store shows the check only when it fails."
+      - "The NOC's checks are cut at h2's forwarder whenever h2 answers 200 (decision 0026), a check that fails on content included, so the store holds only their count; a check shows in the access log only when h2 answers it with another status (RISK-55)."
   InterfaceFlapped:
     detects: a router interface whose carrier changed in the last minute, however briefly
     blind_spots:
@@ -65,6 +69,7 @@ detections:
       - "The kernel only: an FRR or library update not yet restarted is found by make verify on demand, not alerted."
       - "Inside the window (3600 s) nothing pages, by design."
       - "Every lab node shares the host's kernel, so in the lab a pending kernel is staged (a newer module folder), never really installed."
+    beyond_review: "a false page needs a pending reboot older than its window, and the workload stages no kernel, so nothing in it could page (RISK-58)"
   SourceSilent:
     detects: a log source whose last line reached the collector longer ago than its silent_after, or that never sent one
     blind_spots:
@@ -81,6 +86,7 @@ detections:
       - "Once a source's day is over its budget the alert stays firing until that day is out, so a second flood from it is no new page (RISK-57)."
       - "Lines cut at the source are not counted, by design, and lines lost on the way never arrive to be counted."
       - "Lines from an address the collector can't map are labelled node=unknown, and no rule has a budget for them."
+    beyond_review: "its figure is each source's pace over the review as a day, in the ingest table below, and make test fails if one is over its budget (RISK-58)"
 
 # Threats no detection here sees at all. Listed so the table's silence is not read as cover.
 not_detected:

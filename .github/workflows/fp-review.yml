@@ -1,0 +1,67 @@
+name: False-positive review
+
+# The detection table's false-positive review (OROS NOT-6, decision 0027): the full lab, 30 minutes of the
+# benign workload, and every page the NOC's pager receives counted. make test fails once the committed
+# review (monitoring/fp-review.yml) is older than its 92-day cycle, and for any detection whose rules have
+# changed since, so this runs on a schedule and by hand after a rule change. It commits nothing: a person
+# reads the artifact and commits its fp-review.yml and detections.md, so each review is read by someone.
+on:
+  # Monthly, so a person has about three runs in each 92-day cycle to commit one from. GitHub runs
+  # schedules on the default branch only, and in a public repo disables them after 60 days with no
+  # repository activity (RISK-25).
+  schedule:
+    - cron: "17 6 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fp-review:
+    name: Benign workload on the full lab, every page counted
+    runs-on: ubuntu-24.04
+    # About 6 minutes to deploy, up to 5 for the NOC to go quiet, 30 of workload and 2 for late pages.
+    timeout-minutes: 60
+    env:
+      CLAB_VERSION: "0.68.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt -r requirements-ansible.txt
+      - name: Install Containerlab
+        run: bash -c "$(curl -sL https://get.containerlab.dev)" -- -v "$CLAB_VERSION"
+      - name: Pull every image the full lab runs (the inventory's pinned tags)
+        run: python3 -m netlab images | xargs -n1 docker pull
+      - name: Create this run's BGP password
+        # As in ci.yml: a new random one per run, masked, outside the checkout (decision 0016).
+        run: |
+          echo "NETLAB_SECRETS=$RUNNER_TEMP/netlab-secrets" >> "$GITHUB_ENV"
+          NETLAB_SECRETS="$RUNNER_TEMP/netlab-secrets" make secrets
+          for f in "$RUNNER_TEMP"/netlab-secrets/*; do echo "::add-mask::$(cat "$f")"; done
+      - name: Deploy (network and NOC)
+        run: make deploy
+      - name: The review (make fp-review), on this clean checkout
+        id: review
+        run: make fp-review LAB_ENV=github-runner
+      - name: Upload the review, the table and every notification the pager received
+        # Only once the review has counted: the notifications file is written then, so an artifact never
+        # carries the committed review in place of this run's.
+        if: ${{ !cancelled() && hashFiles('results/fp-review-notifications.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: fp-review
+          path: |
+            monitoring/fp-review.yml
+            docs/detections.md
+            results/fp-review-notifications.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: What the NOC fired and paged, on failure
+        if: failure()
+        run: make alerts || true
+      - name: Destroy
+        if: always()
+        run: make destroy || true

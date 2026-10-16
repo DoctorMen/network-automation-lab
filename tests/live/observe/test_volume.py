@@ -1,6 +1,7 @@
 """OROS NOT-5, precise volume at the source (decision 0026): h2's own forwarder cuts one named kind of line,
-the NOC's own web check, before it leaves h2, and counts it; every other line of the same log, the very
-same request from a user included, still reaches the store. Every source's last 24 h at the collector is
+the NOC's web check answered 200, before it leaves h2, and counts it; the same request from a user and a
+failed request from the NOC still reach the store (the same request from noc itself is cut too, RISK-55).
+Every source's bytes at the collector so far (its last 24 h, or since the lab started on a younger lab) are
 within its daily budget."""
 import time
 import uuid
@@ -10,7 +11,8 @@ from ..conftest import wait_for
 
 def test_noisy_kind_cut_at_the_source_while_wanted_lines_arrive(node, expected, mon, noc):
     """The NOC's check, sent three count lines' worth more, is written to h2's log but never reaches the collector,
-    and is counted in the forwarder's count lines; the same request from h1, and a failed one from the NOC, arrive as written."""
+    and is counted in the forwarder's count lines; the same request from h1, and a failed request (404) from the NOC,
+    arrive as written."""
     app = mon["apps"][0]
     kinds = mon["cuts"].get(f"{app['host']}/{app['name']}")
     assert kinds, f"{app['host']}'s {app['name']} log names no kind to cut, so there is no cut to prove"
@@ -27,7 +29,7 @@ def test_noisy_kind_cut_at_the_source_while_wanted_lines_arrive(node, expected, 
     since = time.time()
     # The noise: exactly the check's own request, from the NOC.
     node(mon["host"]).run("sh", "-c", f"for i in $(seq {noise}); do wget -q -O /dev/null {url}; done", timeout=60)
-    # Wanted lines from the same log: the same request from a user, and one from the NOC that fails (404).
+    # Wanted lines from the same log: the same request from a user, and a request from the NOC that fails (404).
     node("h1").run("sh", "-c", f"for i in $(seq {users}); do wget -q -O /dev/null {url}; done")
     node(mon["host"]).run("wget", "-q", "-O", "/dev/null", url + marker, check=False)
 
@@ -53,7 +55,8 @@ def test_noisy_kind_cut_at_the_source_while_wanted_lines_arrive(node, expected, 
 
 
 def test_every_source_within_its_budget(mon, noc):
-    """Each source's last 24 h at the collector is under its daily budget, and its LogIngestOverBudget rule is loaded with that budget and quiet."""
+    """Each source's bytes at the collector in the last 24 h (since the lab started, on a lab up less than a day) are
+    under its daily budget, and its LogIngestOverBudget rule is loaded with that budget and quiet."""
     rules = {(r["labels"].get("node"), r["labels"].get("source")): r for r in noc.rules() if r["name"] == "LogIngestOverBudget"}
     day = {(r["node"], r["source"]): r["value"] for r in noc.query("increase(log_bytes_total[1d])")}
     for s in mon["sources"]:

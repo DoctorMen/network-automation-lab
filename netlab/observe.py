@@ -3,8 +3,9 @@
 python -m netlab.observe alerts       what Prometheus has firing, and what the pager (the sink) received
 python -m netlab.observe testevent    a marked line from every log source over its real path, and when
                                       each reached the central store (OROS NOT-3's synthetic event)
-python -m netlab.observe ingest       each log source's last 24 h at the collector against its daily budget
-                                      (OROS NOT-5); exits 1 if one is over
+python -m netlab.observe ingest       each log source's bytes at the collector in the last 24 h, or since the
+                                      lab started if that is less, against its daily budget (OROS NOT-5);
+                                      exits 1 if one is over
 
 Prometheus, Alertmanager, Loki and the webhook sink listen on 127.0.0.1 inside noc's network
 namespace only, so every request here goes through `docker exec` into noc, the way an operator on the
@@ -143,7 +144,8 @@ def testevent(inv: Inventory, lab: str, timeout: float = 60) -> list[dict]:
 
 def ingest(inv: Inventory, noc: Noc, pace_window: str = "10m") -> list[dict]:
     """[{node, source, bytes, budget, pace}] per log source: bytes the collector received from it in the last
-    24 h (what LogIngestOverBudget compares with its budget), and the last pace_window's rate as bytes a day.
+    24 h (what LogIngestOverBudget compares with its budget; on a lab up less than a day, its bytes since the
+    lab started), and the last pace_window's rate as bytes a day.
     The pace is shown, not judged: a test's burst inflates it for a while (decision 0026)."""
     day = {(r["node"], r["source"]): r["value"] for r in noc.query("increase(log_bytes_total[1d])")}
     pace = {(r["node"], r["source"]): r["value"] for r in noc.query(f"rate(log_bytes_total[{pace_window}]) * 86400")}

@@ -19,7 +19,8 @@ transforms:
       .source = "{{ app.name }}"
 {% if cuts %}
       # The named kinds of line cut here, before they leave the host (decision 0026). Anything else, the
-      # same request from a user or a check that failed included, goes on exactly as the app wrote it.
+      # same request from a user or one answered with another status included, goes on exactly as the app
+      # wrote it. A check that fails on content still answers 200, so it is cut too (RISK-55).
 {% for c in cuts %}
       # {{ c.name }}: {{ c.request }} from {{ c.client }}, answered {{ c.status }}
       if match(string!(.message), r'{{ c.pattern }}') { .cut = "{{ c.name }}"; .lines = 1 }

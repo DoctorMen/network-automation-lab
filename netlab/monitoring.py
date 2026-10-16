@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import urllib.parse
 from pathlib import Path
 
 import yaml
@@ -90,7 +91,7 @@ def log_sources(inv: Inventory) -> list[dict]:
 
 
 # Kinds of line an app's own forwarder may cut before they leave the host (inventory logging.apps[].cut).
-CUT_KINDS = {"web-check": "the NOC's own successful web check of this app: its GET from the NOC, answered 200"}
+CUT_KINDS = {"web-check": "the NOC's web check's request line, from the NOC's address, answered with a status the check accepts"}
 
 
 def literal(text: str) -> str:
@@ -101,16 +102,20 @@ def literal(text: str) -> str:
 
 def cuts(inv: Inventory, app: dict) -> list[dict]:
     """[{name, client, request, status, pattern}] for each kind the app's forwarder cuts. web-check is each
-    web check on the app's host and port: its request line, from the NOC's address, answered 200. The
-    pattern is anchored on all three, so the same request from a user, or the check failing, still goes
-    through. It matches the access-log line Python's http.server writes:
-    `10.30.30.10 - - [16/Oct/2026 04:35:43] "GET / HTTP/1.1" 200 -`."""
+    web check on the app's host and port: the request line of the URL its scrape job has blackbox get, from
+    the NOC's address, answered with a status its blackbox module accepts (200). The pattern is anchored on
+    all three, so the same request from a user, another page, or one answered with another status still goes
+    through. A check that fails on content still answers 200, so it is cut too (RISK-55). It matches the
+    access-log line Python's http.server writes: `10.30.30.10 - - [16/Oct/2026 04:35:43] "GET / HTTP/1.1" 200 -`."""
     out = []
     for name in app.get("cut") or []:
         for w in inv.monitoring.get("web") or []:
             if name == "web-check" and (w["host"], w["port"]) == (app["host"], app["port"]):
-                client, request, status = collector(inv), "GET / HTTP/1.1", 200
-                pattern = f'^{literal(client)} - - \\[[^\\]]*\\] "{literal(request)}" {status} '
+                job = next(j for j in prometheus_config(inv)["scrape_configs"] if j.get("params", {}).get("module") == [web_module(w)])
+                path = urllib.parse.urlsplit(job["static_configs"][0]["targets"][0]).path or "/"
+                codes = blackbox_config(inv)["modules"][web_module(w)]["http"]["valid_status_codes"]
+                client, request, status = collector(inv), f"GET {path} HTTP/1.1", "|".join(str(c) for c in codes)
+                pattern = f'^{literal(client)} - - \\[[^\\]]*\\] "{literal(request)}" ({status}) '
                 out.append({"name": name, "client": client, "request": request, "status": status, "pattern": pattern})
     return out
 

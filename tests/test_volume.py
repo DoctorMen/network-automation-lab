@@ -1,7 +1,8 @@
 """OROS NOT-5, precise volume at the source (decision 0026), offline: the forwarder cuts one named kind of
-line and nothing else, every source has a daily budget that the store can hold, and the budget rule pages
-once a source's last 24 h passes it. The forwarder and the rules are the rendered ones, run by the pinned
-Vector and Prometheus images themselves (`vector test`, `promtool test rules`), so these need Docker."""
+line and nothing else, the collector counts each line's bytes, every source has a daily budget whose total
+fits store_mb, and the budget rule pages once a source's last 24 h passes it. The forwarder, the collector
+and the rules are the rendered ones, run by the pinned Vector and Prometheus images themselves, by digest
+(`vector test`, `promtool test rules`), so these need Docker."""
 import copy
 import json
 import os
@@ -21,6 +22,8 @@ INVENTORY = ROOT / "inventory" / "network.yml"
 inv = load(INVENTORY)
 APP = inv.logging["apps"][0]
 CHECK = monitoring.cuts(inv, APP)[0]
+# The images the lab runs, by the digest the inventory pins, so these test exactly what runs.
+IMAGE = {k: f"{inv.monitoring['images'][k]}@{inv.monitoring['digests'][k]}" for k in ("vector", "prometheus")}
 
 
 def needs(ok, what):
@@ -47,16 +50,16 @@ def access_line(client, request, status):
     return f'{client} - - [16/Oct/2026 04:35:43] "{request}" {status} -'
 
 
-def vector_test(rendered, tests: list) -> subprocess.CompletedProcess:
-    """`vector test` on the rendered forwarder: each case inserts lines where the app's lines enter."""
-    folder = rendered / APP["host"]
+def vector_test(rendered, tests: list, config: str = f"{APP['host']}/forwarder.yaml") -> subprocess.CompletedProcess:
+    """`vector test` on a rendered Vector config, by default the forwarder: each case inserts lines into a transform."""
+    folder = rendered / Path(config).parent
     (folder / "tests.yaml").write_text(yaml.safe_dump({"tests": tests}, width=200))
-    return subprocess.run(["docker", "run", "--rm", "-v", f"{folder}:/cfg:ro", inv.monitoring["images"]["vector"],
-                           "test", "/cfg/forwarder.yaml", "/cfg/tests.yaml"], capture_output=True, text=True, timeout=120)
+    return subprocess.run(["docker", "run", "--rm", "-v", f"{folder}:/cfg:ro", IMAGE["vector"],
+                           "test", f"/cfg/{Path(config).name}", "/cfg/tests.yaml"], capture_output=True, text=True, timeout=120)
 
 
-def case(name, lines, output, condition, silent=None):
-    return {"name": name, "inputs": [{"insert_at": "label", "type": "log", "log_fields": {"message": l}} for l in lines],
+def case(name, lines, output, condition, silent=None, at="label"):
+    return {"name": name, "inputs": [{"insert_at": at, "type": "log", "log_fields": {"message": l}} for l in lines],
             "outputs": [{"extract_from": output, "conditions": [{"type": "vrl", "source": condition}]}],
             **({"no_outputs_from": [silent]} if silent else {})}
 
@@ -66,8 +69,8 @@ def passes(line):
 
 
 def test_forwarder_cuts_the_named_kind_and_nothing_else(docker, rendered):
-    """The NOC's successful check is cut; the same request from a user, the check failing, another page
-    and another client from the NOC's segment all go on exactly as written; twelve cut lines become one count line."""
+    """The NOC's check answered 200 is cut; the same request from a user, the same request answered 500, another
+    page and another client from the NOC's segment all go on exactly as written; twelve cut lines become one count line."""
     noc, request = CHECK["client"], CHECK["request"]
     user = inv.hosts["h1"]["address"].split("/")[0]
     cases = [
@@ -82,6 +85,33 @@ def test_forwarder_cuts_the_named_kind_and_nothing_else(docker, rendered):
     ]
     out = vector_test(rendered, cases)
     assert out.returncode == 0 and out.stdout.count("... passed") == len(cases), out.stdout + out.stderr
+
+
+def test_the_cut_follows_the_web_check(monkeypatch):
+    """The cut's request and status are the check's own, read from its scrape job's URL and its blackbox module,
+    so a check moved to another page is still the one cut, and the old page is no longer cut."""
+    real = monitoring.prometheus_config
+
+    def moved(inventory):
+        config = real(inventory)
+        for job in config["scrape_configs"]:
+            if job.get("params", {}).get("module") == [monitoring.web_module(inventory.monitoring["web"][0])]:
+                job["static_configs"][0]["targets"] = [t + "index.html" for t in job["static_configs"][0]["targets"]]
+        return config
+    monkeypatch.setattr(monitoring, "prometheus_config", moved)
+    kind = monitoring.cuts(inv, APP)[0]
+    assert kind["request"] == "GET /index.html HTTP/1.1", kind
+    assert kind["status"] == "|".join(str(c) for c in monitoring.blackbox_config(inv)["modules"][
+        monitoring.web_module(inv.monitoring["web"][0])]["http"]["valid_status_codes"])
+
+
+def test_collector_counts_bytes_not_characters(docker, rendered):
+    """log_bytes_total adds each line's size in bytes, what a budget and a disk count: "r1 café ✓" is 9
+    characters and 12 bytes."""
+    line = "r1 café ✓"
+    out = vector_test(rendered, [case("a line's bytes", [line], "seen", f".bytes == {len(line.encode())}", at="seen")],
+                      config=f"{monitoring.host(inv)}/vector.yaml")
+    assert out.returncode == 0 and "... passed" in out.stdout, out.stdout + out.stderr
 
 
 def test_an_unnamed_kind_is_never_cut(docker, rendered, tmp_path):
@@ -110,7 +140,7 @@ def promtool(rendered, tests: list) -> subprocess.CompletedProcess:
     (folder / "rules_test.yml").write_text(yaml.safe_dump(
         {"rule_files": ["rules.yml"], "evaluation_interval": "1m", "tests": tests}, sort_keys=False, width=200))
     return subprocess.run(["docker", "run", "--rm", "-v", f"{folder}:/rules:ro", "-w", "/rules", "--entrypoint", "promtool",
-                           inv.monitoring["images"]["prometheus"], "test", "rules", "rules_test.yml"],
+                           IMAGE["prometheus"], "test", "rules", "rules_test.yml"],
                           capture_output=True, text=True, timeout=120)
 
 

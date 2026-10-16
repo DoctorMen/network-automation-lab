@@ -190,7 +190,7 @@ jobs:
       - name: Synthetic event from every log source (make testevent)
         if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: make testevent
-      - name: Each log source's last 24 h against its daily budget (make ingest, OROS NOT-5)
+      - name: Each log source's bytes since the lab started against its daily budget (make ingest, OROS NOT-5)
         if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: make ingest
       - name: Config drift check (Ansible)

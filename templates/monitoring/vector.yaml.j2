@@ -28,8 +28,9 @@ transforms:
     inputs: [syslog_node, forwarders]
     source: |
       .seen = to_unix_timestamp(now())
-      # Each line's size as it goes to the store: the ingest each source's budget is held to (decision 0026).
-      .bytes = strlen(string!(.message))
+      # Each line's size in bytes as it goes to the store: the ingest each source's budget is held to (decision
+      # 0026). VRL's length() counts a string's bytes; strlen() would count its characters.
+      .bytes = length(string!(.message))
   last_seen:
     type: log_to_metric
     inputs: [seen]

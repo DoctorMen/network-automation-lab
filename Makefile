@@ -43,7 +43,7 @@ testevent:       ## Send a marked line from every log source and show where it a
 alerts:          ## What is firing now, and what the NOC's pager (the webhook sink) has received
 	$(PY) -m netlab.observe alerts
 
-ingest:          ## Each log source's last 24 h at the collector against its daily budget; fails if one is over
+ingest:          ## Each log source's bytes at the collector in the last 24 h (or since the lab started) against its daily budget; fails if one is over
 	$(PY) -m netlab.observe ingest
 
 detections:      ## Write docs/detections.md from the deployed rules; fails on a rule with no row, a blank cell, a stale review
