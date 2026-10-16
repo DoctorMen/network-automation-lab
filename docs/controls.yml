@@ -15,7 +15,8 @@
 # observe-3.xml (the NOC's tests, in three NOC jobs that each deploy the full lab and run one group of
 # test files, the Makefile's OBSERVE_1 to OBSERVE_3) too when that job's own secret scan passed; when
 # any of those four scans failed, the control-status job fails, naming ACC-4. .github/workflows/drills.yml runs the restore and power
-# drills weekly and keeps theirs the same way. The control-status job in ci.yml reads them all. The
+# drills weekly and keeps theirs the same way, but a failed scan there turns only that run red, and
+# control-status then reads the last drill results uploaded. The control-status job in ci.yml reads them all. The
 # four tests that compare a record's date with today (in verdict-log, outside-levers, risk-register
 # and runbooks) run in ci.yml's review job, which neither the lab job nor the nightly heartbeat ping
 # waits for, so a review falling due turns that job red without stopping the live tests, the backup or the ping.

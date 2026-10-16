@@ -48,7 +48,7 @@ runs that overlap can restore the same repository, and then one of their snapsho
    drill tests (`has no result in the evidence`): no drill has run yet.
 3. **One drill run.** `gh workflow run drills.yml --ref main`, or the API with `{"ref": "main"}` and
    no inputs (`init_backup_repo` defaults to false). It must show: job *Restore drill and power-event
-   drill* green, `4 passed` for the restore drill and `1 passed` for the power drill, and a
+   drill* green, `4 passed` for the restore drill and `2 passed` for the power drill, and a
    `drill-results` artifact holding `restore-drill.xml`, `power-drill.xml` and
    `single-item-restore.json` (its `seconds` under `limit_seconds`, 300).
 4. **One more CI run**, as in step 2. Its control-status job must be green and end with `every
