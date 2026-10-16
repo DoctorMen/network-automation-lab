@@ -232,7 +232,9 @@ def test_a_32_bit_wrap_of_the_queue_counter_shows_no_spike(mon, noc):
     queue drop counter that goes 4294967290, 4294967295, 3, 8: 14 drops, with the wrap at 2^32 between the second
     and third. The rule shows 13 (increase() reads the wrap as a reset, so the one drop before it is lost), and 13 is
     the most it ever shows: no jump of about 4.29e9. The alert is quiet before the wrap and clears once it leaves the window.
-    No queue here drops four billion packets, so the counter is made up; the rule and the engine are the real ones."""
+    No queue here drops four billion packets, so the counter is made up; the rule and the engine are the real ones.
+    The rule runs with its summary as its only annotation: the other three (why it fired, what is normal, what
+    changed) query the NOC's own series and are checked by tests/test_alert_context.py."""
     rules = yaml.safe_load((BUILD / mon["host"] / "rules.yml").read_text())["groups"][0]["rules"]
     rule = next(r for r in rules if r["alert"] == "QueueDrops" and r["labels"]["node"] == SERVER)
     series = {"node": SERVER, "device": SHAPED["interface"], "kind": "htb"}
@@ -242,7 +244,7 @@ def test_a_32_bit_wrap_of_the_queue_counter_shows_no_spike(mon, noc):
     # one-minute window holds the whole wrap and starts on a sample, so increase() has nothing to extrapolate.
     values, full = f"{WRAP - 6}x{60 // step} {WRAP - 1} 3 8 8x{300 // step}", 60 + 4 * step
     summary = re.sub(r"\{\{ \$labels\.(\w+) \}\}", lambda m: series[m[1]], rule["annotations"]["summary"])
-    case = {"rule_files": ["/etc/prometheus/rules.yml"], "evaluation_interval": f"{step}s", "tests": [{
+    case = {"evaluation_interval": f"{step}s", "tests": [{
         "interval": f"{step}s",
         "input_series": [{"series": f"node_qdisc_drops_total{labels}", "values": values}],
         "promql_expr_test": [
@@ -254,7 +256,7 @@ def test_a_32_bit_wrap_of_the_queue_counter_shows_no_spike(mon, noc):
             {"eval_time": f"{full}s", "alertname": "QueueDrops",
              "exp_alerts": [{"exp_labels": {**series, **rule["labels"]}, "exp_annotations": {"summary": summary}}]},
             {"eval_time": f"{full + 60 + step}s", "alertname": "QueueDrops", "exp_alerts": []}]}]}
-    out = noc.rule_test(case)
+    out = noc.rule_test(case, rules=[{**rule, "annotations": {"summary": rule["annotations"]["summary"]}}])
     assert out.returncode == 0 and "SUCCESS" in out.stdout, out.stdout + out.stderr
 
 

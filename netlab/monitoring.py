@@ -717,6 +717,8 @@ def expected(inv: Inventory) -> dict:
         "web": inv.monitoring.get("web") or [],
         "reboot_window": inv.monitoring["reboot_window"],
         "sources": log_sources(inv),
+        # Every source the store keeps with its daily budget: the heartbeat sources and each router's command records.
+        "ingest": ingest_sources(inv),
         "heartbeat": inv.logging["heartbeat"],
         "flightrec": FLIGHTREC,
         "on_box": inv.logging["on_box"],

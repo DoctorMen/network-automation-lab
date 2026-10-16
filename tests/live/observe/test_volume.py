@@ -56,13 +56,16 @@ def test_noisy_kind_cut_at_the_source_while_wanted_lines_arrive(node, expected, 
 
 def test_every_source_within_its_budget(mon, noc):
     """Each source's bytes at the collector in the last 24 h (since the lab started, on a lab up less than a day) are
-    under its daily budget, and its LogIngestOverBudget rule is loaded with that budget and quiet."""
+    under its daily budget, and its LogIngestOverBudget rule is loaded with that budget and quiet. A router's command
+    records are held to their budget too; they have no heartbeat, so they may have sent nothing yet, which is no bytes."""
     rules = {(r["labels"].get("node"), r["labels"].get("source")): r for r in noc.rules() if r["name"] == "LogIngestOverBudget"}
     day = {(r["node"], r["source"]): r["value"] for r in noc.query("increase(log_bytes_total[1d])")}
-    for s in mon["sources"]:
+    heartbeat = {(s["node"], s["source"]) for s in mon["sources"]}
+    assert heartbeat < {(s["node"], s["source"]) for s in mon["ingest"]}
+    for s in mon["ingest"]:
         key = (s["node"], s["source"])
         # Prometheus prints the expression back in its own form (1.048576e+06), so the budget is compared as a number.
         assert key in rules and float(rules[key]["query"].rsplit("> ", 1)[1]) == s["budget"], f"{key}: no budget rule for {s['budget']} bytes"
         assert rules[key]["health"] == "ok" and rules[key]["state"] == "inactive", f"{key}: {rules[key]['health']}, {rules[key]['state']}"
-        assert key in day, f"{key}: the collector has counted none of its bytes"
-        assert day[key] <= s["budget"], f"{key}: {day[key]:.0f} bytes in the last 24 h, over its {s['budget']} byte budget"
+        assert key in day or key not in heartbeat, f"{key}: the collector has counted none of its bytes"
+        assert day.get(key, 0) <= s["budget"], f"{key}: {day[key]:.0f} bytes in the last 24 h, over its {s['budget']} byte budget"

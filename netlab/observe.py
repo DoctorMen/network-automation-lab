@@ -133,10 +133,19 @@ class Noc:
     def mail(self) -> list[dict]:
         """The mailbox's newest messages first: {ID, Created (RFC 3339), Subject, ...}."""
         return self.get(monitoring.PORTS["mailbox"], "/api/v1/messages", limit=200)["messages"]
-    def rule_test(self, case: dict) -> subprocess.CompletedProcess:
+    def rule_test(self, case: dict, rules: list | None = None) -> subprocess.CompletedProcess:
         """`promtool test rules` with this case (series made up for it, the expected results), run in the Prometheus
-        sidecar against the rules it has loaded, with the promtool of its own pinned image."""
-        return subprocess.run(["docker", "exec", "-i", f"{self.container}-prometheus", "promtool", "test", "rules", "/dev/stdin"],
+        sidecar with the promtool of its own pinned image: against the rules it has loaded, or against `rules`
+        (a list of rules, written to a file in the sidecar's /tmp) when they are given."""
+        sidecar = f"{self.container}-prometheus"
+        if rules is not None:
+            path = "/tmp/netlab-rule-test.yml"
+            subprocess.run(["docker", "exec", "-i", sidecar, "sh", "-c", f"cat > {path}"], check=True, timeout=30,
+                           input=yaml.safe_dump({"groups": [{"name": "rule-test", "rules": rules}]}, sort_keys=False), text=True)
+            case = {**case, "rule_files": [path]}
+        else:
+            case = {"rule_files": ["/etc/prometheus/rules.yml"], **case}
+        return subprocess.run(["docker", "exec", "-i", sidecar, "promtool", "test", "rules", "/dev/stdin"],
                               input=yaml.safe_dump(case), capture_output=True, text=True, timeout=60)
 
     # The pager
