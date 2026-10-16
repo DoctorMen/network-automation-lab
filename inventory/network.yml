@@ -253,12 +253,15 @@ logging:
   # collector. LogIngestOverBudget pages once a source's last 24 h passes its budget. netlab validate
   # fails if every source at its full budget for the whole retention would not fit store_mb, the disk
   # the NOC sets aside for raw lines. Sized from the benign workload (`make fp-review`), whose operator
-  # runs drift and apply every five minutes: 2.8 times the busiest router's pace there (V-030).
+  # runs drift and apply every five minutes, at about twice the busiest source's pace (V-030). On the
+  # merged wave 2 lab one drift and one apply sent r2 25 KB of syslog and 15 KB of command records, about
+  # 7.3 and 4.3 MB a day at that pace; each command record also reaches the store as syslog, since
+  # syslogd forwards the box's copy.
   budget:
-    store_mb: 1536
-    syslog_kb: 8192       # each router, firewall and server's syslog
+    store_mb: 3584
+    syslog_kb: 16384      # each router, firewall and server's syslog
     nat_kb: 2048          # each NAT router's translation log (decision 0031)
-    accounting_kb: 2048   # each router's command records from its accounting proxy (decision 0029)
+    accounting_kb: 8192   # each router's command records from its accounting proxy (decision 0029)
   # Apps whose own log is forwarded as the app writes it, by a forwarder that doesn't run as root.
   # h2's web server writes an access line per request. `cut` names the kinds of line its forwarder drops
   # before they leave the host (decision 0026): web-check is the NOC's web check of this app (the check's

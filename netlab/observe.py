@@ -340,10 +340,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "ingest":
         rows = ingest(inv, noc)
-        print(f"{'source':<11} {'last 24 h':>11} {'budget':>9} {'used':>5}  pace (last 10 min, as a day)")
+        width = max([len("source")] + [len(f"{r['node']}/{r['source']}") for r in rows])
+        print(f"{'source':<{width}} {'last 24 h':>11} {'budget':>9} {'used':>5}  pace (last 10 min, as a day)")
         for r in rows:
             used = "-" if r["bytes"] is None else f"{100 * r['bytes'] / r['budget']:.0f}%"
-            print(f"{r['node'] + '/' + r['source']:<11} {kb(r['bytes']):>11} {r['budget'] // 1024:>6} KB {used:>5}  {kb(r['pace'])}")
+            print(f"{r['node'] + '/' + r['source']:<{width}} {kb(r['bytes']):>11} {r['budget'] // 1024:>6} KB {used:>5}  {kb(r['pace'])}")
         over = [f"{r['node']}/{r['source']}" for r in rows if r["bytes"] is None or r["bytes"] > r["budget"]]
         print(f"over budget or not counted: {', '.join(over)}" if over else "every source is within its daily budget")
         return 1 if over else 0
