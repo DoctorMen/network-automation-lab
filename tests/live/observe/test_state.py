@@ -2,8 +2,10 @@
 still answers ping pages within the alert's stated bound (expected_state.json monitoring.alert_within).
 Each test also shows the negative: the host kept answering, and no other object of the same kind alerted."""
 import json
+import re
 import subprocess
 import time
+from datetime import datetime
 
 import pytest
 
@@ -189,6 +191,15 @@ def test_web_page_with_the_wrong_content_alerts(node, mon, noc):
     assert wait_resolved(noc, "WebContentWrong", since, 60, node=check["host"]), "no resolved notification"
 
 
+def halfway_between_scrapes(noc, interval, **labels):
+    """Sleep until halfway between two scrapes of this target. Prometheus scrapes a target at a fixed offset,
+    so its last scrape says when the next ones come; a change made here is as far from both as it can be."""
+    target = next(t for t in noc.targets() if all(t["labels"].get(k) == v for k, v in labels.items()))
+    # Prometheus writes nanoseconds; Python reads at most microseconds.
+    last = datetime.fromisoformat(re.sub(r"(\.\d{6})\d*", r"\1", target["lastScrape"]).replace("Z", "+00:00")).timestamp()
+    time.sleep((last + interval / 2 - time.time()) % interval)
+
+
 def test_sub_second_flap_alerts_although_no_scrape_saw_it_down(node, mon, noc):
     """An interface down for 0.3 s between two scrapes: InterfaceFlapped pages from the carrier-change counter,
     though every scrape saw the carrier up; no other interface or router pages."""
@@ -196,6 +207,8 @@ def test_sub_second_flap_alerts_although_no_scrape_saw_it_down(node, mon, noc):
     router, device = "r1", "eth3"
     assert router in mon["exporters"]
     quiet(noc, "InterfaceFlapped", node=router, device=device)
+    # Timed, not left to chance: at a random moment a scrape lands inside the 0.3 s in about 1 run in 17.
+    halfway_between_scrapes(noc, mon["interval"], job="node", node=router)
     since = time.time()
     node(router).run("sh", "-c", f"ip link set {device} down && sleep 0.3 && ip link set {device} up")
     page = wait_alert(noc, "InterfaceFlapped", since, mon["alert_within"]["InterfaceFlapped"] + 5, node=router, device=device)
