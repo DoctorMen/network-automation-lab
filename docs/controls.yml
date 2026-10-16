@@ -1173,8 +1173,9 @@ controls:
       BGP session stays down against a real carrier, and in the lab it came back with no MD5 (RISK-28). In
       drills.yml on GitHub the cut is `containerlab deploy --reconfigure`; in the development sandbox it
       was the stand-in script's whole-lab redeploy (LAB_PARITY.md).
-      On the full lab the NOC's history from before the cut is gone, because Prometheus and the
-      central store keep their data inside their containers (RISK-35). The drill waits up to 240 s
+      On the full lab Prometheus' history from before the cut is gone, because it keeps its data inside
+      its container; the central store keeps its own on the lab host's disk (decision 0025), one copy
+      (RISK-35). The drill waits up to 240 s
       for routing, so it passes through one daemon restart after a startup crash (V-011) and only
       reports the slower time.
 

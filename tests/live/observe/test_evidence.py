@@ -12,7 +12,7 @@ from netlab import secrets
 from netlab.inventory import load
 
 from ..conftest import ROOT, wait_for
-from .conftest import wait_alert
+from .conftest import halfway_between_scrapes, wait_alert
 
 inv = load(ROOT / "inventory" / "network.yml")
 
@@ -47,6 +47,9 @@ def test_a_flap_leaves_a_state_dump_in_the_central_store(node, mon, noc, expecte
                                     for n in (router, server)), timeout=every + 10, interval=2)
     changes = f'node_network_carrier_changes_total{{node="{router}",device="{device}"}}'
     before = noc.value(changes)
+    # Between two scrapes of the router: one that saw the port down would fire its link's cause marker, which
+    # holds this flap's page back for as long as the marker keeps firing (decision 0021).
+    halfway_between_scrapes(noc, mon["interval"], job="node", node=router)
     since = time.time()
     node(router).run("sh", "-c", f"ip link set {device} down && sleep 1 && ip link set {device} up")
     try:

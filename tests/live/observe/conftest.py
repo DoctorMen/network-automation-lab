@@ -4,7 +4,10 @@ and run as `make observe`. The network's tests (`make live`) never need them.
 Every value they compare against comes from expected_state.json's `monitoring` block, generated from the
 inventory. Each test that breaks something puts it back, and checks its alert against the moment it
 broke it: an alert raised before the test started can't count."""
+import re
 import subprocess
+import time
+from datetime import datetime
 
 import pytest
 
@@ -38,6 +41,15 @@ def noc(lab_name, mon):
 def firing(noc, state="firing"):
     """Every alert Prometheus has in this state, except Watchdog, which fires all the time."""
     return noc.firing(state)
+
+
+def halfway_between_scrapes(noc, interval, **labels):
+    """Sleep until halfway between two scrapes of this target. Prometheus scrapes a target at a fixed offset,
+    so its last scrape says when the next ones come; a change made here is as far from both as it can be."""
+    target = next(t for t in noc.targets() if all(t["labels"].get(k) == v for k, v in labels.items()))
+    # Prometheus writes nanoseconds; Python reads at most microseconds.
+    last = datetime.fromisoformat(re.sub(r"(\.\d{6})\d*", r"\1", target["lastScrape"]).replace("Z", "+00:00")).timestamp()
+    time.sleep((last + interval / 2 - time.time()) % interval)
 
 
 def quiet(noc, alert, timeout=90, **labels):

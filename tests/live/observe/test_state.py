@@ -2,15 +2,13 @@
 still answers ping pages within the alert's stated bound (expected_state.json monitoring.alert_within).
 Each test also shows the negative: the host kept answering, and no other object of the same kind alerted."""
 import json
-import re
 import subprocess
 import time
-from datetime import datetime
 
 import pytest
 
 from ..conftest import wait_for
-from .conftest import others_firing, quiet, wait_alert, wait_resolved
+from .conftest import halfway_between_scrapes, others_firing, quiet, wait_alert, wait_resolved
 
 
 def vtysh_conf(node, *lines):
@@ -189,15 +187,6 @@ def test_web_page_with_the_wrong_content_alerts(node, mon, noc):
     finally:
         serve("/")
     assert wait_resolved(noc, "WebContentWrong", since, 60, node=check["host"]), "no resolved notification"
-
-
-def halfway_between_scrapes(noc, interval, **labels):
-    """Sleep until halfway between two scrapes of this target. Prometheus scrapes a target at a fixed offset,
-    so its last scrape says when the next ones come; a change made here is as far from both as it can be."""
-    target = next(t for t in noc.targets() if all(t["labels"].get(k) == v for k, v in labels.items()))
-    # Prometheus writes nanoseconds; Python reads at most microseconds.
-    last = datetime.fromisoformat(re.sub(r"(\.\d{6})\d*", r"\1", target["lastScrape"]).replace("Z", "+00:00")).timestamp()
-    time.sleep((last + interval / 2 - time.time()) % interval)
 
 
 def test_sub_second_flap_alerts_although_no_scrape_saw_it_down(node, mon, noc):

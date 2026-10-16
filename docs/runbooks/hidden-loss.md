@@ -54,7 +54,7 @@ The coordinator knows which of the three it is: our queue (and in which class), 
 
 Helper, for a queue: run from the repo root
 `docker exec clab-<lab>-h2 python3 -c "$(cat tests/live/tools/burst.py)" send 10.20.20.1 9399 3000 200 16`.
-QueueDrops for h2 eth1 pages within 17 s. For a rate limit: on r1,
+QueueDrops for h2 eth1 pages within its bound, 21 s (expected_state.json monitoring.alert_within). For a rate limit: on r1,
 `docker exec clab-<lab>-r1 iptables -I INPUT -i eth3 -p icmp --icmp-type echo-request -j DROP` and
 `docker exec clab-<lab>-r1 iptables -I INPUT -i eth3 -p icmp --icmp-type echo-request -m limit --limit 10/second -j ACCEPT`;
 the same two lines with `-D` take it away. The tests do both: `tests/live/observe/test_loss.py` and

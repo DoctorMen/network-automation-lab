@@ -27,7 +27,7 @@ and so skips what a real power cut does. `<lab>` below is the `name:` in `build/
 
 1. **Power is stable.** No restart in the last 10 minutes. Starting checks during a flap wastes them.
 2. **Every node is running.** `docker ps --filter name=clab-<lab>- --format '{{.Names}} {{.Status}}'`
-   lists the network's 8 nodes, and on a lab with the NOC (`make deploy`) its 12 sidecars too, all
+   lists the network's 8 nodes, and on a lab with the NOC (`make deploy`) its 15 sidecars too, all
    `Up`. A missing one: `make deploy` brings the whole lab back. A sidecar shares its node's network
    namespace ([decision 0018](../decisions/0018-noc-state-checks.md)), so it has to start after its
    node, and again each time its node does: one left running from before its node restarted has no
@@ -55,12 +55,16 @@ and so skips what a real power cut does. `<lab>` below is the `name:` in `build/
    and `docker exec clab-<lab>-h1 ping -c 3 203.0.113.1`.
 7. **Nothing came back different.** `make drift` passes. If someone reports "my fix disappeared",
    it was never in the inventory; it goes in through a pull request, not by typing it again.
-8. **The NOC sees everything again** (a lab with the NOC). `make alerts` says `0 firing` once every
-   source has sent its next heartbeat (up to 60 s): every scrape answers and every log source is
+8. **The NOC sees everything again** (a lab with the NOC). `make alerts` lists nothing firing but
+   Watchdog, the alert path's heartbeat, which always fires ([decision 0022](../decisions/0022-dead-mans-switch.md)),
+   once every source has sent its next heartbeat (up to 60 s): every scrape answers and every log source is
    heard from. Expect pages from the restart itself that resolve by themselves: in the drill here
    TargetDown, SourceSilent, OSPFNeighborDown, BFDPeerDown, BGPSessionDown and WebContentWrong.
-   Prometheus and the central log store start empty in the lab, because their data is inside their
-   containers ([RISK-35](../risks.yml)), so the NOC's history from before the cut is gone.
+   Prometheus and the pushgateway start empty in the lab, because their data is inside their
+   containers, so the NOC's metric history from before the cut is gone. So are the commit `make apply`
+   last applied, which step 3 records again, and each job's last success, which comes back when the job
+   next runs ([RISK-44](../risks.yml)). The central log store keeps its data on the lab host's disk
+   ([decision 0025](../decisions/0025-flight-recorder.md)), one copy ([RISK-35](../risks.yml)).
 
 ## Done when
 
