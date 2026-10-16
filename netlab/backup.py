@@ -173,7 +173,7 @@ def run(inv: Inventory, lab: str, repo: Path, password_file: Path, capture: Path
         raise BackupError(problems)
     for f, digest in captured.items():
         print(f"  {f:<10} sha256 {digest[:16]}  same at the destination")
-    print(f"verified snapshot {snapshot[:8]}: {len(files)} files, every inventory device, no secret in clear "
+    print(f"verified snapshot {snapshot[:8]}: {len(files)} files, every router and rule set, no secret in clear "
           f"({len(values)} searched for), restic check --read-data clean")
     return captured
 

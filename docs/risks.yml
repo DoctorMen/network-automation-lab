@@ -24,8 +24,7 @@
     internet, and LAN-A to LAN-B traffic while the r1-r3 link is down, which runs through r2. Likelihood
     is low because one carrier peer sends one /24. isp has the same line; it is the carrier stand-in's
     config, not ours. The fix is an inbound prefix-list on r2 allowing the carrier's /24 and a default.
-  compensating_control: tests/live/test_secrets.py::test_bgp_session_uses_its_secret_and_a_wrong_one_drops_it
-  compensates: TCP MD5 means only the carrier's own router can send r2 routes; a spoofed peer can't
+  compensating_control: none (nothing limits what the real carrier sends. A leak or an upstream hijack arrives over the authenticated session, so MD5, tests/live/test_secrets.py::test_bgp_session_uses_its_secret_and_a_wrong_one_drops_it, stops only a spoofed peer. Accepted on likelihood, one peer sending one /24)
   owner: DoctorMen
   review_by: 2027-01-15
   presented_to: pending

@@ -47,7 +47,7 @@ failure_modes:
     test: none (accepted risk RISK-16 in docs/risks.yml; the vetting delay is a lab value)
   - mode: a production router fails the gate
     mitigation: every router of the batch runs the gate, so all of them roll back, and any_errors_fatal stops the play
-    test: none (checked by hand in the lab once, not in the suite to save CI time. r2 lost its OSPF link to r1, and r2, r3 and isp all went back to their exact pre-change config)
+    test: none (checked by hand in the lab once, not in the suite to save CI time, and before decision 0016 made the save and the rollback go through the redacting vtysh. r2 lost its OSPF link to r1, and r2, r3 and isp all went back to their exact pre-change config)
   - mode: one production router fails a step other than the gate (frr-reload.py's apply, the BGP password task, or the compare with intent) and the others don't
     mitigation: >-
       Accepted risk. That router rolls back and any_errors_fatal ends the play, but the other routers in its batch

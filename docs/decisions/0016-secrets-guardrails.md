@@ -7,7 +7,7 @@ decider: DoctorMen
 constraint: "No GitHub secret, no vault and no paid secret scanning (personal public repo); FRR 8.4.1 prints BGP passwords in clear in `show running-config` and offers only TCP MD5; routers are reached only through docker exec; backups/ and results/ are uploaded as CI artifacts"
 alternatives:
   - name: do nothing
-    why_not: With no BGP password there is nothing to leak and nothing proved. Once one exists it lands in backups/r2.conf, drift's failure message, frr-reload.log and Ansible's temp files on the routers (each seen in this build before the fix), and gitleaks' default rules miss every one of them
+    why_not: With no BGP password there is nothing to leak and nothing proved. Once one exists it lands in backups/r2.conf, drift's failure message, frr-reload.log and Ansible's temp files on the routers (each seen in the lab before this decision), and gitleaks' default rules miss every one of them
   - name: render the password into build/r2/frr.conf
     why_not: build/ is the intent every tool reads and the router mounts; the password would be a plaintext file in the one folder that must be safe to print, diff and upload
   - name: a GitHub Actions secret

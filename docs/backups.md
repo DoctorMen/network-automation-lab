@@ -41,7 +41,7 @@ the cache the one before saved. Each can be started from the Actions tab (Run wo
 2. **One CI run with a backup.** `gh workflow run ci.yml --ref main`, or the API with
    `{"ref": "main"}` (the nightly run does the same). It must show, in the lab job: *Restore the
    backup repository* finds `restic-<run id of step 1>-1`, *Back up configs* ends with `verified
-   snapshot ...: 7 files, every inventory device, no secret in clear (1 searched for), restic check
+   snapshot ...: 7 files, every router and rule set, no secret in clear (1 searched for), restic check
    --read-data clean`, and *Keep the
    repository* saves a new `restic-<run id>-1`, which *Check the repository reached the cache* finds. Its control-status job is still red, naming only the
    drill tests (`has no result in the evidence`): no drill has run yet.
