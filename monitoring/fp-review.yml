@@ -1,10 +1,10 @@
 # Written by `make fp-review` (netlab/detections.py, decision 0027). Do not edit by hand.
 reviewed: 2026-10-16
-started: '2026-10-16T10:28:44Z'
+started: '2026-10-16T16:26:35Z'
 minutes: 30
 settle: 120
 environment: sandbox
-commit: b4771ab
+commit: bbf3a69
 workload:
 - every 30 s, a user on h1 loads h2's page
 - every 10 s, h1 pings h2
@@ -40,9 +40,17 @@ steps:
     runs: 6
     failed: 0
 detections:
+  NodeDown:
+    objects: 5
+    rules: 08a6c0500515
+    pages: 0
+  LinkDown:
+    objects: 6
+    rules: 279285512afe
+    pages: 0
   TargetDown:
-    objects: 1
-    rules: 0e20977b76cd
+    objects: 11
+    rules: 42bbab8d3e24
     pages: 0
   BGPSessionDown:
     objects: 1
@@ -61,47 +69,83 @@ detections:
     rules: 5d98393134cc
     pages: 0
   InterfaceFlapped:
-    objects: 3
-    rules: eee3f1c2da7f
+    objects: 10
+    rules: cb7f9e19340b
+    pages: 0
+  QueueDrops:
+    objects: 4
+    rules: 18124ca16414
     pages: 0
   PendingRebootOverdue:
-    objects: 1
-    rules: 06c48a2978c1
+    objects: 3
+    rules: b7c6196d727c
+    pages: 0
+  UnexpectedAdmin:
+    objects: 3
+    rules: 7a8456efd92e
     pages: 0
   SourceSilent:
-    objects: 6
-    rules: 184260fd8ee8
+    objects: 7
+    rules: 6a44c37e57c7
     pages: 0
   LogIngestOverBudget:
-    objects: 6
-    rules: 1245d66c5c04
+    objects: 10
+    rules: d3309dd38d31
+    pages: 0
+  JobMissed:
+    objects: 4
+    rules: ab9ba0d3ede6
+    pages: 0
+  Watchdog:
+    objects: 1
+    rules: 7c978d4c5d4c
+    pages: 0
+  AlertPathSilent:
+    objects: 1
+    rules: e41e07138ca1
     pages: 0
 pages: []
 ingest:
   r1/syslog:
-    bytes: 51338
-    per_day: 2468345
-    budget: 8388608
+    bytes: 104128
+    per_day: 5006483
+    budget: 16777216
   r2/syslog:
-    bytes: 63378
-    per_day: 3047200
-    budget: 8388608
+    bytes: 152796
+    per_day: 7346455
+    budget: 16777216
   r3/syslog:
-    bytes: 60948
-    per_day: 2930380
-    budget: 8388608
+    bytes: 114003
+    per_day: 5481274
+    budget: 16777216
   fw1/syslog:
-    bytes: 11087
-    per_day: 533081
-    budget: 8388608
+    bytes: 11327
+    per_day: 544585
+    budget: 16777216
   h2/syslog:
     bytes: 1472
     per_day: 70757
-    budget: 8388608
+    budget: 16777216
   h2/http:
-    bytes: 5447
-    per_day: 261895
+    bytes: 5508
+    per_day: 264832
     budget: 524288
+  r2/nat:
+    bytes: 40826
+    per_day: 1962941
+    budget: 2097152
+  r1/accounting:
+    bytes: 52785
+    per_day: 2537898
+    budget: 8388608
+  r2/accounting:
+    bytes: 89172
+    per_day: 4287413
+    budget: 8388608
+  r3/accounting:
+    bytes: 52813
+    per_day: 2539245
+    budget: 8388608
 cut:
   h2/http:
     web-check: 360
