@@ -27,7 +27,7 @@ and so skips what a real power cut does. `<lab>` below is the `name:` in `build/
 
 1. **Power is stable.** No restart in the last 10 minutes. Starting checks during a flap wastes them.
 2. **Every node is running.** `docker ps --filter name=clab-<lab>- --format '{{.Names}} {{.Status}}'`
-   lists the network's 8 nodes, and on a lab with the NOC (`make deploy`) its 15 sidecars too, all
+   lists the network's 8 nodes, and on a lab with the NOC (`make deploy`) its 16 sidecars too, all
    `Up`. A missing one: `make deploy` brings the whole lab back. A sidecar shares its node's network
    namespace ([decision 0018](../decisions/0018-noc-state-checks.md)), so it has to start after its
    node, and again each time its node does: one left running from before its node restarted has no
