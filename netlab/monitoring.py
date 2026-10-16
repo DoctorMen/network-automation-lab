@@ -311,6 +311,13 @@ def per_object(metric: str, keys: dict, test: str) -> str:
     return f"max by ({', '.join(keys)}) ({metric}{sel} {test}) or absent({metric}{sel})"
 
 
+def after_link_down(inv: Inventory) -> int:
+    """Seconds after LinkDown last fired that the flap ending its outage stays quiet: the counter keeps the
+    change for FLAP_WINDOW after the carrier is back, LinkDown's last firing evaluation can be an interval
+    before that, and one interval of margin."""
+    return FLAP_WINDOW + 2 * inv.monitoring["interval"]
+
+
 def keep_firing(inv: Inventory) -> int:
     """Seconds a cause's marker keeps firing after its signal recovers, still holding back what depends on
     it: the slowest dependent to recover is a log source's SourceSilent, which clears on its next heartbeat.
@@ -355,8 +362,9 @@ def alert_rules(inv: Inventory) -> list[dict]:
             labels = {**target_labels(inv, r), "job": job, **({"cause": cid} if cid in model.causes else {}), "deps": model.label({r})}
             rules.append(rule(inv, "TargetDown", f"{signal} == 0", labels, f"{job} on {r} does not answer its scrape",
                               signal, "== 0", "1"))
-    # The NOC's own services: one rule per job, since every target of a blackbox job is one exporter.
-    for job in ("web", "icmp", "logs", "pushgateway"):
+    # The NOC's own services: one rule per scrape job besides the routers' exporters, since every target of a
+    # blackbox job is one exporter. Read from the scrape config, so a job added there gets its rule too.
+    for job in dict.fromkeys(j["job_name"] for j in prometheus_config(inv)["scrape_configs"] if j["job_name"] not in EXPORTERS):
         signal = f"min(up{selector(job=job)})"
         labels = {"job": job, **({"cause": logs} if job == "logs" else {}), "deps": "/"}
         rules.append(rule(inv, "TargetDown", f"{signal} == 0", labels, f"the NOC's {job} job does not answer its scrape",
@@ -399,13 +407,19 @@ def alert_rules(inv: Inventory) -> list[dict]:
         for ep in inv.interfaces(r):
             # The carrier-change counter catches a flap shorter than a scrape, which a state poll misses. It
             # fires once the carrier is back: a link still down is LinkDown's page, not a flap.
+            # Its deps are the router and what is in front of it, never its own link: a scrape that sees the
+            # flap fires the link's marker, which would hold back the only page a short outage raises. A link
+            # down long enough for LinkDown to fire has had its page, so the flap that ends it adds none.
             keys = {"node": r, "device": ep.interface}
             signal = f"increase(node_network_carrier_changes_total{selector(**keys)}[{FLAP_WINDOW}s])"
-            rules.append(rule(inv, "InterfaceFlapped", f"{signal} > 0 and node_network_carrier{selector(**keys)} == 1",
-                              {**target_labels(inv, r), "device": ep.interface,
-                               "deps": model.label({r, *model.link_objects(link_at(inv, r, ep.interface))})},
-                              f"{r} {ep.interface} lost carrier in the last {FLAP_WINDOW} s", signal,
-                              "> 0 with the carrier back up", "0"))
+            expr, condition = f"({signal} > 0 and node_network_carrier{selector(**keys)} == 1)", "> 0 with the carrier back up"
+            lid = link_id(link_at(inv, r, ep.interface))
+            if lid in model.causes:
+                linkdown = f"ALERTS{selector(alertname='LinkDown', alertstate='firing', cause=lid)}"
+                expr += f" unless on() max_over_time({linkdown}[{after_link_down(inv)}s])"
+                condition += f", and no LinkDown for its link in the last {after_link_down(inv)} s"
+            rules.append(rule(inv, "InterfaceFlapped", expr, {**target_labels(inv, r), "device": ep.interface, "deps": model.label({r})},
+                              f"{r} {ep.interface} lost carrier in the last {FLAP_WINDOW} s", signal, condition, "0"))
     window = mon["reboot_window"]
     for r in exporter_routers(inv):
         signal = f"time() - node_reboot_required_since_seconds{selector(node=r)}"

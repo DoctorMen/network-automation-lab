@@ -65,8 +65,9 @@ collectors:
     after_push: [netlab_job_last_success_timestamp_seconds]
   up:
     exporter: Prometheus itself
-    reads: whether each scrape above answered
-    metrics: [up]
+    reads: whether each scrape above answered, and which of its own alerts fire (ALERTS, read by InterfaceFlapped
+      so the flap that ends a link outage LinkDown paged for doesn't page again)
+    metrics: [up, ALERTS]
 
 # Programs that change a device and read nothing from it (the lint counts them as actions, not reads).
 actions: [kill, mkdir, rm, cp, mv, touch, umask, seq, sleep, diff, logger, frr-reload.py, watchfrr.sh]

@@ -8,14 +8,18 @@ from netlab import monitoring, silence
 from netlab.inventory import load
 
 from ..conftest import ROOT, wait_for
-from .conftest import quiet, wait_alert, wait_resolved
+from .conftest import halfway_between_scrapes, quiet, wait_alert, wait_resolved
 
 # Links to a host, not to a router: no routing adjacency rides on them, so a 0.3 s flap moves no route.
 SILENCED, OTHER = ("r1", "eth3"), ("r3", "eth3")
 
 
-def flap(node, router, device):
+def flap(node, noc, interval, router, device):
+    """Down for 0.3 s halfway between two scrapes of the router, so no scrape sees it down; returns when."""
+    halfway_between_scrapes(noc, interval, job="node", node=router)
+    at = time.time()
     node(router).run("sh", "-c", f"ip link set {device} down && sleep 0.3 && ip link set {device} up")
+    return at
 
 
 def test_a_silenced_flap_still_pages_on_another_router_and_after_the_silence_ends(node, mon, noc):
@@ -23,21 +27,22 @@ def test_a_silenced_flap_still_pages_on_another_router_and_after_the_silence_end
     within = mon["alert_within"]["InterfaceFlapped"]
     for r, d in (SILENCED, OTHER):
         quiet(noc, "InterfaceFlapped", node=r, device=d)
-    # Long enough for the silenced alert to fire and resolve inside it (its window and two evaluations).
+    # Long enough for the silenced alert to fire and resolve inside it (up to an interval's wait for the flap,
+    # its window and two evaluations).
     now = datetime.now(timezone.utc)
     entry = {"alert": "InterfaceFlapped", "labels": {"node": SILENCED[0], "device": SILENCED[1]},
-             "starts": now, "ends": now + timedelta(seconds=monitoring.FLAP_WINDOW + 4 * mon["interval"]),
+             "starts": now, "ends": now + timedelta(seconds=monitoring.FLAP_WINDOW + 5 * mon["interval"]),
              "reason": "a live test flaps this port on purpose and silences only it", "ref": "0020",
              "by": "tests/live/observe/test_silence.py"}
     assert silence.problems(entry, inv, silence.known_refs()) == [], "make silence would refuse this silence"
     [(_, sid)] = silence.apply([entry], noc)
     since = time.time()
     try:
-        for r, d in (SILENCED, OTHER):
-            flap(node, r, d)
-        page = wait_alert(noc, "InterfaceFlapped", since, within + 5, node=OTHER[0], device=OTHER[1])
+        flap(node, noc, mon["interval"], *SILENCED)
+        other = flap(node, noc, mon["interval"], *OTHER)
+        page = wait_alert(noc, "InterfaceFlapped", other, within + 5, node=OTHER[0], device=OTHER[1])
         assert page, f"the same flap on {OTHER[0]} {OTHER[1]}, which the silence doesn't cover, did not page"
-        assert page["received"] - since <= within + 2
+        assert page["received"] - other <= within + 2
         held = wait_for(lambda: [a for a in noc.am_alerts(alertname="InterfaceFlapped", node=SILENCED[0], device=SILENCED[1])
                                  if sid in a["status"]["silencedBy"]], timeout=within, interval=1)
         assert held, "the silenced flap never reached Alertmanager, so the silence proves nothing"
@@ -50,8 +55,7 @@ def test_a_silenced_flap_still_pages_on_another_router_and_after_the_silence_end
         assert not wait_alert(noc, "InterfaceFlapped", since, 1, node=SILENCED[0], device=SILENCED[1]), \
             "the silenced flap paged anyway"
         # Replayed after the silence ended, the same flap on the same interface pages.
-        again = time.time()
-        flap(node, *SILENCED)
+        again = flap(node, noc, mon["interval"], *SILENCED)
         page = wait_alert(noc, "InterfaceFlapped", again, within + 5, node=SILENCED[0], device=SILENCED[1])
         assert page, f"after its silence ended, a flap on {SILENCED[0]} {SILENCED[1]} did not page"
         assert page["received"] - again <= within + 2

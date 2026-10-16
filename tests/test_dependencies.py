@@ -39,6 +39,15 @@ def test_dependencies_come_from_the_inventory_graph():
         assert {"r1", "r3", "r1:eth2-r3:eth2", "frr@r1"} <= deps(r)
 
 
+def test_a_flap_is_never_held_back_by_its_own_link():
+    """A scrape that sees a short outage fires the link's marker, and its LinkDown needs 10 s to page: a flap
+    behind its own link would then page nothing. Each flap lists its router and what is in front of it."""
+    for r in rules("InterfaceFlapped"):
+        link = monitoring.link_id(monitoring.link_at(inv, r["labels"]["node"], r["labels"]["device"]))
+        assert link not in deps(r), r["labels"]
+        assert deps(r) == deps(rules("NodeDown", node=r["labels"]["node"])[0]) | {r["labels"]["node"]}, r["labels"]
+
+
 def test_every_alert_lists_only_causes_and_every_cause_has_one_inhibit_rule(tmp_path):
     render_all(inv, tmp_path)
     am = yaml.safe_load((tmp_path / monitoring.host(inv) / "alertmanager.yml").read_text())
