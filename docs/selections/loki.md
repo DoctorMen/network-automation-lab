@@ -37,4 +37,4 @@ Loki on noc, fed only by the collector (Vector), with each stream labelled by no
 
 ## Consequences
 
-Its store is the noc container's own filesystem: it outlasts the boxes' rotation but not a redeploy of the lab, and there is one copy (accepted as RISK-34 in docs/risks.yml). AGPLv3 matters only if Loki is changed and offered to others; the lab runs it unmodified. Loki answers on 127.0.0.1 only, so searching it means a shell on noc.
+Its store is a folder on the lab host's disk, bound into the container (decision 0025): it outlasts the boxes' rotation and a redeploy of the lab, and there is one copy (accepted as RISK-34 in docs/risks.yml). AGPLv3 matters only if Loki is changed and offered to others; the lab runs it unmodified. Loki answers on 127.0.0.1 only, so searching it means a shell on noc.

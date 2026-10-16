@@ -213,6 +213,17 @@ def test_a_reset_queue_counter_is_flagged_and_pages_nobody(node, mon, noc):
     assert not [x for x in noc.notifications(since, alertname="QueueDrops", node=SERVER) if x["status"] == "firing"], "a reset paged"
 
 
+def test_the_servers_exporter_answers_the_noc_and_nobody_out_of_scope(node, mon, expected):
+    """h2's node_exporter, on the toy payments segment, answers the NOC, and every out-of-scope device (h1 behind fw1,
+    the carrier's router behind r2's WAN filter) finds its port closed, as it finds every port h2 doesn't publish."""
+    outside = sorted({t["src"] for t in expected["segmentation"]})
+    assert mon["servers"] and outside
+    for server, e in mon["servers"].items():
+        assert node(mon["host"]).tcp_open(e["address"], e["port"]), f"the NOC can't reach {server}'s exporter"
+        reached = [src for src in outside if node(src).tcp_open(e["address"], e["port"])]
+        assert not reached, f"{server}'s exporter answers {reached}, which are out of scope"
+
+
 def test_each_metric_is_the_type_its_exporter_declares(noc):
     """monitoring/coverage.yml says each metric is a counter or a gauge; the exporters' own TYPE lines, as Prometheus
     read them, agree. node_exporter's netstat collector declares its kernel counters untyped, and the file says so."""

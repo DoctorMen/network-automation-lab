@@ -169,3 +169,23 @@
     - "Prometheus history for that run (query_range, 1 s step, times from BFD going down): frr_bfd_peer_state{node=\"r1\",peer=\"10.0.12.1\"} missing from about +3 s to +14 s, then 0; frr_ospf_neighbor_adjacencies{iface=\"eth1\"} 0 at +4 s, 1 at +14 s; ALERTS pending from +8 s to +17 s, then a second pending series from +18 s, firing at +28 s. FRR deletes the session when OSPF drops the adjacency and adds it back, still down, when OSPF re-forms"
     - "The rule was `frr_bfd_peer_state{...} != 1 or absent(...)`: the series half keeps the target's labels (job, instance, owner, role), absent() gives node and peer only, so the alert changed identity when the series came back and its 10 s `for` started again"
   fixed_in: "decision 0018 (build/w2base, not yet committed): every per-object rule is `max by (<the object's keys>) (... ) or absent(...)`, so both halves label the alert alike, and owner and role are rule labels; tests/test_monitoring.py::test_an_alert_keeps_its_identity_while_its_series_comes_and_goes"
+
+- id: V-025
+  opened: 2026-10-16
+  version: the lab host's kernel (Linux 6.18), prom/node-exporter:v1.8.2, frrouting/frr:v8.4.1 (iproute2 5.15)
+  symptom: h2 eth1's transmit drop counter stayed at 0 while its HTB queue dropped most of a burst
+  verdict: normal-behaviour
+  evidence:
+    - "2026-10-16, lab na11: 3000 datagrams of 200 bytes from h2 to r3 in 9 ms; r3 received 1098, `tc -s qdisc` on h2 counted 1902 dropped, node_network_transmit_drop_total{node=\"h2\",device=\"eth1\"} stayed 0"
+    - "The interface's tx_dropped counts packets the driver could not send, after the queue; a packet the queue refuses never reaches the driver. tests/live/observe/test_loss.py::test_a_microburst_the_average_hides_is_traced_to_its_queue checks both on every observe run"
+  workaround: the queue's own counter is collected (node_exporter's qdisc collector) and pages as QueueDrops (decision 0023)
+
+- id: V-026
+  opened: 2026-10-16
+  version: the lab host's kernel (Linux 6.18), frrouting/frr:v8.4.1 (Python 3 on Alpine)
+  symptom: send() succeeded for all 3000 datagrams of a burst from h2, and h2's Udp OutDatagrams rose by only the 1113 that arrived
+  verdict: normal-behaviour
+  evidence:
+    - "2026-10-16, lab na11, /proc/net/snmp on h2 around one burst: OutDatagrams +1113, SndbufErrors +1887; `tc -s qdisc` on h2 counted 1887 dropped; r3 received 1113"
+    - "A datagram the sender's own queue drops makes the kernel return ENOBUFS internally; without IP_RECVERR the socket hides it from send() and counts it under SndbufErrors instead of OutDatagrams (udp(7))"
+  workaround: the test counts what was sent with its own sender and what arrived with a receiver, never the sender's OutDatagrams; monitoring/coverage.yml says what OutDatagrams counts
