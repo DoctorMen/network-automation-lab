@@ -128,14 +128,17 @@ def test_only_a_listed_job_can_report():
 
 
 def test_only_a_scheduled_run_that_passed_pings_the_outside_check():
-    """The nightly run pings HEARTBEAT_URL/nightly after every job it runs has passed, and each job's own
-    success reaches the outside check on scheduled runs only: a push or a pull request never stands in for
-    a night that didn't run."""
+    """The nightly run pings HEARTBEAT_URL/nightly once every job it runs has passed, the dated reviews' job
+    aside, and each job's own success reaches the outside check on scheduled runs only: a push or a pull
+    request never stands in for a night that didn't run."""
     flows = {p.name: yaml.safe_load(p.read_text()) for p in (ROOT / ".github" / "workflows").glob("*.yml")}
     ci = flows["ci.yml"]["jobs"]
     beat = ci["heartbeat"]
     assert beat["if"] == "${{ github.event_name == 'schedule' }}", "a status function in `if` would let it ping after a failure"
-    assert set(beat["needs"]) == set(ci) - {"heartbeat", "control-status"}
+    # Every job but the review job: a dated review falling due turns that job red on purpose, and must stop
+    # neither the live tests, the backup nor this ping.
+    assert set(beat["needs"]) == set(ci) - {"heartbeat", "control-status", "review"}
+    assert "review" not in beat["needs"], "a review falling due would stop the outside ping"
     assert '"$HEARTBEAT_URL/nightly"' in beat["steps"][-1]["run"]
     gated = "${{ github.event_name == 'schedule' && secrets.HEARTBEAT_URL || '' }}"
     for j in JOBS:

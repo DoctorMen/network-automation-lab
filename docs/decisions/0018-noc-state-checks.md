@@ -73,7 +73,7 @@ netlab/monitoring.py writes every scrape target and rule into build/noc/ from th
 
 monitoring/coverage.yml is the NOT-2 list, for FRR 8.4.1, frr_exporter 1.3.1 and node_exporter 1.8.2: every read found in tests/live, netlab, ansible and docs/runbooks, marked exported, derived or gap. `make coverage` (and `make test`) fail on a read, a scrape job or a rule metric it doesn't list. FRR values come from FRR's JSON over its vty sockets, the documented machine interface; nothing parses CLI text.
 
-CI's lab job deploys the network alone (`make deploy-network`: containerlab --node-filter with the inventory's devices), so it pulls one image and runs the tests it ran before. A new observe job, in parallel, deploys the full lab and runs only tests/live/observe (`make observe`), then `make testevent`, `make drift` and the RAM measurement.
+CI's lab job deploys the network alone (`make deploy-network`: containerlab --node-filter with the inventory's devices), so it pulls one image and runs the tests it ran before. A new observe job, in parallel, deploys the full lab and runs only tests/live/observe (`make observe`), then `make testevent`, `make drift` and the RAM measurement. Wave 2's tests made that one job too long, so it became three NOC jobs, observe-1 to observe-3, each deploying the full lab and running one group of test files (`make observe OBSERVE_GROUP=n`): `make testevent` runs in observe-1, and `make ingest`, `make drift` and the RAM measurement in observe-3.
 
 ## Consequences
 

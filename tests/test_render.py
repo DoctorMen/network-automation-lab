@@ -108,7 +108,7 @@ def test_render_is_deterministic(tmp_path):
 
 def test_ci_pulls_the_image_the_inventory_names():
     """CI deploys the images the inventory records, so the live version checks test the real thing: the lab
-    job the router image, the observe job every image the full lab runs (`netlab images`). The drills
+    job the router image, each of the three NOC jobs every image the full lab runs (`netlab images`). The drills
     workflow, which runs on the full lab too, pulls the same list, and exactly the restic image
     netlab.backup runs."""
     ci = yaml.safe_load((INVENTORY.parents[1] / ".github" / "workflows" / "ci.yml").read_text())
@@ -119,8 +119,11 @@ def test_ci_pulls_the_image_the_inventory_names():
                          if line.strip().startswith("docker pull")] for job in drills}
     assert drill_pulls == {"backup-init": [RESTIC_IMAGE], "drills": [RESTIC_IMAGE]}
     assert pulls == [inv.platform["image"]]
-    observe = [step["run"] for step in ci["jobs"]["observe"]["steps"] if "netlab images" in step.get("run", "")]
-    assert observe and "docker pull" in observe[0], "the observe job doesn't pull what `netlab images` lists"
+    noc = [job for job in ci["jobs"] if job.startswith("observe")]
+    assert noc == ["observe-1", "observe-2", "observe-3"]
+    for job in noc:
+        observe = [step["run"] for step in ci["jobs"][job]["steps"] if "netlab images" in step.get("run", "")]
+        assert observe and "docker pull" in observe[0], f"{job} doesn't pull what `netlab images` lists"
     drill_images = [line for step in drills["drills"]["steps"] for line in step.get("run", "").splitlines() if "netlab images" in line]
     assert drill_images and "docker pull" in drill_images[0], "the drills job doesn't pull what `netlab images` lists"
 

@@ -104,7 +104,7 @@ jobs:
           # Masked: if a value ever reached this log, GitHub would print *** instead. echo is a shell
           # builtin, so the value is on no command line.
           for f in "$RUNNER_TEMP"/netlab-secrets/*; do echo "::add-mask::$(cat "$f")"; done
-      - name: Deploy the network (no NOC sidecars; the observe job runs those)
+      - name: Deploy the network (no NOC sidecars; the three NOC jobs run those)
         id: deploy
         # The inventory's own nodes only (--node-filter from `netlab nodes`), so this job pulls one image
         # and starts what it always started, plus the NOC's host. Decision 0018.
@@ -211,14 +211,18 @@ jobs:
         if: always()
         run: make destroy || true
 
-  observe:
-    name: Deploy the full lab and test the NOC (alerts, log arrival, central store)
-    # In parallel with the lab job, on its own runner: the same network plus the NOC's sidecars
-    # (decisions 0018 and 0019), and only the tests in tests/live/observe, which take links, sessions and
-    # log sources down on purpose. The RAM measurement moved here: it reads the full lab.
+  # The NOC's tests (tests/live/observe) in three groups of about equal time, so that no job runs long: the
+  # Makefile's OBSERVE_1, OBSERVE_2 and OBSERVE_3 name each group's test files, and `make observe` with no
+  # OBSERVE_GROUP still runs them all. Each job runs in parallel with the lab job, on its own runner, with
+  # the full lab: the same network plus the NOC's sidecars (decisions 0018 and 0019). Their tests take
+  # links, sessions and log sources down on purpose. Each job's own secret scan gates its own uploads.
+  # make testevent runs in observe-1 alone; make ingest, make drift and the RAM measurement run in observe-3
+  # alone, after the tests that change the routers' config most (the command records' drift test).
+  observe-1:
+    name: "NOC tests 1 of 3: BGP, OSPF, BFD and web state, log arrival, the central store and coverage"
     needs: offline
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 20
     outputs:
       secret_scan: ${{ steps.secret-scan.outcome }}
     env:
@@ -243,16 +247,160 @@ jobs:
       - name: Deploy (network and NOC)
         id: deploy
         run: make deploy
-      - name: NOC tests (NOT-1 state alerts, NOT-2 coverage, NOT-3 arrival, NOT-5 volume, NOT-6 detections, NOT-7 central store)
-        run: make observe  # also writes results/observe.xml (JUnit, timestamped)
+      - name: "NOC tests, group 1: BGP, OSPF, BFD and web state, log arrival, the central store and coverage"
+        run: make observe OBSERVE_GROUP=1  # also writes results/observe-1.xml (JUnit, timestamped)
       - name: Synthetic event from every log source (make testevent)
         if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: make testevent
+      - name: Secret scan of this run's results, backups, build/ and the central log store
+        id: secret-scan
+        # Last, so it sees every file this job uploads and every line it sent to Loki, and the uploads below
+        # run only when it passed. grep: as in the lab job, as root, and only exit 1 (no match) is clean.
+        if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
+        run: |
+          make gitleaks
+          for f in "$NETLAB_SECRETS"/*; do
+            rc=0; sudo -n grep -rlF -f "$f" $(ls -d backups results build 2>/dev/null) || rc=$?
+            if [ "$rc" != 1 ]; then echo "::error::this run's BGP password is in the files above, or a file could not be read (grep exit $rc)"; exit 1; fi
+          done
+          python3 -m pytest -q -p no:cacheprovider tests/live/observe/test_central_store.py::test_no_secret_in_the_central_store
+      - name: Show routing tables, processes and FRR's logs on failure
+        if: failure()
+        run: |
+          for r in r1 r2 r3 isp; do
+            echo "=== $r"; docker exec clab-netauto-$r vtysh -c "show ip route" -c "show ip ospf neighbor" -c "show bfd peers brief" -c "show bgp summary" || true
+            echo "--- $r processes"; docker exec clab-netauto-$r ps -o pid,args || true
+            # As in the lab job: the start script's own output, then the daemons' syslog lines on the box.
+            echo "--- $r start script (docker logs)"; docker logs --tail 60 clab-netauto-$r 2>&1 || true
+            echo "--- $r FRR's daemons (/var/log/messages)"; docker exec clab-netauto-$r tail -n 80 /var/log/messages || true
+          done
+          docker exec clab-netauto-fw1 iptables -vnL FORWARD || true
+          docker exec clab-netauto-r2 sh -c 'iptables -vnL; iptables -t raw -vnL' || true
+      - name: What the NOC fired and paged, on failure
+        if: failure()
+        run: make alerts || true
+      - name: Upload test results
+        if: ${{ always() && steps.secret-scan.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: observe-1-results
+          path: |
+            results/
+            backups/
+          if-no-files-found: ignore
+          retention-days: 90
+      - name: Destroy
+        if: always()
+        run: make destroy || true
+
+  observe-2:
+    name: "NOC tests 2 of 3: alert quality: outages, flaps under a silence and the dead man's switches"
+    needs: offline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      secret_scan: ${{ steps.secret-scan.outcome }}
+    env:
+      CLAB_VERSION: "0.68.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt -r requirements-ansible.txt
+      - name: Install Containerlab
+        run: bash -c "$(curl -sL https://get.containerlab.dev)" -- -v "$CLAB_VERSION"
+      - name: Pull every image the full lab runs (the inventory's pinned tags)
+        run: python3 -m netlab images | xargs -n1 docker pull
+      - name: Create this run's BGP password
+        # As in the lab job: a new random one per run, masked, outside the checkout (decision 0016).
+        run: |
+          echo "NETLAB_SECRETS=$RUNNER_TEMP/netlab-secrets" >> "$GITHUB_ENV"
+          NETLAB_SECRETS="$RUNNER_TEMP/netlab-secrets" make secrets
+          for f in "$RUNNER_TEMP"/netlab-secrets/*; do echo "::add-mask::$(cat "$f")"; done
+      - name: Deploy (network and NOC)
+        id: deploy
+        run: make deploy
+      - name: "NOC tests, group 2: alert quality: outages, flaps under a silence and the dead man's switches"
+        run: make observe OBSERVE_GROUP=2  # also writes results/observe-2.xml (JUnit, timestamped)
+      - name: Secret scan of this run's results, backups, build/ and the central log store
+        id: secret-scan
+        # Last, so it sees every file this job uploads and every line it sent to Loki, and the uploads below
+        # run only when it passed. grep: as in the lab job, as root, and only exit 1 (no match) is clean.
+        if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
+        run: |
+          make gitleaks
+          for f in "$NETLAB_SECRETS"/*; do
+            rc=0; sudo -n grep -rlF -f "$f" $(ls -d backups results build 2>/dev/null) || rc=$?
+            if [ "$rc" != 1 ]; then echo "::error::this run's BGP password is in the files above, or a file could not be read (grep exit $rc)"; exit 1; fi
+          done
+          python3 -m pytest -q -p no:cacheprovider tests/live/observe/test_central_store.py::test_no_secret_in_the_central_store
+      - name: Show routing tables, processes and FRR's logs on failure
+        if: failure()
+        run: |
+          for r in r1 r2 r3 isp; do
+            echo "=== $r"; docker exec clab-netauto-$r vtysh -c "show ip route" -c "show ip ospf neighbor" -c "show bfd peers brief" -c "show bgp summary" || true
+            echo "--- $r processes"; docker exec clab-netauto-$r ps -o pid,args || true
+            # As in the lab job: the start script's own output, then the daemons' syslog lines on the box.
+            echo "--- $r start script (docker logs)"; docker logs --tail 60 clab-netauto-$r 2>&1 || true
+            echo "--- $r FRR's daemons (/var/log/messages)"; docker exec clab-netauto-$r tail -n 80 /var/log/messages || true
+          done
+          docker exec clab-netauto-fw1 iptables -vnL FORWARD || true
+          docker exec clab-netauto-r2 sh -c 'iptables -vnL; iptables -t raw -vnL' || true
+      - name: What the NOC fired and paged, on failure
+        if: failure()
+        run: make alerts || true
+      - name: Upload test results
+        if: ${{ always() && steps.secret-scan.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: observe-2-results
+          path: |
+            results/
+            backups/
+          if-no-files-found: ignore
+          retention-days: 90
+      - name: Destroy
+        if: always()
+        run: make destroy || true
+
+  observe-3:
+    name: "NOC tests 3 of 3: loss and evidence, log volume, the detections table, command records and translations"
+    needs: offline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      secret_scan: ${{ steps.secret-scan.outcome }}
+    env:
+      CLAB_VERSION: "0.68.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt -r requirements-ansible.txt
+      - name: Install Containerlab
+        run: bash -c "$(curl -sL https://get.containerlab.dev)" -- -v "$CLAB_VERSION"
+      - name: Pull every image the full lab runs (the inventory's pinned tags)
+        run: python3 -m netlab images | xargs -n1 docker pull
+      - name: Create this run's BGP password
+        # As in the lab job: a new random one per run, masked, outside the checkout (decision 0016).
+        run: |
+          echo "NETLAB_SECRETS=$RUNNER_TEMP/netlab-secrets" >> "$GITHUB_ENV"
+          NETLAB_SECRETS="$RUNNER_TEMP/netlab-secrets" make secrets
+          for f in "$RUNNER_TEMP"/netlab-secrets/*; do echo "::add-mask::$(cat "$f")"; done
+      - name: Deploy (network and NOC)
+        id: deploy
+        run: make deploy
+      - name: "NOC tests, group 3: loss and evidence, log volume, the detections table, command records and translations"
+        run: make observe OBSERVE_GROUP=3  # also writes results/observe-3.xml (JUnit, timestamped)
       - name: Each log source's bytes since the lab started against its daily budget (make ingest, OROS NOT-5)
         if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: make ingest
       - name: Config drift check (Ansible)
-        # The observe tests put back everything they break; drift proves it. Its captures stay in backups/
+        # This group's tests put back everything they break; drift proves it. Its captures stay in backups/
         # for this run's artifact only: the restic backup is the lab job's, and this job never touches it.
         if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: make drift
@@ -262,13 +410,12 @@ jobs:
         run: |
           # Drop the committed runner file first, so the artifact and the log only ever hold this run's reading.
           rm -f docs/sizing/data/*-github-runner.json
-          make measure LAB_ENV=github-runner NOTE="GitHub ubuntu-24.04, containerlab $CLAB_VERSION, full lab with the NOC, idle right after make observe and make drift"
+          make measure LAB_ENV=github-runner NOTE="GitHub ubuntu-24.04, containerlab $CLAB_VERSION, full lab with the NOC, idle right after NOC tests group 3 and make drift"
           cat docs/sizing/data/*-github-runner.json
       - name: Secret scan of this run's results, backups, sizing data, build/ and the central log store
         id: secret-scan
-        # Last, so it sees every file this job uploads and every line it sent to Loki, drift's included,
-        # and the uploads below run only when it passed. grep: as in the lab job, as root, and only exit 1
-        # (no match) is clean.
+        # Last, so it sees every file this job uploads and every line it sent to Loki, and the uploads below
+        # run only when it passed. grep: as in the lab job, as root, and only exit 1 (no match) is clean.
         if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: |
           make gitleaks
@@ -296,7 +443,7 @@ jobs:
         if: ${{ always() && steps.secret-scan.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
-          name: observe-results
+          name: observe-3-results
           path: |
             results/
             backups/
@@ -352,8 +499,8 @@ jobs:
 
   control-status:
     name: Every control's latest test is green and inside its period
-    # The NOC's controls are proven by the observe job's JUnit file alone (results/observe.xml).
-    needs: [offline, review, lab, observe]
+    # The NOC's controls are proven by the NOC jobs' JUnit files alone (results/observe-1.xml to observe-3.xml).
+    needs: [offline, review, lab, observe-1, observe-2, observe-3]
     # Main's claims, proven by main's runs. A pull request's run tests other code, so it is skipped.
     if: ${{ always() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-24.04
@@ -376,23 +523,26 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: make control-status
-      # A failed scan withholds that job's results, so the check above read an earlier run's in their
-      # place and can be green although this run's live or NOC tests failed.
+      # A failed scan withholds that job's results, so the check above read an earlier run's in their place
+      # and can be green although this run's live or NOC tests failed.
       - name: This run's secret scans passed (OROS ACC-4)
-        if: ${{ !cancelled() && (needs.lab.outputs.secret_scan == 'failure' || needs.observe.outputs.secret_scan == 'failure') }}
+        if: ${{ !cancelled() && (needs.lab.outputs.secret_scan == 'failure' || needs.observe-1.outputs.secret_scan == 'failure' || needs.observe-2.outputs.secret_scan == 'failure' || needs.observe-3.outputs.secret_scan == 'failure') }}
         env:
           LAB_SCAN: ${{ needs.lab.outputs.secret_scan }}
-          OBSERVE_SCAN: ${{ needs.observe.outputs.secret_scan }}
+          OBSERVE_1_SCAN: ${{ needs.observe-1.outputs.secret_scan }}
+          OBSERVE_2_SCAN: ${{ needs.observe-2.outputs.secret_scan }}
+          OBSERVE_3_SCAN: ${{ needs.observe-3.outputs.secret_scan }}
         run: |
-          echo "::error::ACC-4: this run's secret scan failed (lab job: ${LAB_SCAN:-not run}, observe job: ${OBSERVE_SCAN:-not run}), so that job's results were not uploaded and the check above read an earlier run's in their place"
+          echo "::error::ACC-4: this run's secret scan failed (lab job: ${LAB_SCAN:-not run}, observe-1 job: ${OBSERVE_1_SCAN:-not run}, observe-2 job: ${OBSERVE_2_SCAN:-not run}, observe-3 job: ${OBSERVE_3_SCAN:-not run}), so that job's results were not uploaded and the check above read an earlier run's in their place"
           exit 1
 
   heartbeat:
     name: Tell the outside check the nightly run passed
     # A scheduled run that never starts can't say so itself, and the lab's NOC exists only during a run:
     # the check at HEARTBEAT_URL alerts when this ping is late (OROS NOT-4, decision 0022). With no
-    # status function in `if`, it runs only when every job it needs passed.
-    needs: [offline, review, lab, observe, reproduce]
+    # status function in `if`, it runs only when every job it needs passed. Not the review job: a dated
+    # review falling due turns that job red on purpose, and stops neither the live tests, the backup nor this ping.
+    needs: [offline, lab, observe-1, observe-2, observe-3, reproduce]
     if: ${{ github.event_name == 'schedule' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5

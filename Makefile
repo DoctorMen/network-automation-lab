@@ -37,8 +37,14 @@ deploy-network: render secrets ## As deploy, but the network's own nodes only: n
 live:            ## Test the running lab: routing, firewall, failover, drift checks, locate (JUnit in results/)
 	$(PY) -m pytest -v tests/live --ignore=tests/live/observe --junitxml=results/live.xml
 
-observe:         ## Test the NOC on a full lab (make deploy): alerts, log arrival, central store (JUnit in results/)
-	$(PY) -m pytest -v tests/live/observe --junitxml=results/observe.xml
+# The NOC's tests in three groups of about equal time, one CI job each (each deploys the full lab):
+# make observe OBSERVE_GROUP=2 runs one group, into results/observe-2.xml. With no OBSERVE_GROUP it runs them all.
+OBSERVE_1 = tests/live/observe/test_state.py tests/live/observe/test_arrival.py tests/live/observe/test_central_store.py tests/live/observe/test_coverage.py tests/live/observe/test_noc.py
+OBSERVE_2 = tests/live/observe/test_outage.py tests/live/observe/test_silence.py tests/live/observe/test_deadman.py
+OBSERVE_3 = tests/live/observe/test_loss.py tests/live/observe/test_evidence.py tests/live/observe/test_volume.py tests/live/observe/test_detections.py tests/live/observe/test_accounting.py tests/live/observe/test_whois.py
+OBSERVE_GROUP ?=
+observe:         ## Test the NOC on a full lab (make deploy): alerts, log arrival, central store (JUnit in results/; OBSERVE_GROUP=1, 2 or 3 for one group)
+	$(PY) -m pytest -v $(if $(OBSERVE_GROUP),$(or $(OBSERVE_$(OBSERVE_GROUP)),$(error OBSERVE_GROUP=$(OBSERVE_GROUP) names no group: 1, 2 or 3)),tests/live/observe) --junitxml=results/observe$(if $(OBSERVE_GROUP),-$(OBSERVE_GROUP)).xml
 
 coverage:        ## Every value a test or runbook reads from a device has a metric or log query (monitoring/coverage.yml)
 	$(PY) -m netlab.coverage
@@ -114,7 +120,7 @@ gitleaks:        ## Scan every commit, then backups/, results/ and build/ if pre
 destroy:         ## Tear the lab down
 	$(CLAB) destroy -t $(TOPO) --cleanup
 
-all: test deploy live observe drift review ## Everything CI does (CI's lab job runs live on deploy-network, its observe job observe)
+all: test deploy live observe drift review ## Everything CI does (CI's lab job runs live on deploy-network, its three NOC jobs observe)
 
 # Backups (OROS REC-1, REC-3). BACKUP_REPO is the destination: a restic repository on a disk or share
 # that outlives this machine. If it isn't mounted, `make backup` fails; it never creates one.

@@ -2,7 +2,7 @@
 
 docs/controls.yml names, for every control, the tests that prove it and how often they must pass.
 The proof is CI's dated JUnit files (pytest --junitxml): offline-results, review-results,
-results-and-backups, observe-results and drill-results, kept 90 days as run artifacts. This reads them
+results-and-backups, observe-1-results to observe-3-results and drill-results, kept 90 days as run artifacts. This reads them
 newest first, this run's own results included, and for each test takes its latest result that ran (a
 skip is not a result). That result must be a pass, and younger than the period. Any other answer
 fails, naming the control and test.
@@ -27,7 +27,7 @@ from . import controls
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS = ("ci.yml", "drills.yml")  # the workflows that run the register's tests
-ARTIFACTS = "*results*"               # offline-results, review-results, results-and-backups, observe-results, drill-results
+ARTIFACTS = "*results*"               # offline-results, review-results, results-and-backups, observe-1-results to -3, drill-results
 # `--branch main` matches a run's head branch, and a pull request from a fork whose own branch is called
 # main has head branch main too. Only these events run main's own code in this repository.
 MAIN_EVENTS = {"push", "schedule", "workflow_dispatch"}

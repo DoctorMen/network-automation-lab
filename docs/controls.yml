@@ -11,13 +11,14 @@
 #
 # Schedule: .github/workflows/ci.yml runs every test nightly (cron 23 4 * * *), on every push to
 # main and on every pull request. It keeps results/offline.xml and results/review.xml (JUnit, with a
-# timestamp) as run artifacts for 90 days, and results/live.xml and results/observe.xml (the NOC's
-# tests, in the observe job) too when that job's own secret scan passed; when either scan failed, the
-# control-status job fails, naming ACC-4. .github/workflows/drills.yml runs the restore and power
+# timestamp) as run artifacts for 90 days, and results/live.xml and results/observe-1.xml to
+# observe-3.xml (the NOC's tests, in three NOC jobs that each deploy the full lab and run one group of
+# test files, the Makefile's OBSERVE_1 to OBSERVE_3) too when that job's own secret scan passed; when
+# any of those four scans failed, the control-status job fails, naming ACC-4. .github/workflows/drills.yml runs the restore and power
 # drills weekly and keeps theirs the same way. The control-status job in ci.yml reads them all. The
 # four tests that compare a record's date with today (in verdict-log, outside-levers, risk-register
-# and runbooks) run in ci.yml's review job, which the lab job doesn't wait for, so a review falling
-# due turns that job red without stopping the live tests or the backup.
+# and runbooks) run in ci.yml's review job, which neither the lab job nor the nightly heartbeat ping
+# waits for, so a review falling due turns that job red without stopping the live tests, the backup or the ping.
 # GitHub disables scheduled runs in a public repo after 60 days with no repository activity,
 # so a quiet repo can miss its period without any test going red.
 #
@@ -451,7 +452,7 @@ controls:
       pulled image, so it trusts the local Docker daemon.
 
   # The NOC (decisions 0018 and 0019): OROS NOT-1, NOT-2, NOT-3 and NOT-7. Run by `make observe`, in CI's
-  # observe job, on the full lab; the network's own tests never need it.
+  # three NOC jobs (observe-1 to observe-3), each on the full lab; the network's own tests never need it.
   - id: noc-object-state
     claim: "Every BGP session, OSPF adjacency and BFD peer on a router we own has an alert of its own, which pages while the host still answers ping. The carrier shutting the session, our own end shutting it (Idle (Admin), which a check for state 0 alone misses), an OSPF neighbor whose hellos are dropped, and a BFD peer down while OSPF stays Full each page for that object and no other, within the bound `expected_state.json` states"
     test:
@@ -566,7 +567,7 @@ controls:
       daemon. Answering only on two ports is not authentication: anyone on the campus can send the
       collector a line naming any router (RISK-34), and the exporters have no TLS (RISK-32).
 
-  # Alert quality (decisions 0020, 0021 and 0022): OROS DEC-1, DEC-4, DEC-5 and NOT-4, in CI's observe job.
+  # Alert quality (decisions 0020, 0021 and 0022): OROS DEC-1, DEC-4, DEC-5 and NOT-4, in CI's NOC job observe-2.
   - id: alert-context
     claim: "Every alert says why it fired (its condition and the signal's value now), what is normal (the usual value and a link to that signal over the last 7 days) and what changed (the last commit `make apply` applied to that router, and when). Every alert of one live outage, 20 or more not counting the cause markers and the heartbeat, carries all three, filled in by Prometheus"
     test:
@@ -1196,8 +1197,8 @@ controls:
       called out of scope, or an out-of-scope system that can reach a service it shouldn't.
     fails_when: >-
       It is a toy: no card data, no assessor (acceptance is open, decision 0013). It probes the services
-      the inventory lists over TCP, and echo pings. h2's node_exporter port is a sidecar's, so only the full
-      lab's observe job probes it. h1's ping exception is wider than its reason (fw1's
+      the inventory lists over TCP, and echo pings. h2's node_exporter port is a sidecar's, so only a NOC
+      job on the full lab (observe-3) probes it. h1's ping exception is wider than its reason (fw1's
       allow-icmp passes every ICMP type), and whether LAN-A's reach (h2:80 and pings) makes it
       connected-to is an assessor's call nobody has made. Outbound from LAN-B is not restricted (PCI
       DSS 1.3.2 not met). The clause wording was checked against a secondary source, not the PCI SSC
