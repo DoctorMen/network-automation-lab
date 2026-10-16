@@ -121,8 +121,8 @@
       when: not ansible_check_mode
       block:
         # NETLAB_PASSWORDS=drop hides the password lines from frr-reload.py. Otherwise it sees a password
-        # the intended file doesn't have and deletes it, running `no neighbor ... password <it>` on vtysh's
-        # command line, logging that line to /var/log/frr/frr-reload.log and taking the session down.
+        # the intended file doesn't have and deletes it, running the `no neighbor` command with the password
+        # on vtysh's command line, logging that line to /var/log/frr/frr-reload.log and taking the session down.
         - name: Apply only the difference, without restarting daemons
           # --rundir: frr-reload.py writes the lines it applies to a file there first, and FRR's own run folder
           # is not the CM tool's to write (it runs under its own account on a router we own, decision 0029).
