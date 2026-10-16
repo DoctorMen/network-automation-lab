@@ -94,19 +94,33 @@ def change_intent(changes):
 
 def put_back(node, originals):
     """The original intent back in build/ and on every router. Returns what went wrong: each router whose
-    reload failed, and a network that didn't settle; empty when all is back. It never raises, because it
-    runs in a finally, where an error would hide the test's own failure. Reloaded the way deploy.yml
-    applies, through the redacting vtysh with password lines dropped: plain frr-reload.py would delete
-    r2's BGP password, with it on vtysh's command line and in its log."""
-    change_intent(originals)
+    reload failed or didn't finish, and a network that didn't settle; empty when all is back. It doesn't
+    raise: it runs in a finally, where an error would replace the test's own failure, so each error
+    becomes one of its problems. It also prints them, so they show in the report of a test whose body
+    already failed, where the assert after the finally never runs. Reloaded the way deploy.yml applies,
+    through the redacting vtysh with password lines dropped: plain frr-reload.py would delete r2's BGP
+    password, with it on vtysh's command line and in its log."""
     problems = []
+    # Each step catches everything, for the reason above. A hung frr-reload.py raises TimeoutExpired.
+    try:
+        change_intent(originals)
+    except Exception as e:
+        problems.append(f"build/ not put back: {type(e).__name__}: {e}")
     for router in originals:
-        reload = node(router).run("env", "NETLAB_PASSWORDS=drop", "/usr/lib/frr/frr-reload.py", "--reload",
-                                  "--bindir", VTYSH_DIR, "/etc/frr/frr.conf", check=False)
-        if reload.returncode:
-            problems.append(f"{router}: frr-reload.py exited {reload.returncode} (its log: /var/log/frr/frr-reload.log on {router})")
-    if not wait_for(healthy, timeout=90):
-        problems.append("the network did not settle")
+        try:
+            reload = node(router).run("env", "NETLAB_PASSWORDS=drop", "/usr/lib/frr/frr-reload.py", "--reload",
+                                      "--bindir", VTYSH_DIR, "/etc/frr/frr.conf", check=False)
+            if reload.returncode:
+                problems.append(f"{router}: frr-reload.py exited {reload.returncode} (its log: /var/log/frr/frr-reload.log on {router})")
+        except Exception as e:
+            problems.append(f"{router}: frr-reload.py did not finish: {type(e).__name__}: {e}")
+    try:
+        if not wait_for(healthy, timeout=90):
+            problems.append("the network did not settle")
+    except Exception as e:
+        problems.append(f"the health check failed: {type(e).__name__}: {e}")
+    if problems:
+        print(f"putting the intent back failed, so later tests run on a changed lab: {problems}")
     return problems
 
 
