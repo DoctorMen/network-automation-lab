@@ -110,6 +110,9 @@ DETECTORS = {
                                      "the central log store's folder writable by every user on the lab host"),
     "store-checkpoint-window": Detector("build", "noc/loki.yaml", r"^\s+checkpoint_duration: ", None,
                                         "the central log store checkpointed on a timer, so lines since a restart wait for it"),
+    # Log volume at the source (decision 0026).
+    "log-cut-at-source": Detector("build", "*/forwarder.yaml", r'\.cut = "', None,
+                                  "a kind of log line cut at its source, so the store holds only a count of it"),
 }
 
 

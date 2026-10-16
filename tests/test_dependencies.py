@@ -117,6 +117,7 @@ def test_a_new_router_needs_no_hand_tuning(tmp_path):
                           "segment": "LAN-D", "services": [22]}
     raw["links"] += [["r3:eth4@10.0.34.0/31", "r4:eth1@10.0.34.1/31"], ["h4:eth1@10.40.40.10/24", "r4:eth2@10.40.40.1/24"]]
     raw["scope"]["out_of_scope"] += ["r4", "h4"]  # every device needs a scope decision (decision 0013)
+    raw["logging"]["budget"]["store_mb"] += 512  # and the store room for their two syslog budgets (decision 0026)
     (tmp_path / "net.yml").write_text(yaml.safe_dump(raw, sort_keys=False))
     bigger = load(tmp_path / "net.yml")
     by = {(r["alert"], r["labels"].get("node")): deps(r) for r in monitoring.alert_rules(bigger)}

@@ -420,7 +420,40 @@ def monitoring_problems(inv: Inventory) -> list[str]:
         label = f"logging: app {app.get('host')}/{app.get('name')}"
         if app.get("port") not in inv.hosts.get(app.get("host"), {}).get("services", []):
             problems.append(f"{label}: port {app.get('port')} has no listener in services")
-        # Its normal gap is the web check's interval, so the same margin applies.
-        if not (isinstance(app.get("silent_after"), int) and app["silent_after"] > 3 * interval):
+        checked = any((w.get("host"), w.get("port")) == (app.get("host"), app.get("port")) for w in mon.get("web") or [])
+        for kind in app.get("cut") or []:
+            if kind != "web-check":
+                problems.append(f"{label}: cut {kind!r} is not a kind netlab knows (web-check)")
+            elif not checked:
+                problems.append(f"{label}: cut web-check, but no web check watches {app.get('host')}:{app.get('port')}")
+        if app.get("cut"):
+            # Its forwarder sends one count line per heartbeat's worth of the checks it cuts: syslog's margin.
+            if not (isinstance(app.get("silent_after"), int) and beat + 2 * interval < app["silent_after"] <= 2 * beat - 3 * interval - 1):
+                problems.append(f"{label}: with a cut, its normal gap is the heartbeat, so silent_after must be over "
+                                f"{beat + 2 * interval} and at most {2 * beat - 3 * interval - 1}")
+        # Otherwise its normal gap is the web check's interval, so the same margin applies.
+        elif not (isinstance(app.get("silent_after"), int) and app["silent_after"] > 3 * interval):
             problems.append(f"{label}: silent_after must be over 3 x interval ({3 * interval})")
+    return problems + budget_problems(inv)
+
+
+def budget_problems(inv: Inventory) -> list[str]:
+    """Every source has a daily ingest budget, and all of them together, for the whole retention, fit the
+    disk the NOC sets aside for raw lines (OROS NOT-5, decision 0026)."""
+    logs = inv.logging
+    budget = logs.get("budget")
+    if not budget:
+        return ["logging: no budget (store_mb, syslog_kb): every source needs an ingest budget"]
+    problems = [f"logging: budget {k} {budget.get(k)!r} must be a whole number over 0" for k in ("store_mb", "syslog_kb")
+                if not (isinstance(budget.get(k), int) and budget[k] > 0)]
+    problems += [f"logging: app {a.get('host')}/{a.get('name')} needs a budget_kb over 0" for a in logs.get("apps") or []
+                 if not (isinstance(a.get("budget_kb"), int) and a["budget_kb"] > 0)]
+    if problems:
+        return problems
+    from .monitoring import log_sources  # monitoring imports this module, so not at the top
+    daily_kb = sum(s["budget"] for s in log_sources(inv)) // 1024
+    days = logs["retention"] / 24
+    if daily_kb * days > budget["store_mb"] * 1024:
+        problems.append(f"logging: the sources' budgets ({daily_kb} KB a day) for {days:g} days of retention need "
+                        f"{daily_kb * days / 1024:.0f} MB, over store_mb {budget['store_mb']}")
     return problems

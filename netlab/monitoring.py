@@ -13,6 +13,7 @@ SourceSilent rule, and a sidecar in sidecars() is started by the topology.
 from __future__ import annotations
 
 import ipaddress
+import re
 import urllib.parse
 from pathlib import Path
 
@@ -35,7 +36,7 @@ EXPORTERS = {"frr": "frr_exporter", "node": "node_exporter"}
 # it only has to be in Alertmanager before what depends on it (decision 0021). A missed job and a silent alert
 # path are settled facts too, and Watchdog always fires.
 WAIT = {"TargetDown": 15, "BGPSessionDown": 10, "OSPFNeighborDown": 10, "BFDPeerDown": 10, "WebContentWrong": 10,
-        "InterfaceFlapped": 0, "PendingRebootOverdue": 0, "SourceSilent": 0, "QueueDrops": 0,
+        "InterfaceFlapped": 0, "PendingRebootOverdue": 0, "SourceSilent": 0, "QueueDrops": 0, "LogIngestOverBudget": 0,
         "NodeDown": 10, "LinkDown": 10, "CauseSeen": 0, "JobMissed": 0, "AlertPathSilent": 0, "Watchdog": 0}
 # Seconds InterfaceFlapped looks back over the carrier-change counter: six scrapes.
 FLAP_WINDOW = 30
@@ -107,15 +108,18 @@ def syslog_sources(inv: Inventory) -> list[str]:
 
 
 def log_sources(inv: Inventory) -> list[dict]:
-    """[{node, source, silent_after, within}]: syslog from each node above, and each app's own log. `within`
-    is the stated bound on SourceSilent reaching the pager after the source's last line arrived: twice the
-    heartbeat for syslog (OROS NOT-3's default, which the inventory check holds silent_after to). An app's
-    normal gap is the NOC's own web check, one interval, too short to page on twice over without paging on
-    one late scrape, so its bound is stated: its silent_after plus the time to evaluate and deliver."""
+    """[{node, source, silent_after, within, budget}]: syslog from each node above, and each app's own log.
+    `within` is the stated bound on SourceSilent reaching the pager after the source's last line arrived:
+    twice the heartbeat for syslog (OROS NOT-3's default, which the inventory check holds silent_after to).
+    An app's is its silent_after plus the time to evaluate and deliver. `budget` is the bytes a day the
+    source may send the store (OROS NOT-5, decision 0026)."""
     detect = deliver(inv)
-    syslog = [{"node": d, "source": "syslog", "silent_after": inv.logging["silent_after"], "within": 2 * inv.logging["heartbeat"]}
+    budget = inv.logging.get("budget") or {}
+    syslog = [{"node": d, "source": "syslog", "silent_after": inv.logging["silent_after"], "within": 2 * inv.logging["heartbeat"],
+               "budget": budget.get("syslog_kb", 0) * 1024}
               for d in syslog_sources(inv)]
-    apps = [{"node": a["host"], "source": a["name"], "silent_after": a["silent_after"], "within": a["silent_after"] + detect}
+    apps = [{"node": a["host"], "source": a["name"], "silent_after": a["silent_after"], "within": a["silent_after"] + detect,
+             "budget": a.get("budget_kb", 0) * 1024}
             for a in inv.logging.get("apps", [])]
     return syslog + apps
 
@@ -124,6 +128,36 @@ def deliver(inv: Inventory) -> int:
     """Seconds from a rule's condition holding (after its `for`) to the page: up to one scrape and one
     evaluation to see it, one more evaluation, Alertmanager's group_wait, and a second for the webhook."""
     return 3 * inv.monitoring["interval"] + inv.monitoring["group_wait"] + 1
+
+
+# Kinds of line an app's own forwarder may cut before they leave the host (inventory logging.apps[].cut).
+CUT_KINDS = {"web-check": "the NOC's web check's request line, from the NOC's address, answered with a status the check accepts"}
+
+
+def literal(text: str) -> str:
+    """text as a regex that matches only itself, for Vector's (Rust) regex: Python's re.escape also escapes
+    spaces, which Rust's regex refuses."""
+    return re.sub(r"([.\[\](){}*+?^$|\\])", r"\\\1", text)
+
+
+def cuts(inv: Inventory, app: dict) -> list[dict]:
+    """[{name, client, request, status, pattern}] for each kind the app's forwarder cuts. web-check is each
+    web check on the app's host and port: the request line of the URL its scrape job has blackbox get, from
+    the NOC's address, answered with a status its blackbox module accepts (200). The pattern is anchored on
+    all three, so the same request from a user, another page, or one answered with another status still goes
+    through. A check that fails on content still answers 200, so it is cut too (RISK-55). It matches the
+    access-log line Python's http.server writes: `10.30.30.10 - - [16/Oct/2026 04:35:43] "GET / HTTP/1.1" 200 -`."""
+    out = []
+    for name in app.get("cut") or []:
+        for w in inv.monitoring.get("web") or []:
+            if name == "web-check" and (w["host"], w["port"]) == (app["host"], app["port"]):
+                job = next(j for j in prometheus_config(inv)["scrape_configs"] if j.get("params", {}).get("module") == [web_module(w)])
+                path = urllib.parse.urlsplit(job["static_configs"][0]["targets"][0]).path or "/"
+                codes = blackbox_config(inv)["modules"][web_module(w)]["http"]["valid_status_codes"]
+                client, request, status = collector(inv), f"GET {path} HTTP/1.1", "|".join(str(c) for c in codes)
+                pattern = f'^{literal(client)} - - \\[[^\\]]*\\] "{literal(request)}" ({status}) '
+                out.append({"name": name, "client": client, "request": request, "status": status, "pattern": pattern})
+    return out
 
 
 def source_addresses(inv: Inventory) -> dict[str, str]:
@@ -466,6 +500,16 @@ def alert_rules(inv: Inventory) -> list[dict]:
                           f"no {s['source']} line from {s['node']} has reached the collector for over {s['silent_after']} s",
                           f"time() - log_last_seen_seconds{sel}", f"> {s['silent_after']}, or missing",
                           f"under {s['silent_after']} s"))
+    for s in log_sources(inv):
+        # The licence or storage budget is a day's bytes, so this is the last 24 h's, not a projection: a burst
+        # pages only if it really spends the day's budget (decision 0026). It is counted at the collector, so
+        # it can't be seen without it.
+        sel = selector(node=s["node"], source=s["source"])
+        signal = f"increase(log_bytes_total{sel}[1d])"
+        rules.append(rule(inv, "LogIngestOverBudget", f"max by (node, source) ({signal}) > {s['budget']}",
+                          {**target_labels(inv, s["node"]), "source": s["source"], "deps": model.label(set(), extra={logs})},
+                          f"{s['node']} {s['source']} sent {{{{ $value | humanize1024 }}}}B in the last 24 h, over its "
+                          f"{s['budget'] // 1024} KB budget", signal, f"> {s['budget']} bytes", f"under {s['budget']} bytes a day"))
     rules += deadman_rules(inv, logs)
     return rules
 
@@ -628,6 +672,11 @@ def expected(inv: Inventory) -> dict:
         "flightrec": FLIGHTREC,
         "on_box": inv.logging["on_box"],
         "apps": inv.logging.get("apps") or [],
+        # What each app's forwarder cuts at the source, by kind (decision 0026), and how many cut lines it
+        # sums into each count line it sends instead: a heartbeat's worth of the NOC's checks.
+        "cuts": {f"{a['host']}/{a['name']}": cuts(inv, a) for a in inv.logging.get("apps") or []},
+        "cut_per_line": cut_per_line(inv),
+        "store_mb": (inv.logging.get("budget") or {}).get("store_mb"),
         "sidecars": sorted(sidecars(inv)),
         # Each sidecar image's tag and the digest it must resolve to.
         "digests": {inv.monitoring["images"][k]: inv.monitoring["digests"][k] for k in inv.monitoring["images"]},
@@ -654,6 +703,12 @@ def rule_groups(inv: Inventory) -> dict:
                        {"name": "causes", "interval": f"{CAUSE_EVERY}s", "rules": cause_rules(inv)}]}
 
 
+def cut_per_line(inv: Inventory) -> int:
+    """Cut lines summed into one count line: a heartbeat's worth of the NOC's checks, so a forwarder that
+    cuts them still sends a line every heartbeat, its source's proof of life."""
+    return inv.logging["heartbeat"] // inv.monitoring["interval"]
+
+
 def dump(doc: dict) -> str:
     return "# Generated by netlab from inventory/network.yml (netlab/monitoring.py). Do not edit by hand.\n" + \
         yaml.safe_dump(doc, sort_keys=False, width=200)
@@ -676,7 +731,8 @@ def render(inv: Inventory, env, write, out: Path) -> None:
     # The same kernel rule `make verify` uses, run on each router for its pending-reboot metric.
     write("monitoring/kernel.py", (ROOT / "netlab" / "kernel.py").read_text())
     for app in logs.get("apps") or []:
-        write(f"{app['host']}/forwarder.yaml", env.get_template("monitoring/forwarder.yaml.j2").render(app=app, **ctx))
+        write(f"{app['host']}/forwarder.yaml", env.get_template("monitoring/forwarder.yaml.j2").render(
+            app=app, cuts=cuts(inv, app), cut_per_line=cut_per_line(inv), **ctx))
     # Folders the nodes share with their sidecars. Created here because Containerlab refuses a bind whose
     # source is missing; never emptied here, because a running router's sockets live in its run/.
     for r in exporter_routers(inv):

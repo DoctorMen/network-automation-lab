@@ -252,3 +252,14 @@
     - "Loki 3.1.1 source: after a successful replay, ingesterRecoverer.Close() calls resetCounter() on every stream (pkg/ingester/recovery.go), and stream.Push drops a replayed record whose counter is not above the stream's (pkg/ingester/stream.go). The next replay starts from the last checkpoint's counters, so the records written since the reset are dropped as duplicates until a new checkpoint replaces that one. The first checkpoint comes one checkpoint_duration after the start and is written over 90% of another (pkg/ingester/checkpoint.go)"
     - "Whether a later Loki release fixes it is not checked here"
   workaround: Loki checkpoints every 30 s (templates/monitoring/loki.yaml.j2), so the window is about a minute after each restart; the power drill restarts the store first and cuts only after its first checkpoint (tests/live/test_power_event.py::test_evidence_outlives_a_power_cut). What is left is RISK-46
+
+- id: V-030
+  opened: 2026-10-16
+  version: ansible-core 2.21.5 (ansible>=10), busybox syslogd in frrouting/frr:v8.4.1
+  symptom: each router's syslog sent the store 2.4 to 3.6 MB a day over the benign workload, over the first 1 MiB budget, and nearly all of it was lines Ansible writes for each module it runs
+  verdict: normal-behaviour
+  evidence:
+    - "2026-10-16, lab na12, an 8-minute run of the benign workload (make drift and make apply every five minutes) with a 1 MiB syslog budget: r1 2.9, r2 3.6, r3 3.4 MB a day, fw1 0.6, h2 0.06"
+    - "2026-10-16, lab na12, the first 30-minute review (commit f82f429, 05:18:28Z to 05:48:57Z), read back from Loki: r1 97%, r2 94%, r3 98% and fw1 86% of their syslog bytes are lines tagged ansible-<module> ('Invoked with' and the module's arguments); the rest is mostly the heartbeat. Ansible's modules log each invocation to the target's syslog; decision 0019 relies on no_log to keep the password task's out"
+    - "2026-10-16, lab na12, the review in monitoring/fp-review.yml (commit b4771ab, 10:28:44Z, 1797 s), read back from Loki the same way: r1 97%, r2 94%, r3 98% and fw1 87%"
+  workaround: "The syslog budget is sized to it: 8 MiB a day, 2.8 times r2's 3.0 MB a day in that review (decision 0026). The lines are kept, because they are the routers' only record of which modules the operator's playbooks ran there and with what arguments. They could be cut where they are written: ansible-core's no_target_syslog (ansible.cfg [defaults], or the host variable ansible_no_target_syslog) stops Ansible writing them; busybox syslogd itself can't filter by message"

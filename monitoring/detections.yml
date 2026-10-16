@@ -1,0 +1,97 @@
+# What each detection the NOC runs can't see (OROS NOT-6, decision 0027).
+#
+# A detection is an alert rule in build/noc/rules.yml, rendered from the inventory by netlab/monitoring.py.
+# `make detections` (netlab/detections.py) writes docs/detections.md from the rules themselves (what each
+# reads, where its sensor sits, which objects it watches), from monitoring/coverage.yml (each collector's
+# exporter and what it reads), from this file (what it detects, its blind spots) and from
+# monitoring/fp-review.yml (its pages over the stated benign workload). tests/test_detections.py fails when
+# a deployed rule has no entry here, an entry has a blank cell, docs/detections.md is not what the rules
+# give now, or the false-positive review is older than one cycle or was run on other rules.
+#
+# Blind spots are what the detection misses in this lab as built: traffic that never reaches its sensor,
+# objects it doesn't watch, failures shorter than its wait, and what it trusts without checking.
+#
+# A detection that looks back further than the review (its wait, a range it reads, or an age it compares
+# with the clock) could not have paged on the review's workload, so its 0 measures nothing. Its
+# beyond_review says what stands for its figure, and make test fails if one has none.
+
+review:
+  # OROS NOT-6's default review cycle is quarterly. make test fails once the last review is older.
+  cycle_days: 92
+  # The benign workload runs this long (netlab/detections.py WORKLOAD says what it does).
+  minutes: 30
+
+detections:
+  TargetDown:
+    detects: an exporter or probe endpoint the NOC scrapes that has not answered for 15 s (three scrapes)
+    blind_spots:
+      - "A target that answers with wrong or stale values passes: frr_exporter still answers while a routing daemon is down (frr_collector_up says so, and no rule reads it)."
+      - "Only what Prometheus scrapes: fw1, h1, h2 and isp run no exporter. The ICMP probes are targets of blackbox on noc, which answers even when the ping fails, and no rule reads probe_success for ICMP, so a device that stops answering ping does not page by itself."
+      - "A target down for less than its 15 s wait plus a scrape does not page."
+      - "In band: a dead campus link makes every target behind it fail at once, one page each (RISK-31; one page per cause is OROS DEC-5, not built)."
+  BGPSessionDown:
+    detects: a BGP session on a router we own that is not Established (down, or shut on either end), or gone from the exporter
+    blind_spots:
+      - "Only sessions on routers we own (r2 to isp); the carrier's own view of the session is not read."
+      - "An Established session that carries no prefixes, or the wrong ones, does not page: the prefix counts are exported, and no rule reads them."
+      - "A session that drops and comes back inside its 10 s wait plus a scrape does not page; the reset shows only in frr_bgp_peer_uptime_seconds and an ADJCHANGE line in the store."
+      - "Whether TCP MD5 is on is not exported (monitoring/coverage.yml lists it as a gap); make drift checks the password tag instead."
+      - "A session configured by hand that the inventory doesn't have is not watched; absent() catches a session that disappears, not an extra one."
+  OSPFNeighborDown:
+    detects: an OSPF adjacency the inventory implies that is not Full, or gone from the exporter
+    blind_spots:
+      - "Only adjacencies the inventory implies: an extra adjacency with a router nobody planned does not page (tests/live/test_routing.py catches it when CI runs)."
+      - "It pages only once OSPF itself drops the adjacency, up to its 40 s dead interval after hellos stop, then its 10 s wait."
+      - "A Full adjacency over a link that has stopped forwarding traffic stays green; that is BFDPeerDown's case."
+      - "An adjacency lost and re-formed inside the wait does not page; ospfd's AdjChg lines are in the store."
+  BFDPeerDown:
+    detects: a BFD peer on an OSPF link of a router we own that is not up, or gone from the exporter
+    blind_spots:
+      - "BFD runs only on the routers' OSPF links: the links to fw1, h2, noc and isp have none."
+      - "BFD tests the path between the two routers; transit traffic that one of them drops (a filter, a full queue) while BFD's own packets pass is not seen."
+      - "Down for less than its 10 s wait plus a scrape does not page, though BFD itself reacts in under a second."
+  WebContentWrong:
+    detects: h2's page at port 80 that does not answer 200 with the content only the real page has
+    blind_spots:
+      - "One vantage point: the NOC's LAN, through r2 and r3. A user's path from LAN-A through fw1 and r1 is not probed."
+      - "One page and one port: only GET / on port 80, matched on href=\"etc/\"; h2's port 22 and every other page are unchecked."
+      - "A page slower than a user would accept still passes if it answers inside the probe's 3 s timeout."
+      - "The NOC's checks are cut at h2's forwarder whenever h2 answers 200 (decision 0026), a check that fails on content included, so the store holds only their count; a check shows in the access log only when h2 answers it with another status (RISK-55)."
+  InterfaceFlapped:
+    detects: a router interface whose carrier changed in the last minute, however briefly
+    blind_spots:
+      - "Routers we own only: interfaces on fw1, h1, h2, noc and isp are not watched."
+      - "Carrier changes only: a link that stays up and silently drops everything is not a flap (BFDPeerDown's case)."
+      - "Every flap inside one minute is one alert, so a link flapping all the time pages once and stays firing."
+  PendingRebootOverdue:
+    detects: a router that has run an older kernel than the newest one installed for longer than its reboot window
+    blind_spots:
+      - "The kernel only: an FRR or library update not yet restarted is found by make verify on demand, not alerted."
+      - "Inside the window (3600 s) nothing pages, by design."
+      - "Every lab node shares the host's kernel, so in the lab a pending kernel is staged (a newer module folder), never really installed."
+    beyond_review: "a false page needs a pending reboot older than its window, and the workload stages no kernel, so nothing in it could page (RISK-58)"
+  SourceSilent:
+    detects: a log source whose last line reached the collector longer ago than its silent_after, or that never sent one
+    blind_spots:
+      - "A source that keeps its heartbeat while its daemons stop logging stays green; only a daemon's own line in the store proves that daemon logs."
+      - "Single lost or forged lines: syslog is clear UDP with no acknowledgement (RISK-34), so one missing line is never seen."
+      - "h1 sends nothing (RISK-36) and isp's log stays on its own box, so neither can go silent."
+      - "h2's web log proves it is alive with the forwarder's count of the NOC's own checks: if the checks stop, it goes silent while the app may be fine."
+      - "Silent for less than silent_after (90 s) does not page."
+  LogIngestOverBudget:
+    detects: a log source whose last 24 h at the collector passed its daily budget from the inventory
+    blind_spots:
+      - "It counts the bytes of each line the collector hands to Loki, not what Loki keeps on disk with its index and compression, and it stops nothing (RISK-56)."
+      - "A day's total, not a pace: a flood that stays under the day's budget does not page, however fast it came."
+      - "Once a source's day is over its budget the alert stays firing until that day is out, so a second flood from it is no new page (RISK-57)."
+      - "Lines cut at the source are not counted, by design, and lines lost on the way never arrive to be counted."
+      - "Lines from an address the collector can't map are labelled node=unknown, and no rule has a budget for them."
+    beyond_review: "its figure is each source's pace over the review as a day, in the ingest table below, and make test fails if one is over its budget (RISK-58)"
+
+# Threats no detection here sees at all. Listed so the table's silence is not read as cover.
+not_detected:
+  - "Logins and privileged commands on any device: nothing alerts on a login outside the admin set (OROS ACC-2, not built)."
+  - "What fw1 drops: each rule's packets are counted, and nothing logs or alerts on them, because LOG writes nothing from a container's network namespace (docs/controls.yml, fw1:default-drop)."
+  - "Traffic that never crosses fw1: r3 reaches h2's port 22 without it (tests/live/test_dataplane.py::test_firewall_blocks_ssh_to_servers proves that on every run), and host-to-host traffic inside LAN-A or LAN-B reaches no sensor."
+  - "A tunnel inside ICMP, which fw1's allow-icmp forwards in both directions."
+  - "Anything inside the carrier's network beyond the r2 to isp session."

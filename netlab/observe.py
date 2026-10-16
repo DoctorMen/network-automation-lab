@@ -3,6 +3,9 @@
 python -m netlab.observe alerts         what Prometheus has firing, and what the pager (the sink) received
 python -m netlab.observe testevent      a marked line from every log source over its real path, and when
                                         each reached the central store (OROS NOT-3's synthetic event)
+python -m netlab.observe ingest         each log source's bytes at the collector in the last 24 h, or since the
+                                        lab started if that is less, against its daily budget (OROS NOT-5);
+                                        exits 1 if one is over
 python -m netlab.observe success JOB    an unattended job's last step: its success, pushed to the NOC's
                                         pushgateway, and to $HEARTBEAT_URL/JOB when that is set (NOT-4)
 python -m netlab.observe applied NODE   `make apply`'s last step: the commit now applied to each router (DEC-1)
@@ -281,9 +284,24 @@ def applied(inv: Inventory, lab: str, nodes: list[str]) -> int:
     return 0
 
 
+def ingest(inv: Inventory, noc: Noc, pace_window: str = "10m") -> list[dict]:
+    """[{node, source, bytes, budget, pace}] per log source: bytes the collector received from it in the last
+    24 h (what LogIngestOverBudget compares with its budget; on a lab up less than a day, its bytes since the
+    lab started), and the last pace_window's rate as bytes a day.
+    The pace is shown, not judged: a test's burst inflates it for a while (decision 0026)."""
+    day = {(r["node"], r["source"]): r["value"] for r in noc.query("increase(log_bytes_total[1d])")}
+    pace = {(r["node"], r["source"]): r["value"] for r in noc.query(f"rate(log_bytes_total[{pace_window}]) * 86400")}
+    return [{"node": s["node"], "source": s["source"], "bytes": day.get((s["node"], s["source"])),
+             "budget": s["budget"], "pace": pace.get((s["node"], s["source"]))} for s in monitoring.log_sources(inv)]
+
+
+def kb(value: float | None) -> str:
+    return "none" if value is None else f"{value / 1024:.1f} KB"
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="netlab.observe")
-    p.add_argument("command", choices=["alerts", "testevent", "success", "applied"])
+    p.add_argument("command", choices=["alerts", "testevent", "ingest", "success", "applied"])
     p.add_argument("names", nargs="*", help="success: the job; applied: the routers")
     p.add_argument("--inventory", default=str(ROOT / "inventory" / "network.yml"))
     args = p.parse_args(argv)
@@ -304,6 +322,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{len(firing)} firing; the sink has received {len(received)} alert notifications "
               f"({sum(n['status'] == 'resolved' for n in received)} of them resolved)")
         return 0
+    if args.command == "ingest":
+        rows = ingest(inv, noc)
+        print(f"{'source':<11} {'last 24 h':>11} {'budget':>9} {'used':>5}  pace (last 10 min, as a day)")
+        for r in rows:
+            used = "-" if r["bytes"] is None else f"{100 * r['bytes'] / r['budget']:.0f}%"
+            print(f"{r['node'] + '/' + r['source']:<11} {kb(r['bytes']):>11} {r['budget'] // 1024:>6} KB {used:>5}  {kb(r['pace'])}")
+        over = [f"{r['node']}/{r['source']}" for r in rows if r["bytes"] is None or r["bytes"] > r["budget"]]
+        print(f"over budget or not counted: {', '.join(over)}" if over else "every source is within its daily budget")
+        return 1 if over else 0
     results = testevent(inv, lab)
     for e in results:
         where = f"arrived in {e['seconds']} s" if e["seconds"] is not None else "NOT FOUND in the central store"

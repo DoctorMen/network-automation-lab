@@ -1,0 +1,107 @@
+# Written by `make fp-review` (netlab/detections.py, decision 0027). Do not edit by hand.
+reviewed: 2026-10-16
+started: '2026-10-16T10:28:44Z'
+minutes: 30
+settle: 120
+environment: sandbox
+commit: b4771ab
+workload:
+- every 30 s, a user on h1 loads h2's page
+- every 10 s, h1 pings h2
+- every 10 s, h1 pings the carrier's 203.0.113.1
+- 'every 5 min, the operator runs make drift: a backup of every router and the firewall, compared with intent'
+- 'every 5 min, the operator runs make apply with nothing to change: the canary, its health gate, then the rest'
+- 'every 5 min, make verify: kernels, daemons and h2''s QoS classes in effect'
+- 'every 5 min, make testevent: a marked line from every log source'
+- every 5 min, make locate from h1 to 203.0.113.1
+steps:
+  every 30 s, a user on h1 loads h2's page:
+    runs: 60
+    failed: 0
+  every 10 s, h1 pings h2:
+    runs: 180
+    failed: 0
+  every 10 s, h1 pings the carrier's 203.0.113.1:
+    runs: 180
+    failed: 0
+  'every 5 min, the operator runs make drift: a backup of every router and the firewall, compared with intent':
+    runs: 6
+    failed: 0
+  'every 5 min, the operator runs make apply with nothing to change: the canary, its health gate, then the rest':
+    runs: 6
+    failed: 0
+  'every 5 min, make verify: kernels, daemons and h2''s QoS classes in effect':
+    runs: 6
+    failed: 0
+  'every 5 min, make testevent: a marked line from every log source':
+    runs: 6
+    failed: 0
+  every 5 min, make locate from h1 to 203.0.113.1:
+    runs: 6
+    failed: 0
+detections:
+  TargetDown:
+    objects: 1
+    rules: 0e20977b76cd
+    pages: 0
+  BGPSessionDown:
+    objects: 1
+    rules: 06709cb7fcd1
+    pages: 0
+  OSPFNeighborDown:
+    objects: 6
+    rules: ccdf62e2dc6e
+    pages: 0
+  BFDPeerDown:
+    objects: 6
+    rules: 764352c118ab
+    pages: 0
+  WebContentWrong:
+    objects: 1
+    rules: 5d98393134cc
+    pages: 0
+  InterfaceFlapped:
+    objects: 3
+    rules: eee3f1c2da7f
+    pages: 0
+  PendingRebootOverdue:
+    objects: 1
+    rules: 06c48a2978c1
+    pages: 0
+  SourceSilent:
+    objects: 6
+    rules: 184260fd8ee8
+    pages: 0
+  LogIngestOverBudget:
+    objects: 6
+    rules: 1245d66c5c04
+    pages: 0
+pages: []
+ingest:
+  r1/syslog:
+    bytes: 51338
+    per_day: 2468345
+    budget: 8388608
+  r2/syslog:
+    bytes: 63378
+    per_day: 3047200
+    budget: 8388608
+  r3/syslog:
+    bytes: 60948
+    per_day: 2930380
+    budget: 8388608
+  fw1/syslog:
+    bytes: 11087
+    per_day: 533081
+    budget: 8388608
+  h2/syslog:
+    bytes: 1472
+    per_day: 70757
+    budget: 8388608
+  h2/http:
+    bytes: 5447
+    per_day: 261895
+    budget: 524288
+cut:
+  h2/http:
+    web-check: 360

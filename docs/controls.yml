@@ -528,7 +528,8 @@ controls:
     fails_when: >-
       Syslog is UDP with no queue or authentication (RISK-34): a whole stream lost pages, but a single
       lost line or a forged one is not detected. h2's app log's bound is stated (its silent_after plus
-      evaluation), not twice its 5 s gap, because that would page on one late scrape. Only r1's export is
+      evaluation): its normal gap is the heartbeat, since its forwarder cuts the NOC's checks and sends a
+      count line per heartbeat's worth (decision 0026), so it rests on those checks. Only r1's export is
       blocked live; the others have the same generated rule.
 
   - id: central-log-store
@@ -731,6 +732,71 @@ controls:
       The power cut that resets a node resets the central store too, so the evidence of what led up to it is lost with both.
     fails_when: >-
       One copy, on the lab host's disk (RISK-35), in a folder any local user can write (RISK-45). A single node can't be hard-reset on its own here, so the drill cuts the whole lab. The weekly job has not run on GitHub yet; here the cut was the sandbox's whole-lab redeploy. The drill runs only in drills.yml (the lab job skips it), so control-status has no result for this control until that job has run on main. Lines still in flight at the moment of the cut are not checked: the drill waits until r2's lines are in the store before it cuts. A second cut within about a minute of a restart of the store can lose lines it took in since: 4 of r2's last 111 and 15 of its last 120 in two drill runs without the wait for the checkpoint (V-027, RISK-46). Lines r2 writes at boot before its route to the NOC is up never leave it (RISK-34).
+
+  - id: logvol-cut-at-source
+    claim: "One named kind of line is cut at h2's own forwarder before it leaves h2: web-check, the NOC's web check's request line from the NOC's address, answered 200. 36 of the check's own requests are written to h2's log and never reach the store, which gets the forwarder's count lines instead, while the same request from a user and a failed request from the NOC arrive as written. The same request answered 500, another page and another client on the NOC's LAN pass too; the same request from noc itself is cut (RISK-55), and so is a check that fails on content, since it still answers 200. Every log source has a daily ingest budget, counted in bytes at the collector, and all of them over the whole retention fit store_mb, the disk set aside for raw lines. Over the 30-minute false-positive review each source's pace as a day is within its budget, on the running NOC each source's bytes so far (its last 24 h, or since the lab started) are within it, and a source whose last 24 h passes its budget fires LogIngestOverBudget"
+    test:
+      - tests/live/observe/test_volume.py::test_noisy_kind_cut_at_the_source_while_wanted_lines_arrive
+      - tests/live/observe/test_volume.py::test_every_source_within_its_budget
+      - tests/test_volume.py::test_forwarder_cuts_the_named_kind_and_nothing_else
+      - tests/test_volume.py::test_the_cut_follows_the_web_check
+      - tests/test_volume.py::test_collector_counts_bytes_not_characters
+      - tests/test_volume.py::test_an_unnamed_kind_is_never_cut
+      - tests/test_volume.py::test_budget_rule_pages_once_a_source_passes_its_day
+      - tests/test_volume.py::test_every_source_has_a_budget_and_a_rule
+      - tests/test_volume.py::test_budgets_the_store_cannot_hold_are_refused
+      - tests/test_volume.py::test_a_source_without_a_budget_is_refused
+      - tests/test_volume.py::test_a_cut_kind_netlab_does_not_know_is_refused
+      - tests/test_volume.py::test_a_cut_source_must_wait_a_heartbeat_before_it_is_silent
+      - tests/test_detections.py::test_a_source_over_its_budget_during_the_review_fails
+    period: P31D
+    threat: >-
+      The store filling with the NOC's own check while nobody knows which source spends its disk; a cut
+      meant for noise that drops the line explaining an incident, or drops a whole source or severity.
+    fails_when: >-
+      The cut matches what an access line says (client address, request, status), so the same request made
+      from noc by anything other than the check is cut too, and so is a check that fails on content, which
+      still answers 200 and shows only as a count (RISK-55). The budget counts the bytes the collector hands Loki, not
+      Loki's disk, and only pages (RISK-56); once a day is over it stays firing for that day (RISK-57). The
+      live check reads the lab's own bytes, so on a lab up less than a day it covers only that time; the
+      day's figure is the review's pace. store_mb is checked by arithmetic, not against Loki's disk. The
+      page itself is proven in Prometheus' own rule evaluator, not live, because a live page would stay up
+      for a day. Routers' syslog, mostly Ansible's module lines (V-030), is not cut.
+
+  - id: logvol-detection-coverage
+    claim: "[`docs/detections.md`](docs/detections.md) is generated from the alert rules the NOC runs: one row per detection with what it detects, the data it reads, its sensor and where that sits, the objects it watches, its blind spots and its pages over 30 minutes of a stated benign workload, with no blank cell. A detection that looks back further than the review says so in its cell. `make test` fails on a rule with no row, a hand edit, or a review older than 92 days, run on other rules or on uncommitted changes, with a step that failed or ran fewer times than stated, or that stopped counting before its slowest page could arrive; the rows are the rules the running NOC has loaded"
+    test:
+      - tests/test_detections.py::test_table_has_a_full_row_for_every_deployed_rule_and_a_current_review
+      - tests/test_detections.py::test_every_alert_the_rules_raise_is_a_row
+      - tests/test_detections.py::test_a_rule_without_a_row_fails
+      - tests/test_detections.py::test_a_blank_blind_spot_fails
+      - tests/test_detections.py::test_a_review_older_than_its_cycle_fails
+      - tests/test_detections.py::test_a_review_of_other_rules_fails
+      - tests/test_detections.py::test_a_review_shorter_than_the_stated_workload_fails
+      - tests/test_detections.py::test_a_review_with_a_failed_step_fails
+      - tests/test_detections.py::test_a_step_that_raises_counts_as_failed_and_runs_on
+      - tests/test_detections.py::test_a_review_step_that_ran_fewer_times_than_planned_fails
+      - tests/test_detections.py::test_a_change_of_wait_alone_stales_a_figure
+      - tests/test_detections.py::test_a_review_on_a_tree_with_uncommitted_changes_fails
+      - tests/test_detections.py::test_a_review_that_stopped_counting_before_its_slowest_page_fails
+      - tests/test_detections.py::test_a_detection_that_looks_back_longer_than_the_review_says_so
+      - tests/test_detections.py::test_target_down_watches_only_what_answers_its_own_scrape
+      - tests/test_detections.py::test_a_detection_the_review_never_measured_has_a_blank_cell
+      - tests/test_detections.py::test_a_hand_edited_table_fails
+      - tests/test_detections.py::test_a_source_over_its_budget_during_the_review_fails
+      - tests/live/observe/test_detections.py::test_table_rows_are_the_rules_the_running_noc_has_loaded
+    period: P31D
+    threat: >-
+      A quiet NOC read as cover for what it never sees; a detection that pages on normal work until people
+      stop reading its pages; a table that was right once and drifted from the rules.
+    fails_when: >-
+      Each false-positive figure is 30 minutes of a stated workload in the lab, not a real network's normal
+      work (RISK-58), and a real fault in that window counts as false. PendingRebootOverdue and
+      LogIngestOverBudget look back further than the review, so their 0 measures nothing, which their cells
+      say. The review is a committed file: the fp-review workflow can run it on GitHub and upload what the
+      pager received, but a person commits it. Blind spots are written by hand, so an entry is only as good
+      as whoever wrote it; the check proves it is there and not blank. make test fails 92 days after the
+      last review, and on any rule change, until make fp-review runs again on a full lab.
 
   - id: verdict-log
     claim: "Every odd behaviour in the log has one verdict (my config, normal behaviour, platform bug or lab artifact), the version it was seen on, and a fix or workaround. None may stay unclassified past 5 working days"

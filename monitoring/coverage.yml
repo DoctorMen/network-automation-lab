@@ -53,9 +53,9 @@ collectors:
     metrics: [probe_success]
   logs:
     exporter: vector (the collector on noc)
-    reads: its own count and last-seen time of the lines each source sent, and of each mail the NOC's mailbox
-      (Mailpit) reports receiving (source mail, the alert path's heartbeat)
-    metrics: [log_last_seen_seconds, log_lines_total]
+    reads: its own count, size and last-seen time of the lines each source sent, and of each mail the NOC's
+      mailbox (Mailpit) reports receiving (source mail, the alert path's heartbeat)
+    metrics: [log_last_seen_seconds, log_lines_total, log_bytes_total]
   pushgateway:
     exporter: the pushgateway on noc (decisions 0020 and 0022)
     # Nothing here is read from a device: each value is what a job or `make apply` pushed as its last step.
@@ -66,7 +66,7 @@ collectors:
     # tests/live/observe/test_deadman.py checks a real make drift brings it.
     after_push: [netlab_job_last_success_timestamp_seconds]
   up:
-    exporter: Prometheus itself
+    exporter: Prometheus itself, on noc
     reads: whether each scrape above answered, and which of its own alerts fire (ALERTS, read by InterfaceFlapped
       so the flap that ends a link outage LinkDown paged for doesn't page again)
     metrics: [up, ALERTS]
@@ -219,6 +219,13 @@ counts:
     type: gauge
   log_lines_total:
     counts: lines the collector received from a node and source since the collector started
+    type: counter
+    wraps: a 64-bit float in Vector; it does not wrap in the life of a lab
+    resets: when the collector (noc-collector) restarts
+  log_bytes_total:
+    counts: bytes of the message of each line the collector received from a node and source since the
+      collector started (VRL length(), bytes and not characters); LogIngestOverBudget compares its last 24 h
+      with the source's daily budget (decision 0026)
     type: counter
     wraps: a 64-bit float in Vector; it does not wrap in the life of a lab
     resets: when the collector (noc-collector) restarts
@@ -469,6 +476,12 @@ reads:
     status: exported
     logql: '{source="syslog"}'
     metric: log_lines_total
+  - read: cat /applog/<arg>-<arg>.log
+    value: every line h2's web server wrote, before its forwarder cut any
+    status: derived
+    logql: '{source="http"} |= "netlab-cut: "'
+    how: each line of a kind the forwarder cuts is counted in its count lines (decision 0026); every other
+      line is in the store as the app wrote it
   - read: tail /var/log/messages
     value: a node's latest log lines
     status: exported
