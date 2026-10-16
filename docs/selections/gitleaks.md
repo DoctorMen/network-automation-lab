@@ -16,7 +16,7 @@ alternatives:
   - name: do nothing (rely on review)
     why_not: A rule that exists only as written policy fails CON-7, and a reviewer can't see what was committed and deleted again
 no_purchase: GitHub's free default push protection for known token formats, plus review. It costs nothing and stays on as a backstop, but it misses the two things this repo most needs caught.
-staffing: k alone; the hooks install with `pre-commit install` and the rules are two regexes in one file.
+staffing: one person, the repository owner; the hooks install with `pre-commit install` and the rules are two regexes in one file.
 vendor_domains: [gitleaks.io, github.com/gitleaks, github.com/zricethezav]
 independent_sources:
   - "tests/test_secrets.py::test_frr_password_rule_catches_what_default_rules_miss (our benchmark: gitleaks' default rules miss an FRR BGP password in a backup; the custom rule catches it)"

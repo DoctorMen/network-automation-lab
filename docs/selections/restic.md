@@ -18,7 +18,7 @@ alternatives:
   - name: do nothing (backups/ on the runner only)
     why_not: backups/ is recreated on every run, so a run that backed up nothing still goes green
 no_purchase: restic is free (BSD 2-clause) and its image is public, so the choice costs nothing. The cheaper-still option is the plain copy above, which gives up history, encryption and the read-back check.
-staffing: k alone; the backup and its checks run from make targets, and restoring one router's config is a single `restic dump`.
+staffing: one person, the repository owner; the backup and its checks run from make targets, and restoring one router's config is a single `restic dump`.
 vendor_domains: [restic.net, restic.readthedocs.io, github.com/restic]
 independent_sources:
   - "tests/live/test_backup.py::test_corrupt_destination_fails_the_backup (our measurement: with a byte flipped at the destination, `restic backup` still exits 0, so the job reads every backup back and runs check --read-data; decision 0014)"

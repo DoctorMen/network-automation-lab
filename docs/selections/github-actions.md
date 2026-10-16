@@ -16,7 +16,7 @@ alternatives:
   - name: do nothing (run `make all` by hand before merging)
     why_not: No nightly run and no dated, public result, so the control register's 31-day periods would rest on memory
 no_purchase: GitHub-hosted standard runners cost nothing for a public repo. If that ended, the fallback is `make all` by hand on a laptop, which keeps the tests but loses the dated, public record.
-staffing: k alone; the workflows are short YAML files and almost every step is a make target that runs the same way locally.
+staffing: one person, the repository owner; the workflows are short YAML files and almost every step is a make target that runs the same way locally.
 vendor_domains: [github.com, docs.github.com, github.blog, githubusercontent.com]
 independent_sources:
   - "docs/sizing/data/2026-10-15-github-runner.json (our measurement on a GitHub-hosted runner: kernel 6.17.0-1022-azure, Docker 28.0.4, the 7-node lab deployed by Containerlab 0.68.0 in 90.5 MiB)"

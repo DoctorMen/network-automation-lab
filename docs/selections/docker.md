@@ -16,7 +16,7 @@ alternatives:
   - name: do nothing (Linux network namespaces with FRR installed on the host)
     why_not: No image to pull, but FRR would have to be installed on every host in the exact version, with no digest to pin, and the nodes would share the host's files
 no_purchase: Docker Engine is free and already on the runner image and in most Linux distributions. If that changed, Podman is the free fallback, at the cost of re-testing the lab and the hooks on it.
-staffing: k alone; the lab uses `docker run`, `docker exec` and `docker inspect`, nothing more.
+staffing: one person, the repository owner; the lab uses `docker run`, `docker exec` and `docker inspect`, nothing more.
 vendor_domains: [docker.com, docker.io, mobyproject.org, github.com/docker, github.com/moby]
 independent_sources:
   - "docs/sizing/data/2026-10-15-github-runner.json (our measurement: on Docker 28.0.4 with cgroup v2 on a GitHub runner, the 7 nodes took 90.5 MiB, read with docker stats)"

@@ -16,7 +16,7 @@ alternatives:
   - name: do nothing (render and unit-test the configs only)
     why_not: No routing protocol would ever run, so none of the live drills (failover, BFD, carrier loss, drift) could prove anything
 no_purchase: Docker alone, plus our own script to create the veth links. A stand-in script kept outside this repo already does exactly that where Containerlab won't start (a kernel with no /proc/modules, such as the development sandbox in LAB_PARITY.md); it works, but then we own the link plumbing.
-staffing: k alone; nothing to hire or buy. The topology file is generated, so there is little to learn beyond `deploy` and `destroy`.
+staffing: one person, the repository owner; nothing to hire or buy. The topology file is generated, so there is little to learn beyond `deploy` and `destroy`.
 vendor_domains: [containerlab.dev, github.com/srl-labs, netdevops.me]
 independent_sources:
   - "docs/sizing/data/2026-10-15-github-runner.json (our measurement: the 7-node lab deployed by Containerlab 0.68.0 on a GitHub runner, 90.5 MiB)"
