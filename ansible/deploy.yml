@@ -38,15 +38,23 @@
     # until bgpd is up, vtysh prints "bgpd is not running" and exits 1 (seen on a fresh r2 container),
     # and frr-reload.py or the password task would fail or apply half. A daemon that isn't up yet is
     # also missing from `show running-config`, so the plan would re-add its lines. So every daemon the
-    # router's daemons file starts must answer first (`show daemons` lists the ones vtysh reaches).
+    # router's daemons file starts must answer first (`show daemons` lists the ones vtysh reaches),
+    # and FRR's start script (watchfrr.sh, which ends with `vtysh -b`, the config load) must be done.
+    # Up to 120 s: zebra or bgpd sometimes crashes as it starts (on GitHub all four routers' zebra
+    # once), and watchfrr starts it again, with its config, only after its minimum restart
+    # interval (60 s) (V-011). netlab/restore.py waits for a throwaway router the same way.
     # First, so the health baseline below is taken with the routers answering.
-    - name: Wait until every routing daemon answers (bgpd included)
-      ansible.builtin.command: vtysh -c 'show daemons'
+    - name: Wait until every routing daemon answers and FRR has loaded its config (bgpd included)
+      ansible.builtin.command:
+        argv: [sh, -c, "vtysh -c 'show daemons' && ps -o args"]
       vars:
         started: "{{ lookup('file', playbook_dir ~ '/../build/' ~ inventory_hostname ~ '/daemons') | regex_findall('^(zebra|\\w+d)=yes', multiline=True) }}"
       register: daemons
-      until: daemons.rc == 0 and started | difference(daemons.stdout.split()) == []
-      retries: 15
+      until: >-
+        daemons.rc == 0
+        and started | difference((daemons.stdout_lines | first | default('')).split()) == []
+        and daemons.stdout is not search('watchfrr\.sh|vtysh -b')
+      retries: 60
       delay: 2
       changed_when: false
       check_mode: false
