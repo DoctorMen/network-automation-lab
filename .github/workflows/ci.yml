@@ -132,6 +132,9 @@ jobs:
         run: |
           for r in r1 r2 r3 isp; do
             echo "=== $r"; docker exec clab-netauto-$r vtysh -c "show ip route" -c "show ip ospf neighbor" -c "show bfd peers brief" -c "show bgp summary" || true
+            # FRR logs to stdout (`log stdout` in frr.conf), so a daemon that crashed or never started says why here.
+            echo "--- $r processes and FRR log"; docker exec clab-netauto-$r ps -o pid,args || true
+            docker logs --tail 60 clab-netauto-$r 2>&1 || true
           done
           docker exec clab-netauto-fw1 iptables -vnL FORWARD || true
           docker exec clab-netauto-r2 sh -c 'iptables -vnL; iptables -t raw -vnL' || true
