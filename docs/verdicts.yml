@@ -264,3 +264,13 @@
     - "2026-10-16, lab na12, the review in monitoring/fp-review.yml (commit b4771ab, 10:28:44Z, 1797 s), read back from Loki the same way: r1 97%, r2 94%, r3 98% and fw1 87%"
     - "2026-10-16, lab na14, the merged wave 2 tree: one make drift and one make apply, twice, sent r2's syslog 25216 bytes in 191 lines (7.3 MB a day at five-minute pace), r1's 17128 and r3's 18758; 156 of r2's lines were vty-aaa command records, which the store also holds under accounting (14854 bytes), the rest mostly ansible-<module> lines"
   workaround: "The syslog budget is sized to it: 16 MiB a day, about twice r2's 7.3 MB a day on the merged lab, where the accounting proxy's records add to Ansible's lines (decision 0026); the first was 8 MiB, 2.8 times r2's 3.0 MB a day in the first review. The lines are kept, because they are the routers' only record of which modules the operator's playbooks ran there and with what arguments. They could be cut where they are written: ansible-core's no_target_syslog (ansible.cfg [defaults], or the host variable ansible_no_target_syslog) stops Ansible writing them; busybox syslogd itself can't filter by message"
+
+- id: V-031
+  opened: 2026-10-16
+  version: prom/prometheus:v2.53.0, prom/alertmanager:v0.27.0, prom/node-exporter:v1.8.2
+  symptom: a queue overflow on h2 that also lost one of the NOC's pings of h2 paged nothing, though QueueDrops fired for h2 eth1
+  verdict: my-config
+  evidence:
+    - "2026-10-16, review of commit 4cf990e on lab na15: a burst of 450000 datagrams from h2, timed over the icmp job's scrape of h2, added 438411 queue drops; probe_success for h2 was 0 at that one scrape, CauseSeen for h2 fired from 3 s to about 80 s after the burst began, QueueDrops for h2 eth1 from 7 s to about 56 s, suppressed in Alertmanager all that time, and the pager received nothing for h2. The same burst 2.5 s away from every scrape of h2 paged QueueDrops 9.1 s after it"
+    - "Each QueueDrops listed its own node in deps (since the merge of build/w2b). The node's marker keeps firing 75 s after its ping answers again, longer than QueueDrops keeps firing after a burst, so the page was held back until it had resolved"
+  fixed_in: "decision 0021: QueueDrops lists what is in front of its node, never the node itself; tests/test_dependencies.py::test_a_queue_drop_is_never_held_back_by_its_own_node"

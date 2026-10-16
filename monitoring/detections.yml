@@ -29,7 +29,7 @@ detections:
     detects: an exporter or probe endpoint the NOC scrapes that has not answered for 15 s (three scrapes)
     blind_spots:
       - "A target that answers with wrong or stale values passes: frr_exporter still answers while a routing daemon is down (frr_collector_up says so, and no rule reads it)."
-      - "Only what Prometheus scrapes: fw1, h1 and isp run no exporter, and h2 runs only node_exporter. The ICMP probes are targets of blackbox on noc, which answers even when the ping fails, and no rule reads probe_success for ICMP, so a device that stops answering ping does not page by itself."
+      - "Only what Prometheus scrapes: fw1, h1 and isp run no exporter, and h2 runs only node_exporter. The ICMP probes are targets of blackbox on noc, which answers even when the ping fails, so TargetDown never pages for a device that stops answering ping; NodeDown, which reads probe_success for ICMP, does."
       - "A target down for less than its 15 s wait plus a scrape does not page."
       - "In band: a dead campus link makes every target behind it fail at once (RISK-31). They wait behind the link's or router's own page (decision 0021), and a dead uplink from noc pages as r2 (RISK-43)."
   BGPSessionDown:
@@ -59,7 +59,7 @@ detections:
       - "One vantage point: the NOC's LAN, through r2 and r3. A user's path from LAN-A through fw1 and r1 is not probed."
       - "One page and one port: only GET / on port 80, matched on href=\"etc/\"; h2's port 22 and every other page are unchecked."
       - "A page slower than a user would accept still passes if it answers inside the probe's 3 s timeout."
-      - "The NOC's checks are cut at h2's forwarder whenever h2 answers 200 (decision 0026), a check that fails on content included, so the store holds only their count; a check shows in the access log only when h2 answers it with another status (RISK-55)."
+      - "The NOC's checks are cut at h2's forwarder whenever h2 answers 200 (decision 0026), a check that fails on content included, so the store holds only their count; a check shows in the store only when h2 answers it with another status (RISK-55)."
   InterfaceFlapped:
     detects: a router interface whose carrier changed in the last minute, however briefly
     blind_spots:
@@ -109,7 +109,8 @@ detections:
       - "Root queues only: node_exporter exports each interface's root qdisc, so the page names the port, and the class is read on the node itself (tc -s class show)."
       - "The routers' veth ports run noqueue, so they have no queue to drop in; a drop there shows in node_network_transmit_drop_total, which no rule reads."
       - "fw1, h1, noc and isp run no node_exporter, so their queues are not watched."
-      - "The count it shows is increase()'s estimate over the minute, which extrapolates (2029 for 1902 drops in one run here)."
+      - "The count it shows is increase()'s estimate over the minute, which extrapolates, so it can differ from the drops the queue counted."
+      - "Held back while a cause in front of its node fires, and for 75 s after: h2's queue waits behind h2's link to r3, r3 and r2, and a burst while one of them was seen down for a single scrape is never paged (RISK-42). Never behind its own node, whose ping a burst can drop (decision 0021)."
   UnexpectedAdmin:
     detects: an account the inventory doesn't list (alice, bob and the CM tool's netlab are listed) that opened FRR's CLI, was refused by it or ran a command on a router we own, from that router's accounting proxy; it pages at the first record and clears 60 s after the last (decision 0029)
     blind_spots:

@@ -35,10 +35,10 @@ ping show loss that isn't there). This runbook tells them apart. (OROS 0.3 FND-1
    counts the driver's drops after the queue. 0 here and drops in the class is the queue, not the port
    ([V-025](../verdicts.yml)). On a router, whose ports have no queue (`qdisc noqueue`), the same
    command is where any drop would show.
-4. **Why the averages miss it.** A 5-minute average of a 10 ms burst is nothing. In one run here
-   3000 datagrams left h2 in 10 ms and its queue dropped 1887 of them, while the test held the port's
-   5-minute average under 5% of its 20 Mbit. Don't use the traffic graph to close this; use the
-   counters in steps 1 and 2.
+4. **Why the averages miss it.** A 5-minute average of a burst under a second is nothing. The
+   microburst test holds the port's 5-minute average under 5% of its 20 Mbit while h2's queue drops part
+   of a burst of 3000 datagrams (1887 of them in one run here, [V-026](../verdicts.yml)). Don't
+   use the traffic graph to close this; use the counters in steps 1 and 2.
 5. **Loss in ping or mtr at one hop only?** `make locate SRC=h1 DST=203.0.113.1`. A hop with loss
    whose later hops are clean is marked `not loss: later hops are clean, so this hop only rate-limits
    pings to itself`: the router polices pings to its own address, and traffic through it is fine. Loss

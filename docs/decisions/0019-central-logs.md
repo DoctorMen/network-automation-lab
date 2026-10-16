@@ -13,7 +13,7 @@ alternatives:
   - name: syslog over TCP or TLS (RFC 5425) from every node
     why_not: busybox syslogd, the only syslog daemon in the image, sends UDP only; anything else is a package added to the router image
   - name: count the sender's sent datagrams as proof it is logging
-    why_not: NOT-3 rules it out, and the lab shows why. With r1's syslog dropped on r2, r1's Udp_OutDatagrams keeps rising
+    why_not: NOT-3 rules it out, and the lab shows why. With r1's syslog dropped on r2, r1's own count of the datagrams its syslogd sends the collector keeps rising
   - name: run the forwarder as root, or change the app to log to syslog
     why_not: NOT-7's case is the app nobody may change, on a host without root; a sidecar as nobody reading the file the app already writes is that case
 sources:

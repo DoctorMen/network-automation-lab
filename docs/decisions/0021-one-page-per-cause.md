@@ -66,11 +66,12 @@ OROS DEC-5 asks that dependent alerts sit behind the causal one (host, uplink, s
 - A cause's marker keeps firing 75 s after it recovers, so dependents that clear late stay held back. A log source's SourceSilent clears only on its next heartbeat, the slowest. The marker holds, not the page: in a full live run, h2's page (itself a cause, behind r3) kept firing as long as r3's and answered one scrape later, so it outlasted r3's hold and paged (V-020).
 - InterfaceFlapped is now one rule per interface, firing once the carrier is back. A link still down is LinkDown's page.
 - A flap's deps are its router and what is in front of it, never its own link. A scrape that sees a short outage fires the link's marker at once, while LinkDown needs 10 s: a flap behind its own link would be held back with no page for the outage at all. For the same reason a flap stays quiet for 40 s after LinkDown for its link fired (its 30 s window, an interval, and an interval of margin), so a long outage still pages once. Review found the first case live: r1's link to fw1 down for 7 s paged nothing (V-021).
+- QueueDrops' deps are what is in front of its node, never the node itself. A burst that fills h2's queue also drops the NOC's ping of h2, whose echo reply leaves through the same class, and the marker that fires then holds back for 75 s, while QueueDrops stays firing for about a minute, the length of its window: listed behind its own node, such a burst would page nothing. Review found it live on the merged rules (V-031). The rule can't fire without a scrape of the node's own exporter, so the node's own cause added nothing else (tests/test_dependencies.py::test_a_queue_drop_is_never_held_back_by_its_own_node).
 
 ## Consequences
 
 - One page per cause, measured live: r3 cut off, frr_exporter killed beside r1 and r1's link to fw1 cut page exactly three times, and the test requires ten or more alerts held back. r1's link to fw1 down for 7 s pages once, as a flap.
 - Every state alert's bound grows by 4 s (group_wait 1 s to 5 s): 31 s instead of 27 s.
 - A cause's page resolves when its signal does; what depends on it stays held back 75 s more.
-- A real failure behind a cause pages only when the cause clears, and a short one behind a cause seen for one scrape can go unpaged (RISK-42).
+- A real failure behind a cause pages only when the cause clears, and a short one behind a cause seen for one scrape can go unpaged (RISK-42). A flap and a queue's drops are never held back by their own link or node, the cause their own fault can set off.
 - The NOC's own uplink has no end the NOC can watch past, so its failure pages as r2, the first hop. The NOC's own services are not in the model (RISK-43).

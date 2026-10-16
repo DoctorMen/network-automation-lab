@@ -62,5 +62,6 @@ as when a daemon crashes as it starts and watchfrr starts it again (V-011).
   `docs/runbooks/dry-runs.yml`.
 - On a GitHub runner the power-event drill's step took 133 s (07:48:58 to 07:51:11 UTC) in drills.yml run
   38869378128 (main, 3d3770c), inside the drills job's own 20-minute limit. The restore drill in that
-  run failed in 2 s, because the backup repository then held no snapshot; the backup start order's
-  step 1, which creates the repository, ran next, in run 38869409916.
+  run failed in 2 s (07:48:56 to 07:48:58 UTC): run 38869409916, the backup start order's step 1, had
+  created the repository and kept it in the cache at 07:47:21 UTC, so the drill found it, but no backup
+  had been taken into it yet.
