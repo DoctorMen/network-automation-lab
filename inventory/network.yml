@@ -7,7 +7,7 @@ lab_name: netauto
 # the lab's stand-in carrier, so the lab's own deploy, tests and drift check still reach it.)
 operator: campus NOC
 
-# What every node actually runs: all seven use this one image. Read from the lab
+# What every node actually runs: all ten use this one image. Read from the lab
 # (`show version`, `apk info -v`, /etc/os-release), and checked against it on every
 # CI run by tests/live/test_platform.py, so a silent upgrade fails the build.
 platform:
