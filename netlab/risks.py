@@ -78,6 +78,17 @@ DETECTORS = {
     # The edges (decision 0012): what edge.sh and fw1's raw table don't cover.
     "subnet-anti-spoof": Detector("build", "*/firewall.sh", r"^iptables -t raw -A PREROUTING -i \S+ ! -s \S+ -j DROP", None,
                                   "anti-spoofing checks the subnet, not the host, so a user can send as another user"),
+    # The switch (decisions 0032 to 0034): set at deploy, read back by nothing; one VLAN; broadcast only; the DNS nobody resolves with.
+    "switch-not-collected": Detector("build", "*/switch.sh", r"^ip link set \S+ master \S+$", None,
+                                     "a switch port's bridge membership (and its VLAN and storm control), set at deploy and never read back by `make drift`"),
+    "bridge-vlan-fallback": Detector("build", "*/switch.sh", r"^\s+ip link add \S+ type bridge$", None,
+                                     "a bridge with no VLAN filtering, where the kernel refuses it"),
+    "broadcast-only-policer": Detector("build", "*/switch.sh", r"-d ff:ff:ff:ff:ff:ff -j DROP$", None,
+                                       "storm control that polices broadcast only, not multicast or unknown unicast"),
+    "dns-unresolved": Detector("build", "noc/Corefile", r"^\.:53 \{$", None,
+                               "a DNS server no node's resolver points at, serving plain UDP and TCP, with no probe of its own"),
+    "audit-tcp-hosts-only": Detector("repo", "netlab/audit.py", r'"ss", "-ltnpH"', None,
+                                     "a listener audit of TCP on hosts only: no UDP, no routers, and only as often as CI runs"),
     "edge-ipv4-only": Detector("build", "*/edge.sh", r"^iptables -A INPUT -i \S+ -j DROP", r"^ip6tables ",
                                "the internet edge filters IPv4 only, and nothing filters IPv6"),
     "edge-icmp-any-type": Detector("build", "*/edge.sh", r"-p icmp\b(?!.*--icmp-type).*-j ACCEPT", None,

@@ -709,7 +709,8 @@ def sidecars(inv: Inventory) -> dict[str, dict]:
         # The lab's DNS (decision 0032): CoreDNS serving the hosts file netlab renders from the inventory, on the
         # NOC's address, UDP and TCP 53. No forwarding: a name it doesn't have is NXDOMAIN.
         out[f"{noc}-dns"] = {"netns": noc, "image": images["coredns"],
-                             "binds": [f"{noc}/Corefile:/Corefile:ro", f"{noc}/hosts.lab:/hosts.lab:ro"], "cmd": "-conf /Corefile"}
+                             "binds": [f"{noc}/Corefile:/Corefile:ro", f"{noc}/hosts.lab:/hosts.lab:ro", f"{noc}/root.db:/root.db:ro"],
+                             "cmd": "-conf /Corefile"}
     for r in nat_logs(inv):
         # conntrack needs CAP_NET_ADMIN in the router's namespace, so this one runs as root (decision 0031), and
         # the topology asks for that capability by name. Containerlab 0.68.0 starts every node privileged, a

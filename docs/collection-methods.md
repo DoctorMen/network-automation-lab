@@ -13,7 +13,8 @@ the lab's secrets, and verifies it there ([backups.md](backups.md)).
 | Router (FRR 8.4.1) | r1, r2, r3, isp (see below) | `vtysh -c "show running-config no-header"` over `docker exec` (Ansible's Docker connection), through a vtysh wrapper that prints each BGP password as its sha256 tag | `backups/<router>.conf` | Intent and startup: `frr-reload.py --test` with `build/<router>/frr.conf`. The copy: `frr-reload.py --test` with the copy itself ([`verify_capture.yml`](../ansible/verify_capture.yml)) |
 | Firewall (iptables) | fw1 | `iptables-save` over `docker exec` | `backups/fw1.rules` | Intent and startup: `firewall.sh`'s iptables lines replayed in a new network namespace, then `iptables -S` and `iptables -t raw -S` diffed with the live ones |
 | Edge router rules (iptables) | r2, r3 (the `edge_routers` group: routers with an `edge.sh`) | `iptables-save` over `docker exec`, by the same play as fw1 | `backups/<router>.rules` | Intent and startup: `edge.sh`'s iptables lines, replayed and diffed the same way as fw1's |
-| Host | h1, h2 | Not collected | none | none (gap, below) |
+| Host | h1, h2, h3 | Not collected | none | none (gap, below) |
+| Switch (Linux bridge) | sw1 | Not collected ([RISK-65](risks.yml)): `switch.sh` is the read-only intent, set at deploy; `make trace` and `make where` read its MAC table and counters on demand | none | none; tests/live/test_storm.py checks its storm control on every CI run |
 
 ## Routers
 

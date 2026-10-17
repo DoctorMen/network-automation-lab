@@ -111,6 +111,10 @@ jobs:
         run: make deploy-network
       - name: Live tests (routing, reachability, firewall, failover, collection, locate, platform)
         run: make live  # tests/live without tests/live/observe; also writes results/live.xml (JUnit, timestamped)
+      - name: Listener audit against the inventory (every host's TCP listeners; fails on one nobody recorded)
+        # The scheduled discovery OROS FND-4 asks for (decision 0032): nightly and on every push, on the lab it just tested.
+        if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
+        run: make audit
       - name: Config drift check (Ansible)
         # Runs even when a live test failed, so every run still backs up the configs.
         if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}

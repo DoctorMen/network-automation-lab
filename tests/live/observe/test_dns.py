@@ -40,9 +40,9 @@ def test_every_inventory_name_resolves_to_its_address(node, dns):
         if rc or got != address:
             wrong.append(f"{fqdn}: got {got!r} (rc {rc}), inventory says {address}")
         rc, out = lookup(node, "h2", address, dns["server"])
-        back = PTR.search(out)
-        if rc or not back or back[1].rstrip(".") != fqdn:
-            wrong.append(f"{address}: reverse got {back[1] if back else None!r} (rc {rc}), inventory says {fqdn}")
+        back = [n.rstrip(".") for n in PTR.findall(out)]  # the hosts file's line gives the name and its short form
+        if rc or fqdn not in back:
+            wrong.append(f"{address}: reverse got {back!r} (rc {rc}), inventory says {fqdn}")
     assert not wrong, "\n".join(wrong)
 
 
