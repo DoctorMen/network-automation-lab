@@ -36,7 +36,8 @@ def test_each_router_we_own_has_the_named_accounts(node, expected):
 def test_the_cm_tool_reloads_after_root_did(node, expected):
     """frr-reload.py --reload logs to /var/log/frr/frr-reload.log and creates the file if it is missing. On each
     router we own the file is there from the start, the CM tool's, in the admin group, mode 0640: the CM tool and
-    root write it, the admins read it, nobody else can. So a reload as root first (an operator's, umask 022) leaves
+    root write it, the admins read it, nobody else can, and the folder is sticky, so an admin can't rename it and
+    put their own in its place. So a reload as root first (an operator's, umask 022) leaves
     make apply's reload, run as the CM tool, able to log. A file root created first refused it (Errno 13, r3 in CI
     run 38972784804)."""
     access = expected["access"]
@@ -54,6 +55,12 @@ def test_the_cm_tool_reloads_after_root_did(node, expected):
     for router in access["routers"]:
         log = node(router).run("ls", "-l", "/var/log/frr/frr-reload.log", check=False).stdout.split()
         assert log[:1] == ["-rw-r-----"] and log[2:4] == [cm, access["group"]], f"{router}: {' '.join(log) or 'no frr-reload.log'}"
+    person = next(a["name"] for a in access["accounts"] if a["kind"] == "person")
+    for router in access["routers"]:
+        moved = node(router).run("su", "-s", "/bin/sh", person, "-c",
+                                 "mv /var/log/frr/frr-reload.log /var/log/frr/moved", check=False)
+        node(router).run("mv", "/var/log/frr/moved", "/var/log/frr/frr-reload.log", check=False)  # if it moved, put it back
+        assert moved.returncode != 0, f"{router}: {person} could rename the CM tool's frr-reload.log"
 
 
 def test_frr_answers_a_person_only_through_the_accounting_proxy(node, expected):

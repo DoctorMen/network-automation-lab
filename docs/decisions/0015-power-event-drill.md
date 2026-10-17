@@ -54,7 +54,8 @@ full lab with the NOC (two runs on 2026-10-16), where the drill also waits for t
 148.3 and 187.3 s for the test, routing back 73.9 and 83.7 s after the cut, about a minute later,
 as when a daemon crashes as it starts and watchfrr starts it again (V-011). In those runs watchfrr
 still waited its default 60 s before starting a crashed daemon again; each router's daemons file now
-sets 5 s, doubling for each restart in a row up to 60 s (V-011).
+sets 5 s, doubling for each restart in a row up to 60 s (V-011). With it, over two runs, routing was back
+14.9 and 18.0 s after the cut, and the NOC settled after 94.1 and 101.6 s.
 
 ## Consequences
 

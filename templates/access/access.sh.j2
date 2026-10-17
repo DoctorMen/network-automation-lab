@@ -8,12 +8,14 @@ grep -q '^{{ group.name }}:' /etc/group || addgroup -g {{ group.gid }} {{ group.
 # {{ a.kind }}{{ (': ' ~ a.what) if a.what is defined else '' }}
 id {{ a.name }} >/dev/null 2>&1 || adduser -D -u {{ a.uid }} -G {{ group.name }} -s /bin/sh {{ a.name }}
 {% endfor %}
-# frr-reload.py --reload logs to /var/log/frr, and creates it if it is missing, which only root can.
-install -d -g {{ group.name }} -m 2775 /var/log/frr
+# frr-reload.py --reload logs to /var/log/frr, and creates it if it is missing, which only root can. Sticky, so
+# only a file's owner or root can rename or delete it: an admin can't swap the CM tool's log for their own.
+install -d -g {{ group.name }} -m 3775 /var/log/frr
 # Its log file too, before anyone reloads: the CM tool's, so it can append after a reload as root, which would
 # otherwise create the file root's with a login shell's umask (022) and refuse the CM tool (Errno 13). Root
 # writes it too, the admins read it, nobody else can.
-install -m 0640 -o {{ cm }} -g {{ group.name }} /dev/null /var/log/frr/frr-reload.log
+# touch keeps what a file there already holds, and the chown and chmod repair one root created.
+touch /var/log/frr/frr-reload.log && chown {{ cm }}:{{ group.name }} /var/log/frr/frr-reload.log && chmod 0640 /var/log/frr/frr-reload.log
 # The CM tool's scratch folders (ansible/). They are its own, so no other account can plant the file a
 # rollback loads, which would then run under the CM tool's name.
 install -d -o {{ cm }} -g {{ group.name }} -m 0700 /tmp/netlab-bin /tmp/rollback

@@ -1,6 +1,7 @@
 """A routing daemon that crashes as it starts (FRR 8.4.1's zebra and bgpd do now and then, V-011) is back within
 seconds, not minutes: every router's watchfrr runs with the options its daemons file sets, and a throwaway router
-started the way the lab starts that router has zebra back within 30 s after each of two crashes in a row. The
+started the way the lab starts that router has zebra back within 45 s after each of two crashes in a row, which leaves
+room for one crash of zebra's own after either one (V-011). The
 throwaway needs only Docker and the router image, not the lab, so it costs least in the lab job, which already has
 both and runs this file with the other live tests (make live)."""
 import re
@@ -13,7 +14,7 @@ from .conftest import BUILD, wait_for
 # The router whose zebra crashed twice as it started in CI run 38972784804 and was still down when make apply's
 # 120 s wait ran out.
 ROUTER = "isp"
-BACK_WITHIN = 30  # seconds, after each crash
+BACK_WITHIN = 45  # seconds, after each crash: with one more crash of zebra's own, about 16 s after crash 1, 36 s after crash 2
 
 
 def watchfrr_options(router):
@@ -61,9 +62,9 @@ def zebra_back(box, crashed):
     return pid not in (None, crashed) and "zebra" in answering and "watchfrr.sh" not in ps and "vtysh -b" not in ps
 
 
-def test_zebra_crashing_as_it_starts_is_back_within_30_s():
+def test_zebra_crashing_as_it_starts_is_back_within_45_s():
     """A throwaway isp with its rendered config, started the way the lab starts isp (netlab.restore.Scratch, which
-    runs the node's own start command), has zebra answering again, with its config loaded, within 30 s after
+    runs the node's own start command), has zebra answering again, with its config loaded, within 45 s after
     each of two crashes in a row. With the image's own start it took 65.2 s, then 120.6 s (V-011)."""
     took = []
     with restore.Scratch(BUILD, ROUTER, BUILD / ROUTER / "frr.conf") as box:

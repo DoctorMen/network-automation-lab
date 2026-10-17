@@ -99,7 +99,7 @@ zebra or bgpd crashes as it starts. When the throwaway routers started watchfrr 
 started the daemon again 60 s later and that drill took about 75 s. Now each runs its node's own start
 command, which gives watchfrr the daemons file's restart interval: 5 s, doubling for each restart in a
 row up to 60 s. On a throwaway router zebra was back 10.2, 10.6 and 20.1 s after three crashes in a
-row, and `tests/live/test_startup_crash.py` checks it is back within 30 s after each of two. The drill
+row, and `tests/live/test_startup_crash.py` checks it is back within 45 s after each of two. The drill
 waits until every daemon on watchfrr's command line runs, for up to 120 s, not only for zebra (V-011 in
 [verdicts.yml](verdicts.yml)).
 

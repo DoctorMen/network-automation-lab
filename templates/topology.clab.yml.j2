@@ -15,7 +15,9 @@ topology:
       kind: linux
       # Starts watchfrr the way the image's own start script (docker-start) does, but with the daemons file's
       # watchfrr_options, which that script leaves out (V-011). frrcommon.sh, which reads the daemons file, is a
-      # bash script. tini, the image's entrypoint, stays the container's first process.
+      # bash script. tini, the image's entrypoint, stays the container's first process. docker-start also defines
+      # the log_*_msg functions frrcommon.sh calls on its error paths; this does not, so there bash says
+      # 'command not found' instead of the reason.
 {% if name in mon.exporters %}
       # /var/run/frr is shared with this router's frr_exporter (decision 0018). Unlike /var/run on real
       # gear it survives a restart, and a stale pid file would point FRR's start script at whatever

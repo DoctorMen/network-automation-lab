@@ -158,6 +158,8 @@ def test_the_boot_check_waits_for_the_daemons_after_watchfrrs_options():
     assert not restore.booted(ps.replace("/usr/lib/frr/bgpd -d", "[bgpd]")), "booted with bgpd down"
     assert not restore.booted(ps + "/bin/bash /usr/lib/frr/watchfrr.sh restart all\n"), "booted while a start script runs"
     assert not restore.booted(ps + "vtysh -b\n"), "booted while the config loads"
+    assert not restore.booted("PID   COMMAND\n/sbin/tini -- bash -c . /usr/lib/frr/frrcommon.sh && exec /usr/lib/frr/watchfrr "
+                              "$watchfrr_options $(daemon_list)\n"), "booted before watchfrr started"
 
 
 def test_a_throwaway_router_shares_nothing_with_the_live_one(tmp_path):
