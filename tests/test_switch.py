@@ -137,3 +137,13 @@ def test_trace_names_the_port_the_storm_comes_in_on():
     assert "STORM from sw1:eth3 (edge port to h3:eth1): 20000/s in; source MAC(s) " + H3_MAC in trace.summary({**f, "seconds": 2})
     quiet = trace.trace(inv, SW, trace.rates(before, before, 2), fdb("eth2"), {}, 1000)
     assert quiet["storm_from"] == [] and "no storm" in trace.summary({**quiet, "seconds": 2})
+
+
+def test_audit_expects_no_port_from_a_sidecar_not_deployed():
+    """CI's lab job deploys the network without the NOC's sidecars, so their ports aren't expected there."""
+    inv = load(INVENTORY)
+    found = {h: {} for h in audit.hosts(inv)}
+    every = audit.audit(inv, found)
+    none = audit.audit(inv, found, running=set())
+    assert any(r["recorded"] and r["recorded"].endswith(("-dns", "-collector", "-node-exporter")) for r in every)
+    assert not any(r["recorded"] and r["recorded"].endswith(("-dns", "-collector", "-node-exporter")) for r in none)

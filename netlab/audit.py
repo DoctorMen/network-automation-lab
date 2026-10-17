@@ -49,13 +49,20 @@ def read(inv: Inventory, lab: str, host: str) -> dict[int, dict]:
     return listeners(out.stdout)
 
 
-def audit(inv: Inventory, found: dict[str, dict[int, dict]]) -> list[dict]:
+def deployed(lab: str) -> set[str]:
+    """The lab's running node names: CI's lab job deploys the network without the NOC's sidecars."""
+    out = subprocess.run(["docker", "ps", "--format", "{{.Names}}"], capture_output=True, text=True, timeout=30)
+    return {n.removeprefix(f"clab-{lab}-") for n in out.stdout.split()}
+
+
+def audit(inv: Inventory, found: dict[str, dict[int, dict]], running: set[str] | None = None) -> list[dict]:
     """One row per port on each host, recorded or heard: {host, port, recorded, listening, program, local, mismatch}.
-    recorded names what records it (services, or the sidecar). Pure, so tests feed it canned listings."""
+    recorded names what records it (services, or the sidecar). running, when given, is the deployed nodes: a sidecar
+    that isn't deployed opens nothing, so its ports aren't expected. Pure, so tests feed it canned listings."""
     rows = []
     for host in sorted(found):
         recorded = {p: "services" for p in inv.hosts[host].get("services") or []}
-        recorded.update(monitoring.listeners(inv, host))
+        recorded.update({p: s for p, s in monitoring.listeners(inv, host).items() if running is None or s in running})
         heard = found[host]
         for port in sorted(set(recorded) | set(heard)):
             local = port in heard and heard[port]["address"].startswith("127.")
@@ -92,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
     lab = switch.lab_name()
     with ThreadPoolExecutor() as pool:
         found = dict(zip(hosts(inv), pool.map(lambda h: read(inv, lab, h), hosts(inv))))
-    rows = audit(inv, found)
+    rows = audit(inv, found, deployed(lab))
     print(json.dumps(rows, indent=2) if args.json else summary(rows))
     return 1 if any(r["mismatch"] for r in rows) else 0
 

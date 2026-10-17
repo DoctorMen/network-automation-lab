@@ -91,7 +91,7 @@ def test_the_answer_names_the_vlan(node, expected, lab_name):
 
 def run_audit(lab_name):
     hosts = audit_tool.hosts(INVENTORY)
-    return audit_tool.audit(INVENTORY, {h: audit_tool.read(INVENTORY, lab_name, h) for h in hosts})
+    return audit_tool.audit(INVENTORY, {h: audit_tool.read(INVENTORY, lab_name, h) for h in hosts}, audit_tool.deployed(lab_name))
 
 
 def test_unrecorded_service_on_next_audit(node, expected, lab_name):
