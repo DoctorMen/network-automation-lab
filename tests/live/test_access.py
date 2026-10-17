@@ -39,7 +39,10 @@ def test_the_cm_tool_reloads_after_root_did(node, expected):
     root write it, the admins read it, nobody else can, and the folder is sticky, so an admin can't rename it and
     put their own in its place. So a reload as root first (an operator's, umask 022) leaves
     make apply's reload, run as the CM tool, able to log. A file root created first refused it (Errno 13, r3 in CI
-    run 38972784804)."""
+    run 38972784804). The folder is the CM tool's too, setgid and sticky (3775): with fs.protected_regular=2 the
+    kernel refuses root's append to a file in a sticky, group-writable folder unless root or the folder's owner
+    owns the file, so in a folder root owned root's reload failed (Errno 13 on r1, r2 and r3 in CI run
+    38987583306, V-032)."""
     access = expected["access"]
     cm = access["ansible_user"]
     failed = {}
@@ -53,6 +56,8 @@ def test_the_cm_tool_reloads_after_root_did(node, expected):
                 failed[f"{router} as {who}"] = (result.stderr.strip().splitlines() or [f"exit {result.returncode}"])[-1]
     assert not failed, f"a reload of the intent failed: {failed}"
     for router in access["routers"]:
+        folder = node(router).run("ls", "-ld", "/var/log/frr", check=False).stdout.split()
+        assert folder[:1] == ["drwxrwsr-t"] and folder[2:4] == [cm, access["group"]], f"{router}: {' '.join(folder) or 'no /var/log/frr'}"
         log = node(router).run("ls", "-l", "/var/log/frr/frr-reload.log", check=False).stdout.split()
         assert log[:1] == ["-rw-r-----"] and log[2:4] == [cm, access["group"]], f"{router}: {' '.join(log) or 'no frr-reload.log'}"
     person = next(a["name"] for a in access["accounts"] if a["kind"] == "person")

@@ -280,3 +280,15 @@
     - "Each QueueDrops listed its own node in deps (since the merge of build/w2b). The node's marker keeps firing 75 s after its ping answers again, longer than QueueDrops keeps firing after a burst, so the page was held back until it had resolved"
     - "2026-10-16, lab na14, with the fix (commit f1bdd53): the same burst, timed over the icmp job's scrape of h2, took 0.99 s; probe_success for h2 was 0 at that one scrape and CauseSeen for h2 fired 4.3 s after the burst began, and QueueDrops for h2 eth1 paged 11.6 s after it and resolved at 61.6 s. quiet() for WebContentWrong on h2, which lists h2, waited 77.9 s, until that marker stopped firing"
   fixed_in: "f1bdd53 (decision 0021): QueueDrops lists what is in front of its node, never the node itself; tests/test_dependencies.py::test_a_queue_drop_is_never_held_back_by_its_own_node"
+
+- id: V-032
+  opened: 2026-10-17
+  version: GitHub ubuntu-24.04 runner kernel (fs.protected_regular=2), frrouting/frr:v8.4.1 (Python 3 on Alpine)
+  symptom: frr-reload.py --reload as root on r1, r2 and r3 failed with Errno 13 on /var/log/frr/frr-reload.log, the CM tool's 0640 file, in a folder that was root's, setgid and sticky (3775)
+  verdict: my-config
+  evidence:
+    - "2026-10-17, CI run 38987583306 (commit 59e8890), job 'Deploy the lab and test it live': tests/live/test_access.py::test_the_cm_tool_reloads_after_root_did failed with {'r1 as root': \"PermissionError: [Errno 13] Permission denied: '/var/log/frr/frr-reload.log'\"}, the same for r2 and r3; the other 58 live tests passed. The sandbox, with fs.protected_regular=0, had passed the same test"
+    - "2026-10-17, sandbox set to fs.protected_regular=2, lab na17 at commit 59e8890: the same test failed the same way on r1, r2 and r3. As root on each, os.open of the file with O_WRONLY|O_APPEND worked and with O_CREAT added failed with Errno 13; on isp (folder root's, 0755, not sticky) both worked"
+    - "protected_regular (Documentation/admin-guide/sysctl/fs.rst): at 2 the kernel refuses an O_CREAT open of an existing regular file in a sticky folder that is group- or world-writable unless the file's owner is the opener or the folder's owner, root included. frr-reload.py's log handler opens its file for append with O_CREAT"
+    - "2026-10-17, the same lab with the folder made the CM tool's on r1 (install -d -o netlab -g netadmin -m 3775): root's O_CREAT open worked, and alice still could not rename the CM tool's file (Operation not permitted)"
+  fixed_in: "the commit after 59e8890 on build/wave2: access.sh makes /var/log/frr the CM tool's, still setgid and sticky, so the log's owner is the folder's owner; tests/live/test_access.py::test_the_cm_tool_reloads_after_root_did checks the folder's owner and mode. The CM tool can now delete or rename any file there and change the folder's mode"

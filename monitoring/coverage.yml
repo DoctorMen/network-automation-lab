@@ -603,10 +603,15 @@ reads:
     value: only root can change the router's own copy of its records
     status: gap
     fallback: agent.sh starts syslogd under umask 027 at deploy; tests/live/test_access.py on every CI run
+  - read: ls /var/log/frr
+    value: frr-reload.py's log folder is the CM tool's and the admin group's, setgid and sticky, so root can append to the CM tool's log there and an admin can't swap it
+    status: gap
+    fallback: access.sh makes it the CM tool's, 3775, at deploy; tests/live/test_access.py on every CI run (V-032)
   - read: ls /var/log/frr/frr-reload.log
     value: frr-reload.py's log is the CM tool's to write as well as root's, so make apply can log after a reload as root
     status: gap
-    fallback: access.sh creates it the CM tool's, 0640, at deploy; tests/live/test_access.py on every CI run
+    fallback: access.sh creates it the CM tool's, 0640, in a folder that is the CM tool's, 3775, at deploy;
+      tests/live/test_access.py on every CI run
   - read: ls /home/<arg>
     value: an account a test added by hand left no home folder behind once it was deleted
     status: gap

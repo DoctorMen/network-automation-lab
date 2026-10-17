@@ -40,6 +40,7 @@ def test_every_router_we_own_gets_each_account_and_the_proxy(tmp_path):
     for a in access.accounts(inv):
         assert f"adduser -D -u {a['uid']} -G netadmin -s /bin/sh {a['name']}" in script, a
     assert "install -d -o netlab -g netadmin -m 0700 /tmp/netlab-bin /tmp/rollback" in script
+    assert "install -d -o netlab -g netadmin -m 3775 /var/log/frr" in script  # the CM tool's, sticky (V-032)
     assert f"python3 /access/vty_aaa.py netadmin /run/netlab-vty {monitoring.collector(inv)}:514 601 " in script
     shim = (tmp_path / "access" / "vtysh").read_text()
     assert '[ "$(id -u)" -eq 0 ] && exec /usr/bin/vtysh "$@"' in shim and "--vty_socket /run/netlab-vty" in shim
