@@ -1,6 +1,7 @@
 """Who did it behind the NAT (OROS FND-5, decision 0031): an outside complaint gives the NAT address, a port
 and a time, and `make whois` names the inside host that held them, reading only the NOC's copy of r2's
 translation log. That the NAT itself is narrow and holds is tests/live/test_nat.py."""
+import ipaddress
 import json
 import random
 import subprocess
@@ -61,7 +62,10 @@ def test_the_same_inside_port_from_two_hosts_names_each_by_its_own_outside_port(
     translated = expected["nat"]["r2"]
     carrier = expected["loopbacks"][translated["carrier"]]
     h1 = node("h1")
-    second = "10.10.10.11"
+    # An address on LAN-A no host owns (h3 has 10.10.10.11 since sw1), so the stand-in user collides with nobody.
+    owned = set(expected["hosts"].values())
+    second = next(str(a) for a in ipaddress.ip_network(f"{expected['hosts']['h1']}/24", strict=False).hosts()
+                  if a.packed[-1] >= 20 and str(a) not in owned)
     local = random.choice(PORTS)
     since = time.time()
     try:
