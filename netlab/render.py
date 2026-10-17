@@ -8,7 +8,7 @@ from pathlib import Path
 import yaml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-from . import access, monitoring, nat
+from . import access, monitoring, nat, switch
 from .inventory import Inventory, bgp_peer_address, segment_members
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -87,7 +87,7 @@ def render_firewall(inv: Inventory, name: str, env: Environment | None = None) -
 def rp_filter_interfaces(inv: Inventory, router: str) -> list[str]:
     """Interfaces toward a host LAN. Each LAN sits behind one router interface, so strict reverse-path
     filtering there can't drop real traffic (RFC 3704 section 2.2), only forged sources."""
-    return [local.interface for local, remote in inv.neighbors(router) if remote.device in inv.hosts]
+    return inv.lan_facing(router)
 
 
 def wan_filter(inv: Inventory, router: str) -> dict | None:
@@ -118,7 +118,7 @@ def owned_addresses(inv: Inventory) -> dict[str, list[str]]:
     out = {}
     for d in inv.devices:
         if inv.owner(d) == inv.operator:
-            addrs = {str(ep.address.ip) for ep in inv.interfaces(d)}
+            addrs = {str(ep.address.ip) for ep in inv.interfaces(d) if ep.address}
             if d in inv.routers:
                 addrs.add(str(ipaddress.IPv4Interface(inv.routers[d]["loopback"]).ip))
             out[d] = sorted(addrs)
@@ -138,7 +138,8 @@ def segmentation(inv: Inventory) -> list[dict]:
     excepted = {(e["src"], e["proto"]) for e in scope.get("exceptions") or []}
     exporters = monitoring.servers(inv) if inv.monitoring else []
     tuples = []
-    for src in scope.get("out_of_scope", []):
+    # A switch has no address, so it can't probe anything: the other out-of-scope devices do.
+    for src in [d for d in scope.get("out_of_scope", []) if d not in inv.switches]:
         for dst, address in members.items():
             host, inside = inv.hosts.get(dst, {}), next(d for d in members if d != dst)
             tuples += [{"src": src, "dst": dst, "address": address, "proto": "tcp", "port": port, "inside": inside,
@@ -181,8 +182,7 @@ def expected_state(inv: Inventory) -> dict:
         "ospf_neighbors": {r: inv.ospf_neighbors(r) for r in inv.routers if inv.ospf_neighbors(r)},
         "bfd_peers": {r: bfd_peers(inv, r) for r in inv.routers if inv.ospf_neighbors(r)},
         # Interfaces toward a host LAN, rendered `ip ospf passive` (frr.conf.j2).
-        "passive_interfaces": {r: [local.interface for local, remote in inv.neighbors(r) if remote.device in inv.hosts]
-                               for r in inv.routers if inv.ospf_neighbors(r)},
+        "passive_interfaces": {r: inv.lan_facing(r) for r in inv.routers if inv.ospf_neighbors(r)},
         "bgp_sessions": bgp_sessions,
         "qos": inv.qos,  # what netlab verify checks on each host's interface
         "bgp_md5": {r: sessions for r in inv.routers if (sessions := bgp_md5(inv, r))},
@@ -196,6 +196,10 @@ def expected_state(inv: Inventory) -> dict:
         "rtbh": rtbh_triggers(inv),
         # Each router's source NAT and the device that routes its outside address (netlab/nat.py, decision 0031).
         "nat": nat.expected(inv),
+        # Each switch's bridge, ports (VLAN, far end, edge or uplink) and storm control (netlab/switch.py, decision 0032).
+        "switches": switch.expected(inv),
+        # Every name the lab's DNS serves, and where it serves them from (decision 0032).
+        "dns": switch.dns_expected(inv),
         "operator": inv.operator,
         "owners": {d: inv.owner(d) for d in inv.devices},
         "platform": inv.platform,
@@ -264,10 +268,14 @@ def render_all(inv: Inventory, out_dir: str | Path) -> list[Path]:
     for name, script in edge.items():
         write(f"{name}/edge.sh", script)
     write("vtysh.conf", "service integrated-vtysh-config\n")
+    for name in inv.switches:
+        write(f"{name}/switch.sh", switch.render(inv, name, env))
     monitoring.render(inv, env, write, out)
+    switch.render_dns(inv, env, write)
     access.render(inv, env, write, ROOT)
     write("topology.clab.yml", env.get_template("topology.clab.yml.j2").render(
         inv=inv, image=inv.platform["image"], edge=edge, mon=topology_monitoring(inv), access=access.routers(inv),
+        spare_ports=switch.spare_ports(inv),
         root_only_ports=sorted(set(access.routers(inv)) | set(monitoring.nat_logs(inv))),
         unprivileged_port_start=access.UNPRIVILEGED_PORT_START))
     write("expected_state.json", json.dumps(expected_state(inv), indent=2) + "\n")

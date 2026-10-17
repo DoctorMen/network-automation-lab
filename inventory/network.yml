@@ -85,8 +85,25 @@ firewalls:
       - { name: deny-ssh-to-servers, proto: tcp, dst: 10.20.20.0/24, dport: 22, action: drop }
       - { name: allow-internet,    in_interface: eth1, src: 10.10.10.0/24, dst: 203.0.113.0/24, action: accept }
 
+# LAN-A's access switch (OROS FND-4, CON-1, CON-2; decision 0032): a Linux bridge with VLAN filtering, one
+# port per link below, each an access port in its VLAN. A port is an edge port when a host hangs off it and an
+# uplink otherwise (`netlab where` tells them apart). storm_control polices broadcast frames per edge port, once
+# per ingress frame, and drops only the excess: the port stays up (decision 0034). Rendered to build/sw1/switch.sh.
+switches:
+  sw1:
+    owner: campus NOC
+    bridge: br0
+    ports:
+      eth1: { vlan: 10 }   # uplink to fw1, LAN-A's gateway
+      eth2: { vlan: 10 }   # h1
+      eth3: { vlan: 10 }   # h3
+      eth4: { vlan: 10 }   # spare: where tests/live/test_where.py moves h1 to
+    storm_control: { broadcast_pps: 100 }
+
 hosts:
   h1: { owner: campus NOC, interface: eth1, address: 10.10.10.10/24, gateway: 10.10.10.1, segment: LAN-A }
+  # A second user on LAN-A: the storm source in tests/live/test_storm.py, while h1 is the user who must keep working.
+  h3: { owner: campus NOC, interface: eth1, address: 10.10.10.11/24, gateway: 10.10.10.1, segment: LAN-A }
   # published: the ports the internet may reach (r2's WAN filter). h2:22 stays inside. Decision 0012.
   h2: { owner: campus NOC, interface: eth1, address: 10.20.20.10/24, gateway: 10.20.20.1, segment: LAN-B, services: [80, 22], published: [80] }
   # The NOC's own LAN, routed and in-band like any other (decision 0018): monitoring reaches every
@@ -127,11 +144,13 @@ scope:
     noc: { category: security-impacting, clause: "10.3.3, 10.7.2", why: "the central log store and alerting for every CDE system (h2, r3 send it their logs); it reaches LAN-B through the campus with nothing filtering it" }
   # Probed by the segmentation test. h1 reaches the published port like any internet client, plus the
   # exception below; whether that makes LAN-A connected-to is the open question for an assessor.
-  out_of_scope: [h1, isp]
+  # sw1 has no address: it can't probe the segment, so the segmentation test probes from the other three.
+  out_of_scope: [h1, h3, sw1, isp]
   # Flows into the segment beyond the published ports, each with its reason. The segmentation test
   # probes each one as open, and the same flow from every other out-of-scope device as closed.
   exceptions:
     - { src: h1, proto: icmp, why: "monitoring and troubleshooting pings from the user LAN, through fw1's allow-icmp; the dataplane, failover and firewall tests and the rollout's health gate (netlab.health) ping h2 from h1" }
+    - { src: h3, proto: icmp, why: "the same allow-icmp rule admits every LAN-A user's ping; the health gate pings h2 from h3 too" }
 
 # The carrier's remote-triggered blackhole (RTBH), the DDoS lever in docs/outside-levers.yml
 # (decision 0012). r2 sends any static route tagged `tag` to the ISP with `community`; the ISP points
@@ -205,6 +224,7 @@ monitoring:
     pushgateway: prom/pushgateway:v1.9.0
     mailpit: axllent/mailpit:v1.20
     netshoot: nicolaka/netshoot:v0.13      # conntrack, for a NAT router's translation log (decision 0031)
+    coredns: coredns/coredns:1.11.3        # the lab's DNS, serving names generated from this file (decision 0032)
   # What each tag resolved to when it was pulled (docker image inspect, RepoDigests). A tag can be re-pushed;
   # tests/live/observe/test_noc.py fails if a sidecar runs anything else.
   digests:
@@ -218,6 +238,7 @@ monitoring:
     pushgateway: sha256:98a458415f8f5afcfd45622d289a0aa67063563bec0f90d598ebc76783571936
     mailpit: sha256:7eef0f38dbc85e4e264f2edf5d70fbb694826791e05cb2cae4fc9e3282f968f5
     netshoot: sha256:a20c2531bf35436ed3766cd6cfe89d352b050ccc4d7005ce6400adf97503da1b
+    coredns: sha256:9caabbf6238b189a65d0d6e6ac138de60d6a1c419e5a341fbbb7c78382559c6e
   # The right content, not just a 200. h2 serves a listing of its root directory, and every listing
   # has the same title, so the check needs an entry only the real one has.
   web:
@@ -273,13 +294,24 @@ logging:
   apps:
     - { host: h2, name: http, port: 80, silent_after: 90, budget_kb: 512, cut: [web-check] }
 
-# Point-to-point and LAN links. Each endpoint is device:interface@address.
+# Every name the lab's DNS serves (decision 0032): <device>.<zone> for each device's own address (a router's
+# loopback, a firewall's inside address, a host's address), rendered from this file into build/noc/hosts.lab
+# and served by CoreDNS in the NOC's network namespace. Nothing is keyed in twice: a host added above is in DNS
+# on the next render. Nodes keep Docker's resolv.conf; the server is queried by address (RISK-67).
+dns:
+  zone: lab
+
+# Point-to-point and LAN links. Each endpoint is device:interface@address; a switch port, and a host's spare
+# port into a switch, is device:interface with no address. LAN-A's hosts hang off sw1, which fw1 routes for.
 links:
   - [r1:eth1@10.0.12.0/31, r2:eth1@10.0.12.1/31]
   - [r2:eth2@10.0.23.0/31, r3:eth1@10.0.23.1/31]
   - [r1:eth2@10.0.13.0/31, r3:eth2@10.0.13.1/31]
   - [r2:eth3@198.51.100.0/31, isp:eth1@198.51.100.1/31]
   - [fw1:eth2@10.0.100.2/30, r1:eth3@10.0.100.1/30]
-  - [h1:eth1@10.10.10.10/24, fw1:eth1@10.10.10.1/24]
+  - [fw1:eth1@10.10.10.1/24, sw1:eth1]
+  - [h1:eth1@10.10.10.10/24, sw1:eth2]
+  - [h3:eth1@10.10.10.11/24, sw1:eth3]
+  - [h1:eth2, sw1:eth4]
   - [h2:eth1@10.20.20.10/24, r3:eth3@10.20.20.1/24]
   - [noc:eth1@10.30.30.10/24, r2:eth4@10.30.30.1/24]

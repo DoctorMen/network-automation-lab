@@ -27,7 +27,7 @@ def problems(tmp_path, mutate) -> str:
 
 def test_shipped_inventory_is_valid():
     inv = load(INVENTORY)
-    assert len(inv.devices) == 8  # four routers, fw1, h1, h2 and the NOC's host (decision 0018)
+    assert len(inv.devices) == 10  # four routers, fw1, sw1, h1, h3, h2 and the NOC's host (decisions 0018 and 0032)
     assert inv.ospf_neighbors("r1") == ["r2", "r3"]
     assert inv.ospf_neighbors("isp") == []
 

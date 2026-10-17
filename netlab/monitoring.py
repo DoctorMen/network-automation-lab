@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # campus only the collector's syslog (UDP 514) and forwarder (TCP 6000) ports answer on noc.
 PORTS = {"frr": 9342, "node": 9100, "prometheus": 9090, "alertmanager": 9093, "blackbox": 9115,
          "loki": 3100, "collector_metrics": 9598, "syslog": 514, "forward": 6000, "sink": 9095,
-         "pushgateway": 9091, "smtp": 1025, "mailbox": 8025, "mail_hook": 9596}
+         "pushgateway": 9091, "smtp": 1025, "mailbox": 8025, "mail_hook": 9596, "dns": 53}
 # Each exporter job on a router we own: the image key in the inventory and its port.
 EXPORTERS = {"frr": "frr_exporter", "node": "node_exporter"}
 # Seconds a rule's condition must hold before it fires (Prometheus `for`). State checks wait two scrapes,
@@ -104,6 +104,22 @@ def exporter_nodes(inv: Inventory) -> list[str]:
 def node_exporter_address(inv: Inventory, device: str) -> str:
     """Where a node's node_exporter listens: a router's loopback, a server's own address."""
     return loopback(inv, device) if device in inv.routers else probe_address(inv, device)
+
+
+def listeners(inv: Inventory, device: str) -> dict[int, str]:
+    """{tcp port: sidecar} the NOC's sidecars open toward the network in a host's namespace, so `make audit`
+    expects them beside the host's own services: a server's node_exporter, and on the NOC the forwarders'
+    input and the DNS. Everything else on the NOC listens on 127.0.0.1 only."""
+    if not inv.monitoring:
+        return {}
+    out = {}
+    if device in servers(inv):
+        out[PORTS["node"]] = f"{device}-node-exporter"
+    if device == host(inv):
+        out[PORTS["forward"]] = f"{device}-collector"
+        if inv.raw.get("dns"):
+            out[PORTS["dns"]] = f"{device}-dns"
+    return out
 
 
 def syslog_sources(inv: Inventory) -> list[str]:
@@ -199,7 +215,8 @@ def source_addresses(inv: Inventory) -> dict[str, str]:
     out = {}
     for d in syslog_sources(inv):
         for ep in inv.interfaces(d):
-            out[str(ep.address.ip)] = d
+            if ep.address:
+                out[str(ep.address.ip)] = d
         if d in inv.routers:
             out[loopback(inv, d)] = d
     return dict(sorted(out.items()))
@@ -462,7 +479,7 @@ def alert_rules(inv: Inventory) -> list[dict]:
     for s in bgp_peers(inv):
         # frr_exporter: 1 Established, 0 down, 2 administratively down. `== 0` would miss a local shutdown.
         keys = {"node": s["node"], "peer": s["address"]}
-        link = next(l for l in inv.links if {str(l.a.address.ip), str(l.b.address.ip)} >= {s["address"]}
+        link = next(l for l in inv.links if l.a.address and l.b.address and {str(l.a.address.ip), str(l.b.address.ip)} >= {s["address"]}
                     and s["node"] in (l.a.device, l.b.device))
         rules.append(rule(inv, "BGPSessionDown", per_object("frr_bgp_peer_state", keys, "!= 1"),
                           {**target_labels(inv, s["node"]), "peer": s["address"], "peer_name": s["peer"],
@@ -481,7 +498,7 @@ def alert_rules(inv: Inventory) -> list[dict]:
                           f"frr_ospf_neighbor_adjacencies{selector(**keys)}", "< 1, or missing", "1 (Full)"))
     for b in bfd_peers(inv):
         keys = {"node": b["node"], "peer": b["address"]}
-        link = next(l for l in inv.links if b["address"] in (str(l.a.address.ip), str(l.b.address.ip)))
+        link = next(l for l in inv.links if l.a.address and l.b.address and b["address"] in (str(l.a.address.ip), str(l.b.address.ip)))
         rules.append(rule(inv, "BFDPeerDown", per_object("frr_bfd_peer_state", keys, "!= 1"),
                           {**target_labels(inv, b["node"]), "neighbor": b["neighbor"], "peer": b["address"],
                            "deps": model.label({b["node"], *model.link_objects(link)}, extra={f"frr@{b['node']}"})},
@@ -688,6 +705,11 @@ def sidecars(inv: Inventory) -> dict[str, dict]:
     out[f"{noc}-mailbox"] = {"netns": noc, "image": images["mailpit"], "binds": [],
                              "cmd": f"--smtp 127.0.0.1:{PORTS['smtp']} --listen 127.0.0.1:{PORTS['mailbox']} "
                                     f"--webhook-url http://127.0.0.1:{PORTS['mail_hook']}/ --quiet"}
+    if inv.raw.get("dns"):
+        # The lab's DNS (decision 0032): CoreDNS serving the hosts file netlab renders from the inventory, on the
+        # NOC's address, UDP and TCP 53. No forwarding: a name it doesn't have is NXDOMAIN.
+        out[f"{noc}-dns"] = {"netns": noc, "image": images["coredns"],
+                             "binds": [f"{noc}/Corefile:/Corefile:ro", f"{noc}/hosts.lab:/hosts.lab:ro"], "cmd": "-conf /Corefile"}
     for r in nat_logs(inv):
         # conntrack needs CAP_NET_ADMIN in the router's namespace, so this one runs as root (decision 0031), and
         # the topology asks for that capability by name. Containerlab 0.68.0 starts every node privileged, a

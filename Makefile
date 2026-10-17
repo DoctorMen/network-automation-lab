@@ -7,6 +7,7 @@ NOTE    ?=
 
 .PHONY: help validate render test deploy live drift apply locate measure destroy all
 .PHONY: secrets gitleaks finding risks review deploy-network observe coverage testevent alerts silence ingest detections fp-review whois
+.PHONY: where audit trace contain release
 
 help:            ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-15s %s\n", $$1, $$2}'
@@ -39,7 +40,7 @@ live:            ## Test the running lab: routing, firewall, failover, drift che
 
 # The NOC's tests in three groups of about equal time, one CI job each (each deploys the full lab):
 # make observe OBSERVE_GROUP=2 runs one group, into results/observe-2.xml. With no OBSERVE_GROUP it runs them all.
-OBSERVE_1 = tests/live/observe/test_state.py tests/live/observe/test_arrival.py tests/live/observe/test_central_store.py tests/live/observe/test_coverage.py tests/live/observe/test_noc.py
+OBSERVE_1 = tests/live/observe/test_state.py tests/live/observe/test_arrival.py tests/live/observe/test_central_store.py tests/live/observe/test_coverage.py tests/live/observe/test_noc.py tests/live/observe/test_dns.py
 OBSERVE_2 = tests/live/observe/test_outage.py tests/live/observe/test_silence.py tests/live/observe/test_deadman.py
 OBSERVE_3 = tests/live/observe/test_loss.py tests/live/observe/test_evidence.py tests/live/observe/test_volume.py tests/live/observe/test_detections.py tests/live/observe/test_accounting.py tests/live/observe/test_whois.py
 OBSERVE_GROUP ?=
@@ -82,6 +83,25 @@ fp-review:       ## On a full lab: run the benign workload (30 min), count every
 
 whois:           ## Which inside host held a NAT address and port at a time: make whois ADDR=198.51.100.64 PORT=41000 AT=2026-10-16T05:40:00Z [REMOTE=203.0.113.1]
 	$(PY) -m netlab.who flow "$(ADDR)" "$(PORT)" "$(AT)" $(if $(REMOTE),--remote "$(REMOTE)")
+
+# The switch (decision 0032): where an address is, what listens against the record, a storm's source port, and
+# one port's storm control off and on again (decisions 0033 and 0034).
+Q    ?=
+PORT ?=
+where:           ## Which switch port, VLAN and edge/uplink an address, MAC or name is on, live: make where Q=10.10.10.10
+	$(PY) -m netlab.where "$(Q)"
+
+audit:           ## Every host's TCP listeners against the inventory's services; fails on a mismatch (CI runs it on every lab run)
+	$(PY) -m netlab.audit
+
+trace:           ## Which switch port a storm comes in on, from per-port frame rates; fails when one is found
+	$(PY) -m netlab.trace
+
+contain:         ## Put one port's broadcast storm control back: make contain PORT=sw1:eth3
+	$(PY) -m netlab.switch contain "$(PORT)"
+
+release:         ## Take one port's broadcast storm control off, reversibly: make release PORT=sw1:eth3
+	$(PY) -m netlab.switch release "$(PORT)"
 
 drift:           ## Back up routers and firewall, fail on drift or on a backup missing running config
 	cd ansible && ansible-playbook drift.yml

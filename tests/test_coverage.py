@@ -24,14 +24,14 @@ def test_every_read_is_listed():
 
 
 def test_an_unlisted_read_fails(tmp_path):
-    """A new live test that reads the ARP table from r1, which nothing lists: the lint names it and where."""
+    """A new live test that reads the policy routing rules from r1, which nothing lists: the lint names it and where."""
     for rel in ("tests/live", "netlab", "ansible", "docs/runbooks"):
         shutil.copytree(ROOT / rel, tmp_path / rel, ignore=shutil.ignore_patterns("__pycache__"))
     (tmp_path / "tests/live/test_arp.py").write_text(
-        'def test_arp(node):\n    assert "10.0.12.1" in node("r1").run("ip", "neigh", "show").stdout\n')
+        'def test_arp(node):\n    assert "local" in node("r1").run("ip", "rule", "show").stdout\n')
     reads, odd = coverage.found(tmp_path)
     problems = coverage.check(listed(), reads, odd, inv)
-    assert problems == ["tests/live/test_arp.py:2 (test_arp) reads `ip neigh show`, which monitoring/coverage.yml does not list"]
+    assert problems == ["tests/live/test_arp.py:2 (test_arp) reads `ip rule show`, which monitoring/coverage.yml does not list"]
 
 
 def test_a_read_nobody_makes_any_more_fails():

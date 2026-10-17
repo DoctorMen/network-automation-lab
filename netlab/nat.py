@@ -68,9 +68,9 @@ def expected(inv: Inventory) -> dict:
 
 def problems(inv: Inventory) -> list[str]:
     out = []
-    used = {str(ep.address.ip) for link in inv.links for ep in (link.a, link.b)}
+    used = {str(ep.address.ip) for link in inv.links for ep in (link.a, link.b) if ep.address}
     used |= {str(ipaddress.IPv4Interface(v["loopback"]).ip) for v in inv.routers.values()}
-    lans = {str(link.network) for link in inv.links}
+    lans = {str(link.network) for link in inv.links if link.network}
     for r in routers(inv):
         nat, label = inv.routers[r]["nat"], f"{r}: nat"
         if not inv.routers[r].get("wan_filter"):
@@ -81,7 +81,7 @@ def problems(inv: Inventory) -> list[str]:
         except ValueError:
             out.append(f"{label}: address {nat.get('address')!r} is not an IPv4 address")
             continue
-        if str(address) in used or any(address in link.network for link in inv.links):
+        if str(address) in used or any(link.network and address in link.network for link in inv.links):
             out.append(f"{label}: address {address} is already on a link or a loopback, so its replies would not come back to the NAT")
         if any(address in ipaddress.IPv4Network(n) for n in RFC1918):
             out.append(f"{label}: address {address} is an RFC 1918 address, which a carrier drops as a source (BCP 38)")
