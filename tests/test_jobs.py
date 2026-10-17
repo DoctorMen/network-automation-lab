@@ -150,3 +150,9 @@ def test_only_a_scheduled_run_that_passed_pings_the_outside_check():
     for f, flow in flows.items():
         for name, job in flow["jobs"].items():
             assert job.get("env", {}).get("HEARTBEAT_URL", gated) == gated, f"{f} {name}: HEARTBEAT_URL not gated on schedule"
+
+
+def test_live_checks_drift_before_its_tests_reload_the_routers():
+    """The live tests reload and redeploy routers, putting back any hand change; make drift must see it first."""
+    out = subprocess.run(["make", "-n", "live"], cwd=ROOT, capture_output=True, text=True, check=True).stdout
+    assert out.index("drift.yml") < out.index("tests/live")

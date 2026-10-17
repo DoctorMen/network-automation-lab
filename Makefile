@@ -35,7 +35,8 @@ deploy-network: render secrets ## As deploy, but the network's own nodes only: n
 	$(CLAB) deploy -t $(TOPO) --reconfigure --node-filter $$($(PY) -m netlab nodes)
 	$(MAKE) apply
 
-live:            ## Test the running lab: routing, firewall, failover, drift checks, locate (JUnit in results/)
+# Drift first: the live tests reload and redeploy routers, which would silently put back a hand change.
+live: drift      ## Check drift first, then test the running lab: routing, firewall, failover, drift checks, locate (JUnit in results/)
 	$(PY) -m pytest -v tests/live --ignore=tests/live/observe --junitxml=results/live.xml
 
 # The NOC's tests in three groups of about equal time, one CI job each (each deploys the full lab):
