@@ -133,7 +133,7 @@ CI runs every test each night as well as on every push to `main` and every pull 
 
 ## Scored against what operators actually need
 
-[OROS 0.3](docs/oros/README.md) is a standard of 61 pass/fail requirements for network and security operations, built from 3,785 relevant Stack Exchange questions and 103 mailing-list, forum and feature-tracker posts. [The scorecard](docs/oros/scorecard.md) holds this lab to every one of them, and names the test behind each pass: **28 pass, 15 partial, 18 fail.** Most of the fails need things this lab doesn't have yet (a vulnerability scanner, a switch or a shared L2 segment, a directory and per-person credentials), and the scorecard says what each one is missing.
+[OROS 0.3](docs/oros/README.md) is a standard of 61 pass/fail requirements for network and security operations, built from 3,785 relevant Stack Exchange questions and 103 mailing-list, forum and feature-tracker posts. [The scorecard](docs/oros/scorecard.md) holds this lab to every one of them, and names the test behind each pass: **31 pass, 14 partial, 16 fail.** Most of the fails need things this lab doesn't have yet (a vulnerability scanner, a switch or a shared L2 segment, a directory and per-person credentials), and the scorecard says what each one is missing.
 
 ## How it works
 
@@ -171,11 +171,11 @@ pip install -r requirements.txt -r requirements-ansible.txt
 pre-commit install   # gitleaks hooks: a secret is refused at commit, a confidential file at push
 bash -c "$(curl -sL https://get.containerlab.dev)"   # installs Containerlab
 
-make test      # offline: inventory, rendering, locate rules, control register and record lints, scorecard (261 tests)
+make test      # offline: inventory, rendering, locate rules, control register and record lints, scorecard (272 tests)
 make review    # the dated reviews: a verdict to classify, or a lever, risk or runbook due for review (4 tests)
 make deploy    # render configs, make this lab's BGP password, start 8 nodes and the NOC's 16 sidecars, set the password
-make live      # 62 live tests against the running network, JUnit in results/live.xml
-make observe   # the NOC's 44 tests (tests/live/observe): each break pages, each log source arrives; OBSERVE_GROUP=1, 2 or 3 for one CI group
+make live      # 70 live tests against the running network, JUnit in results/live.xml
+make observe   # the NOC's 46 tests (tests/live/observe): each break pages, each log source arrives; OBSERVE_GROUP=1, 2 or 3 for one CI group
 make testevent # a marked line from every log source, found in the central store
 make whois ADDR=198.51.100.64 PORT=41000 AT=2026-10-16T05:40:00Z   # which user held that NAT port then
 make where Q=10.10.10.10   # which switch port, VLAN and edge/uplink that address (or MAC, or name) is on, live
