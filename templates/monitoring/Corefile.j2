@@ -4,8 +4,9 @@
 # else), which answers NXDOMAIN, where the hosts plugin alone says SERVFAIL (V-034). No forwarder: nothing here can
 # send a lab query to the internet.
 .:53 {
-    # IPv4 only: without bind CoreDNS opens one dual-stack :::53 socket, which the NOC's listener check refuses.
-    bind 0.0.0.0
+    # The NOC's own address only: with no bind, or bind 0.0.0.0, Go opens one dual-stack :::53 socket, which the
+    # NOC's listener check refuses (it was CI's finding on 0.0.0.0).
+    bind {{ address }}
     hosts /hosts.lab {
         ttl 60
         reload 5s

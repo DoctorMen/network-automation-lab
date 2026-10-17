@@ -65,5 +65,5 @@ def test_noc_listens_on_the_campus_only_for_its_sources(node, mon, expected):
     rendered = yaml.safe_load((BUILD / "noc" / "vector.yaml").read_text())["sources"]
     allowed = {("udp", rendered["syslog"]["address"]), ("tcp", rendered["forwarders"]["address"])}
     if expected.get("dns"):
-        allowed |= {("udp", "0.0.0.0:53"), ("tcp", "0.0.0.0:53")}
+        allowed |= {("udp", f"{expected['dns']['server']}:53"), ("tcp", f"{expected['dns']['server']}:53")}
     assert set(exposed) <= allowed, f"noc answers on the campus beyond its sources' ports: {sorted(set(exposed) - allowed)}"
