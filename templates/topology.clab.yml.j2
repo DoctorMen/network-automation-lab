@@ -96,6 +96,18 @@ topology:
         - sh /monitoring/agent.sh
 {% endif %}
 {% endfor %}
+{% for name, sw in inv.switches.items() %}
+    # A switch (decision 0032): a bridge over its ports, no address of its own. Like the firewall, no FRR.
+    {{ name }}:
+      kind: linux
+      entrypoint: sh
+      cmd: -c "sleep infinity"
+      binds:
+        # Read-only like firewall.sh: the bridge, its VLANs and its storm control are the rendered intent.
+        - {{ name }}/switch.sh:/switch.sh:ro
+      exec:
+        - sh /switch.sh
+{% endfor %}
 {% for name, h in inv.hosts.items() %}
 {% set apps = mon.apps.get(name, {}) %}
     {{ name }}:
@@ -132,6 +144,10 @@ topology:
       exec:
         - ip addr add {{ h.address }} dev {{ h.interface }}
         - ip route replace default via {{ h.gateway }}
+{% for port in spare_ports.get(name, []) %}
+        # A spare port into the switch: unplugged (down) until someone moves the host to it (tests/live/test_where.py).
+        - ip link set {{ port }} down
+{% endfor %}
 {% if name in inv.qos %}
 {% set q = inv.qos[name] %}
         # The inventory's qos block (decision 0011): the port capped at the link's rate, with a

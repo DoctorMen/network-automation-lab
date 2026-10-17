@@ -46,7 +46,8 @@ RUNBOOKS = ["docs/runbooks/*.md"]
 STATUSES = {"exported", "derived", "gap"}
 ARG = "<arg>"
 # Programs that read the device (a runbook's inline code is only a command when it starts with one).
-DEVICE_PROGRAMS = {"vtysh", "show", "ip", "iptables", "iptables-save", "tc", "ping", "traceroute", "netstat", "nstat"}
+DEVICE_PROGRAMS = {"vtysh", "show", "ip", "iptables", "iptables-save", "tc", "ping", "traceroute", "netstat", "nstat",
+                   "bridge", "ebtables", "ss", "nslookup"}
 PROMQL_WORDS = {"absent", "and", "or", "unless", "on", "by", "without", "increase", "rate", "time", "sum", "count", "max", "min",
                 "min_over_time", "max_over_time", "ignoring", "group_left", "group_right", "bool", "offset", "vector",
                 "topk", "bottomk", "irate", "resets"}
@@ -110,6 +111,18 @@ def classify(tokens: list[str]) -> list[tuple[str, str]]:
     if prog == "tc":
         words = [a for a in args if not a.startswith("-")]
         return [("read", f"tc {words[0]} show")] if "show" in words else [("action", " ".join(["tc", *words[:1]]))]
+    if prog == "bridge":  # the switch's tables: `bridge fdb show`, `bridge vlan show`, `bridge link show`
+        words = [a for a in args if not a.startswith("-")]
+        return [("read", f"bridge {words[0]} show")] if "show" in words else [("action", " ".join(["bridge", *words[:2]]))]
+    if prog == "ebtables":
+        flags = [a for a in args if a.startswith("-") and not a.startswith("--")]
+        if any(f in ("-A", "-D", "-I", "-F", "-P", "-X", "-N", "-Z") for f in flags):
+            return [("action", "ebtables write")]
+        return [("read", "ebtables -L")] if "-L" in flags else [("unknown", "ebtables " + " ".join(flags))]
+    if prog == "ss":
+        return [("read", normalize(" ".join([prog, *args])))]
+    if prog == "nslookup":
+        return [("read", "nslookup")]
     if prog in ("ping", "traceroute", "wget", "uname", "iptables-save", "apk", "readlink", "ps", "id"):
         return [("read", prog)]
     if prog == "nc":

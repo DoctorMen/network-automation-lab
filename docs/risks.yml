@@ -1089,3 +1089,110 @@
   presented_to: pending
   presented_on: null
   presented_evidence: null
+
+- id: RISK-65
+  kind: accepted-risk
+  title: the switch is set at deploy and read back by nothing
+  detectors: [switch-not-collected]
+  likelihood: 2
+  impact: 3
+  reasoning: >-
+    sw1's bridge, its ports' VLANs and its storm control come from build/sw1/switch.sh, read-only intent like
+    fw1's firewall.sh (decision 0032). But `make drift` collects routers and the firewall, not the switch, and no
+    exporter runs on sw1: a port moved to another VLAN by hand, a storm control rule deleted with `make release`
+    and never put back, or a bridge nobody re-created after a restart, is seen only by the next live test or the
+    next `make trace`. The fix is a drift play for sw1 (bridge vlan show and ebtables-save against the intent,
+    as compare_rules does for iptables) and node_exporter in sw1's namespace for the port counters.
+  compensating_control: tests/live/test_storm.py::test_storm_contained_not_shut
+  compensates: a port without its storm control, or a bridge not forwarding, fails the test on every CI run; and the test puts the rules back as found
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-66
+  kind: accepted-risk
+  title: one VLAN, and VLAN filtering only where the kernel has it
+  detectors: [bridge-vlan-fallback]
+  likelihood: 3
+  impact: 2
+  reasoning: >-
+    sw1 has one VLAN (10, LAN-A) and no trunk, so "which VLAN" has one answer and inter-VLAN routing is untested.
+    The bridge asks the kernel for VLAN filtering; the sandbox kernel refuses it (V-033) and switch.sh falls back
+    to a plain bridge, writing the fact to /run/switch.state. Where that happens, `netlab where` answers the port
+    and the role but no VLAN, and tests/live/test_where.py::test_the_answer_names_the_vlan skips rather than
+    pretends. GitHub's runner kernel is expected to have it; the first green run there is the proof, and until
+    then the VLAN half of FND-4 is proved on no kernel. The fix is a second VLAN with a trunk to fw1 (the README's
+    roadmap item), on a kernel that filters.
+  compensating_control: tests/live/test_where.py::test_moved_host_found_on_new_port
+  compensates: the port and the role are proved on every kernel; the VLAN test is skipped with its reason where the kernel can't, never passed
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-67
+  kind: accepted-risk
+  title: the lab's DNS is served, but nothing resolves with it
+  detectors: [dns-unresolved]
+  likelihood: 3
+  impact: 1
+  reasoning: >-
+    CoreDNS on the NOC serves every name the inventory implies (decision 0032), on plain UDP and TCP 53, one
+    server. Every node keeps Docker's own resolv.conf, so the tests query it by address, and fw1 admits only the
+    web and the internet from LAN-A, so a user there can't ask it at all. The NOC probes it with nothing, and a
+    dead server pages nobody. It proves that names are generated from the record, which is what FND-4 asks; it is
+    not the resolver the lab runs on. The fix is a resolv.conf rendered into each node, an allow-dns rule on fw1
+    for the NOC's port 53, and a blackbox dns probe.
+  compensating_control: tests/live/observe/test_dns.py::test_every_inventory_name_resolves_to_its_address
+  compensates: every name and reverse name is checked against the inventory on every observe-1 run, so a dead or wrong server fails CI
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-68
+  kind: accepted-risk
+  title: storm control polices broadcast only
+  detectors: [broadcast-only-policer]
+  likelihood: 2
+  impact: 3
+  reasoning: >-
+    The per-port limit matches frames to ff:ff:ff:ff:ff:ff (decision 0034). A multicast storm, or unknown-unicast
+    flooding from a host sending to addresses the bridge has not learned, is flooded to every port of the VLAN the
+    same way and is not policed. A real switch's storm control covers all three. The fix is two more rule pairs
+    per edge port: a multicast match (ebtables --dst Multicast) and, for unknown unicast, a limit on frames the
+    bridge floods, which ebtables can't tell from forwarded ones in PREROUTING; that needs the bridge's
+    flood counters or a BROUTING trick, and was not built.
+  compensating_control: tests/live/test_storm.py::test_storm_contained_not_shut
+  compensates: the broadcast case, the lab's storm, is held to the limit on every CI run
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-69
+  kind: accepted-risk
+  title: the listener audit sees TCP on hosts, as often as CI runs
+  detectors: [audit-tcp-hosts-only]
+  likelihood: 3
+  impact: 2
+  reasoning: >-
+    `make audit` reads `ss -ltnpH` on every host we own (decision 0032): TCP listeners only, so a UDP service
+    nobody recorded (the NOC's syslog on 514 and its DNS on 53 are UDP too) is not in the report; hosts only, so
+    a router's listeners are checked by tests/live/test_management_plane.py against a rule (localhost, BGP, the
+    exporters), not against a record; and it runs when CI's lab job runs, nightly and on every push, not
+    continuously. A listener started and stopped between runs is never seen. The fix is `ss -lunpH` beside the
+    TCP read with the inventory naming each host's UDP services, the routers' expected listeners generated into
+    the same report, and a scheduled run on the NOC.
+  compensating_control: tests/live/test_where.py::test_unrecorded_service_on_next_audit
+  compensates: an unrecorded TCP listener on a host is in the next report on every CI run, and the stand-in on h2's port 22 is named by its program
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null

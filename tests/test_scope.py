@@ -9,7 +9,7 @@ inv = load(INVENTORY)
 
 
 def test_every_device_has_a_scope_decision():
-    """The shipped register classifies all seven devices, and every in-scope one names a clause."""
+    """The shipped register classifies every device, the switch included, and every in-scope one names a clause."""
     scope = inv.raw["scope"]
     assert set(scope["systems"]) | set(scope["out_of_scope"]) == set(inv.devices)
     assert all(entry["clause"] for entry in scope["systems"].values())
@@ -36,16 +36,19 @@ def test_register_the_topology_contradicts_is_refused(tmp_path):
 
 
 def test_segmentation_probes_every_out_of_scope_device():
-    """Each out-of-scope device probes every service and pings every device on the segment: open only where published or excepted.
-    h2's node_exporter, the NOC's listener there, is closed to each of them and named as a sidecar."""
+    """Each out-of-scope device with an address probes every service and pings every device on the segment: open only where
+    published or excepted (both LAN-A users may ping). h2's node_exporter, the NOC's listener there, is closed to each of them
+    and named as a sidecar. The switch has no address and probes nothing."""
     tuples = expected_state(inv)["segmentation"]
-    assert {(t["src"], t["dst"], t["proto"], t.get("port"), t["expect"]) for t in tuples} == {
-        ("h1", "h2", "tcp", 80, "open"), ("h1", "h2", "tcp", 22, "closed"), ("h1", "h2", "tcp", 9100, "closed"),
-        ("h1", "h2", "icmp", None, "open"), ("h1", "r3", "icmp", None, "open"),
+    users = set()
+    for u in ("h1", "h3"):
+        users |= {(u, "h2", "tcp", 80, "open"), (u, "h2", "tcp", 22, "closed"), (u, "h2", "tcp", 9100, "closed"),
+                  (u, "h2", "icmp", None, "open"), (u, "r3", "icmp", None, "open")}
+    assert {(t["src"], t["dst"], t["proto"], t.get("port"), t["expect"]) for t in tuples} == users | {
         ("isp", "h2", "tcp", 80, "open"), ("isp", "h2", "tcp", 22, "closed"), ("isp", "h2", "tcp", 9100, "closed"),
         ("isp", "h2", "icmp", None, "closed"), ("isp", "r3", "icmp", None, "closed")}
     assert {t["dst"]: t["inside"] for t in tuples} == {"h2": "r3", "r3": "h2"}
-    assert {(t["src"], t["port"]) for t in tuples if t.get("sidecar") == "h2-node-exporter"} == {("h1", 9100), ("isp", 9100)}
+    assert {(t["src"], t["port"]) for t in tuples if t.get("sidecar") == "h2-node-exporter"} == {("h1", 9100), ("h3", 9100), ("isp", 9100)}
 
 
 def test_published_port_needs_a_listener(tmp_path):

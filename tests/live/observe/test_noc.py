@@ -52,8 +52,9 @@ def test_every_target_answers_and_every_rule_is_loaded(noc):
         sorted((r["name"], sorted(r.get("labels", {}).items())) for r in loaded)
 
 
-def test_noc_listens_on_the_campus_only_for_its_sources(node, mon):
-    """Everything on noc answers on 127.0.0.1 only, except the collector's syslog (UDP) and forwarder (TCP) ports."""
+def test_noc_listens_on_the_campus_only_for_its_sources(node, mon, expected):
+    """Everything on noc answers on 127.0.0.1 only, except the collector's syslog (UDP) and forwarder (TCP) ports,
+    and the DNS port when the inventory has a dns block (decision 0032)."""
     noc = node(mon["host"])
     listeners = []
     for proto in ("t", "u"):
@@ -63,4 +64,6 @@ def test_noc_listens_on_the_campus_only_for_its_sources(node, mon):
     exposed = sorted({(p, a) for p, a in listeners if not a.startswith("127.0.0.1:")})
     rendered = yaml.safe_load((BUILD / "noc" / "vector.yaml").read_text())["sources"]
     allowed = {("udp", rendered["syslog"]["address"]), ("tcp", rendered["forwarders"]["address"])}
+    if expected.get("dns"):
+        allowed |= {("udp", f"{expected['dns']['server']}:53"), ("tcp", f"{expected['dns']['server']}:53")}
     assert set(exposed) <= allowed, f"noc answers on the campus beyond its sources' ports: {sorted(set(exposed) - allowed)}"

@@ -292,3 +292,37 @@
     - "protected_regular (Documentation/admin-guide/sysctl/fs.rst): at 2 the kernel refuses an O_CREAT open of an existing regular file in a sticky folder that is group- or world-writable unless the file's owner is the opener or the folder's owner, root included. frr-reload.py's log handler opens its file for append with O_CREAT"
     - "2026-10-17, the same lab with the folder made the CM tool's on r1 (install -d -o netlab -g netadmin -m 3775): root's O_CREAT open worked, and alice still could not rename the CM tool's file (Operation not permitted)"
   fixed_in: "the commit after 59e8890 on build/wave2: access.sh makes /var/log/frr the CM tool's, still setgid and sticky, so the log's owner is the folder's owner; tests/live/test_access.py::test_the_cm_tool_reloads_after_root_did checks the folder's owner and mode. The CM tool can now delete or rename any file there and change the folder's mode"
+
+- id: V-033
+  opened: 2026-10-17
+  version: sandbox kernel 6.18.44-fc-v139 (the lab's development sandbox), frrouting/frr:v8.4.1 (iproute2 5.15.0) as sw1
+  symptom: "`ip link add br0 type bridge vlan_filtering 1` fails with 'RTNETLINK answers: Not supported'; so do `ip link add ... type vlan`, `type dummy`, and `vlan_filtering 0` given explicitly, while `ip link add br0 type bridge` with no option works and bridges three veth ports"
+  verdict: lab-artifact
+  evidence:
+    - "2026-10-17, throwaway FRR 8.4.1 container (--network none, privileged) on this sandbox: `ip link add br0 type bridge vlan_filtering 1` -> 'RTNETLINK answers: Not supported' (rc 2); `ip link add br1 type bridge vlan_filtering 0` -> the same; `ip link add dummy0 type dummy` and `ip link add v1 link eth1 type vlan id 10` -> the same; `ip link add br0 type bridge` -> rc 0, and three veth ports set master br0 forwarded pings between their namespaces"
+    - "the same sandbox: /proc/modules is missing and /sys/module lists bridge but no 8021q or dummy, so the kernel was built without those as modules; the netlink reply for an attribute the kernel wasn't built to set is ENOTSUPP (br_netlink.c, br_changelink: br_vlan_filter_toggle returns -EOPNOTSUPP without CONFIG_BRIDGE_VLAN_FILTERING)"
+    - "2026-10-17, lab na20: build/sw1/switch.sh took its fallback and wrote 'vlan_filtering: unsupported' to /run/switch.state; the bridge forwarded, the MAC table was read, the storm tests passed; tests/live/test_where.py::test_the_answer_names_the_vlan skipped with that reason"
+  workaround: "switch.sh tries `vlan_filtering 1` and falls back to a plain bridge, recording which in /run/switch.state; the live tests read it and skip only the VLAN assertion. GitHub's ubuntu-24.04 runner kernel is expected to filter (not checked here; its first green run is the proof, RISK-66)"
+
+- id: V-034
+  opened: 2026-10-17
+  version: coredns/coredns:1.11.3 (hosts plugin) as the noc-dns sidecar, lab na20
+  symptom: "with the Corefile's server block for the zone `lab` only, a reverse lookup of a listed address (nslookup 10.10.10.11 10.30.30.10) was answered REFUSED, and a forward lookup of a name not in the file (nothere.lab) with SERVFAIL rather than NXDOMAIN; A records answered correctly"
+  verdict: normal-behaviour
+  evidence:
+    - "2026-10-17, lab na20, Corefile `lab:53 { hosts /hosts.lab { ttl 60; reload 5s }; errors }`: from h2, `nslookup h3.lab 10.30.30.10` -> 10.10.10.11; `nslookup 10.10.10.11 10.30.30.10` -> '** server can't find 11.10.10.10.in-addr.arpa: REFUSED'; `nslookup nothere.lab 10.30.30.10` -> SERVFAIL"
+    - "CoreDNS answers a query for a zone no server block serves with REFUSED; the in-addr.arpa name is outside `lab`. The hosts plugin's PTR records are served only inside the zones its server block names (coredns.io/plugins/hosts). A name inside the zone that the plugin has no record for, with no fallthrough and no next plugin, is SERVFAIL"
+    - "2026-10-17, the same lab with the Corefile changed to the root zone (`.:53`) and nothing else: the reverse lookup answered 'name = h3.lab', and nothere.lab still got SERVFAIL (tests/live/observe/test_dns.py::test_a_name_the_inventory_lacks_is_refused failed on it). The hosts plugin returns SERVFAIL for a name it lacks unless `fallthrough` hands the query on; with nothing after it there is nothing to hand to"
+    - "2026-10-17, na20 with `fallthrough` on hosts and `template ANY ANY { rcode NXDOMAIN }` in the same block: every name was NXDOMAIN, h3.lab included. CoreDNS runs plugins in its compiled order (plugin.cfg), not the Corefile's, and template comes before hosts, so the template answered first"
+    - "2026-10-17, throwaway coredns/coredns:1.11.3 with `fallthrough` on hosts and `file /root.db` (an SOA for the root and nothing else) instead: h3.lab -> 10.10.10.11, 10.10.10.11 -> h3.lab, nothere.lab -> NXDOMAIN, 9.9.9.10.in-addr.arpa -> NXDOMAIN. file runs after hosts in that order"
+  fixed_in: "templates/monitoring/Corefile.j2 serves the root zone (`.:53`): the hosts plugin with `fallthrough`, then `file /root.db`, an empty root zone netlab renders (build/noc/root.db), so the file's names answer A and PTR and everything else is NXDOMAIN; nothing forwards. tests/live/observe/test_dns.py checks both on every observe-1 run"
+
+- id: V-035
+  opened: 2026-10-17
+  version: frrouting/frr:v8.4.1 (iproute2 5.15.0 ss) as h2 and noc, with the NOC's sidecars in their network namespaces (network-mode container:), lab na20
+  symptom: "`ss -ltnpH` on h2 and noc lists the sidecars' listeners (h2's node_exporter on 9100, the NOC's 53, 6000 and its 127.0.0.1 ports) with no users:(...) column, so the first listener audit named them '?' and reported every one as an unrecorded listener"
+  verdict: lab-artifact
+  evidence:
+    - "2026-10-17, lab na20, first `make audit`: 14 mismatches, h2 tcp/9100 and noc tcp/53, 1025, 3100, 6000, 8025, 9090, 9091, 9093, 9095, 9096, 9115, 9596, 9598 all 'listening (?), not in the inventory'; the two python3 listeners (h2's 22 and 80, noc's sink on 9095) were named"
+    - "a sidecar shares the node's network namespace and keeps its own pid namespace, so the node's ss sees the socket in /proc/net/tcp but no process of its own holds the inode (it scans /proc/<pid>/fd in its own pid namespace). On real gear every listener is the box's own process"
+  fixed_in: "netlab/audit.py compares against the host's services plus the sidecar ports the inventory implies (netlab.monitoring.listeners: a server's node_exporter, the NOC's forwarder input and DNS), names such a port by its sidecar, and reports 127.0.0.1-only listeners without judging them; `make audit` on na20 then reported 0 mismatches"

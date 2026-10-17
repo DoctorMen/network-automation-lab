@@ -21,17 +21,18 @@ class InventoryError(ValueError):
 class Endpoint:
     device: str
     interface: str
-    address: ipaddress.IPv4Interface
+    # None on a switch port, and on a host's spare port toward a switch: a layer-2 end has no address.
+    address: ipaddress.IPv4Interface | None
 
     @classmethod
     def parse(cls, raw: str) -> "Endpoint":
-        # "r1:eth1@10.0.12.0/31"
+        # "r1:eth1@10.0.12.0/31", or "sw1:eth2" for a port with no address
         try:
-            dev_if, addr = raw.split("@")
+            dev_if, addr = raw.split("@") if "@" in raw else (raw, None)
             device, interface = dev_if.split(":")
         except ValueError as exc:
-            raise InventoryError([f"bad endpoint {raw!r}, expected device:interface@address/len"]) from exc
-        return cls(device, interface, ipaddress.IPv4Interface(addr))
+            raise InventoryError([f"bad endpoint {raw!r}, expected device:interface@address/len (or device:port on a switch)"]) from exc
+        return cls(device, interface, ipaddress.IPv4Interface(addr) if addr else None)
 
 
 @dataclass
@@ -40,8 +41,9 @@ class Link:
     b: Endpoint
 
     @property
-    def network(self) -> ipaddress.IPv4Network:
-        return self.a.address.network
+    def network(self) -> ipaddress.IPv4Network | None:
+        """The subnet on the link, from whichever end has an address; None on a link with no address at all."""
+        return next((ep.address.network for ep in (self.a, self.b) if ep.address), None)
 
 
 @dataclass
@@ -74,6 +76,10 @@ class Inventory:
         return self.raw.get("hosts", {})
 
     @property
+    def switches(self) -> dict:
+        return self.raw.get("switches", {})
+
+    @property
     def qos(self) -> dict:
         return self.raw.get("qos", {})
 
@@ -91,10 +97,10 @@ class Inventory:
 
     @property
     def devices(self) -> list[str]:
-        return [*self.routers, *self.firewalls, *self.hosts]
+        return [*self.routers, *self.firewalls, *self.switches, *self.hosts]
 
     def owner(self, device: str) -> str | None:
-        for group in (self.routers, self.firewalls, self.hosts):
+        for group in (self.routers, self.firewalls, self.switches, self.hosts):
             if device in group:
                 return group[device].get("owner")
         return None
@@ -103,7 +109,7 @@ class Inventory:
         """Which device answers on this address (link end or loopback)."""
         for link in self.links:
             for ep in (link.a, link.b):
-                if str(ep.address.ip) == address:
+                if ep.address and str(ep.address.ip) == address:
                     return ep.device
         for name, r in self.routers.items():
             if str(ipaddress.IPv4Interface(r["loopback"]).ip) == address:
@@ -127,6 +133,20 @@ class Inventory:
                 out.append((link.a, link.b))
             elif link.b.device == device:
                 out.append((link.b, link.a))
+        return out
+
+    def lan_facing(self, device: str) -> list[str]:
+        """This device's interfaces toward a host LAN: a host on the far end, or a switch the hosts hang off."""
+        return [local.interface for local, remote in self.neighbors(device) if remote.device in self.hosts or remote.device in self.switches]
+
+    def switch_ports(self, switch: str) -> dict[str, dict]:
+        """{port: {vlan, to, role}} for each port of a switch: its VLAN from the inventory, the far end's
+        device:interface from the links, and edge (a host hangs off it) or uplink (anything else)."""
+        out = {}
+        for port, spec in self.switches[switch].get("ports", {}).items():
+            far = next((remote for local, remote in self.neighbors(switch) if local.interface == port), None)
+            to = f"{far.device}:{far.interface}" if far else None
+            out[port] = {"vlan": spec.get("vlan"), "to": to, "role": "edge" if far and far.device in self.hosts else "uplink"}
         return out
 
     def ospf_neighbors(self, router: str) -> list[str]:
@@ -182,18 +202,29 @@ def validate(inv: Inventory) -> list[str]:
             if (ep.device, ep.interface) in seen_ifaces:
                 problems.append(f"{label}: {ep.device}:{ep.interface} is used on more than one link")
             seen_ifaces.add((ep.device, ep.interface))
+            # A switch port has no address; nor does a host's spare port into a switch (it gets one when the host moves).
+            other = link.b if ep is link.a else link.a
+            if ep.address is None:
+                if ep.device not in inv.switches and other.device not in inv.switches:
+                    problems.append(f"{label}: {ep.device}:{ep.interface} has no address, and only a switch port, or a port into a switch, may go without")
+                continue
+            if ep.device in inv.switches:
+                problems.append(f"{label}: {ep.device}:{ep.interface} is a switch port, which has no address")
             ip = ep.address.ip
             if ip in seen_ips:
                 problems.append(f"{label}: {ip} is already used by {seen_ips[ip]}")
             seen_ips[ip] = f"{ep.device}:{ep.interface}"
             if ep.address.network.prefixlen < 31 and ip in (ep.address.network.network_address, ep.address.network.broadcast_address):
                 problems.append(f"{label}: {ep.address} is the network or broadcast address")
-        if link.a.address.network != link.b.address.network:
+        if link.a.address and link.b.address and link.a.address.network != link.b.address.network:
             problems.append(f"{label}: ends are in different subnets ({link.a.address.network} vs {link.b.address.network})")
+        if link.network is None:
+            continue
         for other, j in seen_nets.items():
             if other != link.network and other.overlaps(link.network):
                 problems.append(f"{label}: subnet {link.network} overlaps link #{j + 1} ({other})")
         seen_nets.setdefault(link.network, i)
+    problems.extend(switch_problems(inv))
 
     for name, r in inv.routers.items():
         lo = ipaddress.IPv4Interface(r["loopback"]).ip
@@ -291,6 +322,44 @@ def validate(inv: Inventory) -> list[str]:
     return problems
 
 
+def switch_problems(inv: Inventory) -> list[str]:
+    """A switch is a bridge with named ports, each in one VLAN (decision 0032): every port is on one link and
+    every link to the switch names a port; the addressed ends of one VLAN's ports share one subnet, so the
+    VLAN is the broadcast domain the addresses say it is; storm control, if set, is a whole number of frames a second."""
+    problems = []
+    for name, sw in inv.switches.items():
+        ports = sw.get("ports") or {}
+        if not ports:
+            problems.append(f"{name}: a switch needs ports (port: {{vlan: N}})")
+        if not re.fullmatch(r"[a-z][a-z0-9]*", str(sw.get("bridge", ""))):
+            problems.append(f"{name}: bridge must be an interface name such as br0")
+        linked = {local.interface: remote for local, remote in inv.neighbors(name)}
+        for port in set(ports) - set(linked):
+            problems.append(f"{name}: port {port} is on no link")
+        for port in set(linked) - set(ports):
+            problems.append(f"{name}: {name}:{port} is on a link but not in its ports")
+        subnets: dict[int, dict] = {}
+        for port, spec in ports.items():
+            vlan = (spec or {}).get("vlan")
+            if not (isinstance(vlan, int) and 1 <= vlan <= 4094):
+                problems.append(f"{name}: port {port} vlan {vlan!r} must be 1 to 4094")
+                continue
+            far = linked.get(port)
+            if far is not None and far.address is not None:
+                subnets.setdefault(vlan, {})[far.address.network] = f"{far.device}:{far.interface}"
+        for vlan, nets in subnets.items():
+            if len(nets) > 1:
+                problems.append(f"{name}: vlan {vlan} has ports in more than one subnet ({', '.join(f'{n} on {d}' for n, d in sorted(nets.items(), key=str))})")
+        for vlan, nets in subnets.items():
+            for other, more in subnets.items():
+                if other > vlan and set(nets) & set(more):
+                    problems.append(f"{name}: vlans {vlan} and {other} share a subnet, so they are one broadcast domain, not two")
+        storm = sw.get("storm_control")
+        if storm is not None and not (isinstance(storm.get("broadcast_pps"), int) and storm["broadcast_pps"] > 0):
+            problems.append(f"{name}: storm_control broadcast_pps {storm.get('broadcast_pps')!r} must be a whole number of frames a second over 0")
+    return problems
+
+
 def bgp_peer_address(inv: Inventory, router: str, peer: str) -> str | None:
     """The address `router` uses for its BGP session with `peer`, from its neighbor list."""
     return next((n["address"] for n in inv.routers.get(router, {}).get("bgp", {}).get("neighbors", [])
@@ -319,7 +388,17 @@ def rtbh_problems(inv: Inventory) -> list[str]:
 def segment_members(inv: Inventory, segment: str | None) -> dict[str, str]:
     """Every device with an address on the segment, and that address: its hosts and the router ports facing them."""
     hosts = {h: v["address"].split("/")[0] for h, v in inv.hosts.items() if v.get("segment") == segment}
-    return {**hosts, **{remote.device: str(remote.address.ip) for h in hosts for _, remote in inv.neighbors(h)}}
+    gateways = {}
+    for h in hosts:
+        for _, remote in inv.neighbors(h):
+            if remote.device in inv.switches:
+                # The hosts hang off a switch: the router ports are on its other ports, in the host's subnet.
+                net = ipaddress.IPv4Interface(inv.hosts[h]["address"]).network
+                gateways.update({far.device: str(far.address.ip) for _, far in inv.neighbors(remote.device)
+                                 if far.address and far.address.network == net and far.device not in inv.hosts})
+            elif remote.address:
+                gateways[remote.device] = str(remote.address.ip)
+    return {**hosts, **gateways}
 
 
 SCOPE_CATEGORIES = {"cde", "connected-to", "security-impacting"}

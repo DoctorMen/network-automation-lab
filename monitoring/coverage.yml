@@ -263,6 +263,8 @@ actions: [kill, mkdir, rm, cp, mv, touch, umask, seq, sleep, printf, diff, logge
 
 # Commands built at run time, which the lint can't read from the source.
 opaque:
+  - where: netlab/switch.py::contain
+    why: "`make contain` and `make release` run the two ebtables rules switch.sh renders for one port, with -D and then -A: writes, not reads"
   - where: tests/live/test_qos.py::test_backup_yields_to_web
     why: replays h2's rendered tc lines from build/topology.clab.yml to put the QoS back (writes only)
   - where: tests/live/test_verify.py::test_qos_change_confirmed_from_class_counters
@@ -370,7 +372,9 @@ reads:
       against the inventory on every CI run
   # --- Interfaces and counters ---
   - read: ip -s link show
-    value: an edge port's TX errors and drops (ours or the carrier's?), RX bytes and packets (a flood?)
+    value: an edge port's TX errors and drops (ours or the carrier's?), RX bytes and packets (a flood?); on sw1, each
+      port's frames in and out, read twice by `make trace` to name the port a storm comes in on (decision 0033), and
+      on h1 the frames the storm leaves it with under storm control (decision 0034). The switch has no exporter (RISK-65)
     status: exported
     metric: node_network_transmit_errs_total, node_network_transmit_drop_total, node_network_receive_bytes_total, node_network_receive_packets_total
   - read: nstat -az TcpExtTCPMD5Failure TcpExtTCPMD5NotFound TcpExtTCPMD5Unexpected
@@ -525,6 +529,45 @@ reads:
     value: the hops on a path
     status: gap
     fallback: make locate, on demand (docs/runbooks/carrier-loss.md)
+  # --- The switch (decisions 0032 to 0034): where an address is, what listens, a storm's port and its policer ---
+  - read: ip neigh show
+    value: which MAC holds an address, at the router or firewall that routes for it (`make where`)
+    status: gap
+    fallback: the join of ARP and MAC tables is on demand, from the gateways we own; tests/live/test_where.py proves it on every CI run
+  - read: bridge fdb show
+    value: the switch port, and with VLAN filtering the VLAN, a MAC was learned on (`make where`, `make trace`)
+    status: gap
+    fallback: no exporter runs on sw1 (RISK-65); `make where` reads it live, and tests/live/test_where.py and
+      tests/live/test_storm.py prove a moved host and a storm's source port on every CI run
+  - read: bridge vlan show
+    value: each switch port's VLAN (pvid), where the kernel filters VLANs
+    status: gap
+    fallback: switch.sh is the read-only intent; tests/live/test_where.py compares the pvid with the inventory where the kernel has it (V-033)
+  - read: bridge link show
+    value: a switch port is forwarding (not disabled or blocking) during a storm
+    status: gap
+    fallback: tests/live/test_storm.py checks it under a contained storm on every CI run; the port's carrier is not exported (RISK-65)
+  - read: cat /run/switch.state
+    value: whether this kernel gave the bridge VLAN filtering, or switch.sh fell back to a plain bridge (V-033)
+    status: gap
+    fallback: written once at deploy by switch.sh; the live tests read it to skip what a plain bridge can't show
+  - read: ebtables -L
+    value: how many broadcast frames each port's storm control has dropped (`make trace`)
+    status: gap
+    fallback: no exporter runs on sw1 (RISK-65); `make trace` prints the counters, and tests/live/test_storm.py checks they rise under a storm
+  - read: ss -ltnpH
+    value: every TCP listener on a host and the program behind it, against the inventory's services and the sidecars' ports (`make audit`)
+    status: gap
+    fallback: CI's lab job runs `make audit` on every run, nightly included, and fails on a mismatch; tests/live/test_where.py proves an
+      unrecorded listener is reported. Only TCP, only hosts (RISK-69)
+  - read: nslookup
+    value: what the NOC's DNS answers for a name the inventory implies, and for one it doesn't
+    status: gap
+    fallback: tests/live/observe/test_dns.py on every observe-1 run; the server is not probed by the NOC (RISK-67)
+  - read: python3 STORM
+    value: "the broadcast storm source itself (tests/live/tools/storm.py): how many frames it sent"
+    status: gap
+    fallback: tests/live/test_storm.py on every CI run; what the switch saw of it is `ip -s link show` and `ebtables -L` above
   - read: python3 SCAN
     value: which ports answer from the internet side
     status: gap
