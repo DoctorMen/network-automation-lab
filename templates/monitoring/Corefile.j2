@@ -4,6 +4,8 @@
 # else), which answers NXDOMAIN, where the hosts plugin alone says SERVFAIL (V-034). No forwarder: nothing here can
 # send a lab query to the internet.
 .:53 {
+    # IPv4 only: without bind CoreDNS opens one dual-stack :::53 socket, which the NOC's listener check refuses.
+    bind 0.0.0.0
     hosts /hosts.lab {
         ttl 60
         reload 5s
