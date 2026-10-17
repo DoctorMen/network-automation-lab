@@ -9,6 +9,8 @@ Three OSPF core routers, an eBGP uplink to an ISP, a stateful firewall in front 
 flowchart LR
     subgraph LANA["LAN-A 10.10.10.0/24"]
         h1["h1<br/>10.10.10.10"]
+        h3["h3<br/>10.10.10.11"]
+        sw1[["sw1 switch<br/>VLAN 10"]]
     end
     fw1{{"fw1<br/>iptables<br/>default DROP"}}
     subgraph CAMPUS["Campus AS 65001, OSPF area 0"]
@@ -24,7 +26,9 @@ flowchart LR
         noc["noc<br/>10.30.30.10<br/>Prometheus, Loki"]
     end
 
-    h1 --- fw1 --- r1
+    h1 --- sw1
+    h3 --- sw1
+    sw1 --- fw1 --- r1
     r1 ---|"10.0.12.0/31"| r2
     r2 ---|"10.0.23.0/31"| r3
     r1 ---|"10.0.13.0/31"| r3
@@ -162,7 +166,7 @@ inventory/network.yml ──► netlab validate ──► netlab render ──�
 
 ## Run it yourself
 
-You need Linux (or WSL2 on Windows) with Docker. The lab is small: measured at 434.8 MiB for all 24 nodes in the `sandbox` environment, the 8 network nodes and the NOC's 16 sidecars, of which Loki and Prometheus take a third. That is a sandbox figure (a cloud VM with a stand-in for Containerlab); CI's observe-3 job measures the full lab on a GitHub runner, and no such figure is copied in yet. Before the NOC, the network was measured at 90.5 MiB for all 7 nodes in the `github-runner` environment, a GitHub-hosted runner with real Containerlab ([sizing and raw data](docs/sizing/README.md)).
+You need Linux (or WSL2 on Windows) with Docker. The lab is small: measured at 434.8 MiB in the `sandbox` environment for the lab before sw1 and h3 were added (24 nodes: 8 network nodes and the NOC's 16 sidecars; it is now 10 and 17, not yet re-measured), of which Loki and Prometheus take a third. That is a sandbox figure (a cloud VM with a stand-in for Containerlab); CI's observe-3 job measures the full lab on a GitHub runner, and no such figure is copied in yet. Before the NOC, the network was measured at 90.5 MiB for all 7 nodes in the `github-runner` environment, a GitHub-hosted runner with real Containerlab ([sizing and raw data](docs/sizing/README.md)).
 
 ```bash
 git clone https://github.com/DoctorMen/network-automation-lab && cd network-automation-lab
@@ -173,7 +177,7 @@ bash -c "$(curl -sL https://get.containerlab.dev)"   # installs Containerlab
 
 make test      # offline: inventory, rendering, locate rules, control register and record lints, scorecard (272 tests)
 make review    # the dated reviews: a verdict to classify, or a lever, risk or runbook due for review (4 tests)
-make deploy    # render configs, make this lab's BGP password, start 8 nodes and the NOC's 16 sidecars, set the password
+make deploy    # render configs, make this lab's BGP password, start 10 nodes and the NOC's 17 sidecars, set the password
 make live      # 70 live tests against the running network, JUnit in results/live.xml
 make observe   # the NOC's 46 tests (tests/live/observe): each break pages, each log source arrives; OBSERVE_GROUP=1, 2 or 3 for one CI group
 make testevent # a marked line from every log source, found in the central store
