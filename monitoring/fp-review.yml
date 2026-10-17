@@ -1,0 +1,151 @@
+# Written by `make fp-review` (netlab/detections.py, decision 0027). Do not edit by hand.
+reviewed: 2026-10-16
+started: '2026-10-16T19:32:32Z'
+minutes: 30
+settle: 120
+environment: sandbox
+commit: cc0df47
+workload:
+- every 30 s, a user on h1 loads h2's page
+- every 10 s, h1 pings h2
+- every 10 s, h1 pings the carrier's 203.0.113.1
+- 'every 5 min, the operator runs make drift: a backup of every router and the firewall, compared with intent'
+- 'every 5 min, the operator runs make apply with nothing to change: the canary, its health gate, then the rest'
+- 'every 5 min, make verify: kernels, daemons and h2''s QoS classes in effect'
+- 'every 5 min, make testevent: a marked line from every log source'
+- every 5 min, make locate from h1 to 203.0.113.1
+steps:
+  every 30 s, a user on h1 loads h2's page:
+    runs: 60
+    failed: 0
+  every 10 s, h1 pings h2:
+    runs: 180
+    failed: 0
+  every 10 s, h1 pings the carrier's 203.0.113.1:
+    runs: 180
+    failed: 0
+  'every 5 min, the operator runs make drift: a backup of every router and the firewall, compared with intent':
+    runs: 6
+    failed: 0
+  'every 5 min, the operator runs make apply with nothing to change: the canary, its health gate, then the rest':
+    runs: 6
+    failed: 0
+  'every 5 min, make verify: kernels, daemons and h2''s QoS classes in effect':
+    runs: 6
+    failed: 0
+  'every 5 min, make testevent: a marked line from every log source':
+    runs: 6
+    failed: 0
+  every 5 min, make locate from h1 to 203.0.113.1:
+    runs: 6
+    failed: 0
+detections:
+  NodeDown:
+    objects: 5
+    rules: 08a6c0500515
+    pages: 0
+  LinkDown:
+    objects: 6
+    rules: 279285512afe
+    pages: 0
+  TargetDown:
+    objects: 11
+    rules: 42bbab8d3e24
+    pages: 0
+  BGPSessionDown:
+    objects: 1
+    rules: 06709cb7fcd1
+    pages: 0
+  OSPFNeighborDown:
+    objects: 6
+    rules: ccdf62e2dc6e
+    pages: 0
+  BFDPeerDown:
+    objects: 6
+    rules: 764352c118ab
+    pages: 0
+  WebContentWrong:
+    objects: 1
+    rules: 5d98393134cc
+    pages: 0
+  InterfaceFlapped:
+    objects: 10
+    rules: cb7f9e19340b
+    pages: 0
+  QueueDrops:
+    objects: 4
+    rules: 18124ca16414
+    pages: 0
+  PendingRebootOverdue:
+    objects: 3
+    rules: b7c6196d727c
+    pages: 0
+  UnexpectedAdmin:
+    objects: 3
+    rules: 7a8456efd92e
+    pages: 0
+  SourceSilent:
+    objects: 7
+    rules: 6a44c37e57c7
+    pages: 0
+  LogIngestOverBudget:
+    objects: 10
+    rules: 9af8fa81d72a
+    pages: 0
+  JobMissed:
+    objects: 4
+    rules: ab9ba0d3ede6
+    pages: 0
+  Watchdog:
+    objects: 1
+    rules: 7c978d4c5d4c
+    pages: 0
+  AlertPathSilent:
+    objects: 1
+    rules: e41e07138ca1
+    pages: 0
+pages: []
+ingest:
+  r1/syslog:
+    bytes: 104407
+    per_day: 5019888
+    budget: 16777216
+  r2/syslog:
+    bytes: 153214
+    per_day: 7366541
+    budget: 16777216
+  r3/syslog:
+    bytes: 114282
+    per_day: 5494702
+    budget: 16777216
+  fw1/syslog:
+    bytes: 11356
+    per_day: 546009
+    budget: 16777216
+  h2/syslog:
+    bytes: 1476
+    per_day: 70954
+    budget: 16777216
+  h2/http:
+    bytes: 5462
+    per_day: 262627
+    budget: 524288
+  r2/nat:
+    bytes: 40942
+    per_day: 1968520
+    budget: 4194304
+  r1/accounting:
+    bytes: 52918
+    per_day: 2544311
+    budget: 8388608
+  r2/accounting:
+    bytes: 89409
+    per_day: 4298810
+    budget: 8388608
+  r3/accounting:
+    bytes: 52918
+    per_day: 2544311
+    budget: 8388608
+cut:
+  h2/http:
+    web-check: 360

@@ -157,16 +157,40 @@ def host_sync() -> str:
 
 
 def copy_lab(topology: Path, dest: Path) -> list[str]:
-    """The topology and every file it binds into a node, so the bundle can stand the lab up again."""
+    """The topology and every file it binds into a node, so the bundle can stand the lab up again.
+
+    The network's own nodes only: the NOC's sidecars (nodes in another node's network namespace, decision
+    0018) take no part in a path, and would make whoever re-runs the bundle pull their images. A folder a
+    node binds read-only everywhere (access/, the routers' accounts and accounting proxy) is copied whole, as part
+    of the intent. A folder a node writes into (a router's run/, which holds its live sockets, or h2's applog/)
+    is recreated empty but for an EMPTY file, so an upload that drops empty folders still carries it:
+    containerlab refuses a bind whose source is missing. Not a dot file: actions/upload-artifact leaves hidden
+    files out by default. SHA256SUMS leaves these written folders out (live_folders): the lab changes them as
+    it starts."""
     topo = yaml.safe_load(topology.read_text())
     dest.mkdir(parents=True)
-    shutil.copy(topology, dest / topology.name)
-    sources = sorted({b.split(":", 1)[0] for node in topo["topology"]["nodes"].values() for b in node.get("binds") or []})
-    for src in sources:
+    nodes = {n: c for n, c in topo["topology"]["nodes"].items()
+             if not str(c.get("network-mode") or "").startswith("container:")}
+    if len(nodes) == len(topo["topology"]["nodes"]):
+        shutil.copy(topology, dest / topology.name)
+    else:
+        topo["topology"]["nodes"] = nodes
+        (dest / topology.name).write_text("# netlab's topology without the NOC's sidecars (netlab/finding.py copy_lab).\n"
+                                          + yaml.safe_dump(topo, sort_keys=False, width=200))
+    binds = [b for node in nodes.values() for b in node.get("binds") or []]
+    read_only = {b.split(":", 1)[0] for b in binds if b.endswith(":ro")} - {b.split(":", 1)[0] for b in binds if not b.endswith(":ro")}
+    for src in sorted({b.split(":", 1)[0] for b in binds}):
+        if (topology.parent / src).is_dir() and src in read_only:
+            shutil.copytree(topology.parent / src, dest / src)
+            continue
+        if (topology.parent / src).is_dir():
+            (dest / src).mkdir(parents=True, exist_ok=True)
+            (dest / src / "EMPTY").write_text("A node binds this folder; it starts empty (netlab/finding.py copy_lab).\n")
+            continue
         (dest / src).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(topology.parent / src, dest / src)
     defaults = topo["topology"].get("defaults", {})
-    return sorted({node.get("image", defaults.get("image")) for node in topo["topology"]["nodes"].values()})
+    return sorted({node.get("image", defaults.get("image")) for node in nodes.values()})
 
 
 def prepare(out: Path) -> None:
@@ -259,9 +283,28 @@ def finding_env(f: dict) -> str:
             + "".join(f"{k}={shlex.quote(str(v))}\n" for k, v in env.items()))
 
 
+def live_folders(out: Path) -> list[Path]:
+    """The folders the bundled lab binds writable into its nodes (a router's run/, h2's applog/). The lab writes
+    into them as it runs (FRR's start command empties run/ first), so what they hold is not evidence: SHA256SUMS
+    leaves them out, and verify doesn't ask for them. A folder bound read-only everywhere (access/) is intent,
+    copied whole by copy_lab, and stays in the sums. Only folders inside lab/ count."""
+    topology, lab = out / "lab" / "topology.clab.yml", (out / "lab").resolve()
+    if not topology.is_file():
+        return []
+    nodes = ((yaml.safe_load(topology.read_text()) or {}).get("topology") or {}).get("nodes") or {}
+    sources = {b.split(":", 1)[0] for node in nodes.values() for b in (node or {}).get("binds") or [] if not b.endswith(":ro")}
+    return sorted(f for f in ((out / "lab" / s).resolve() for s in sources) if f.is_dir() and f != lab and lab in f.parents)
+
+
+def evidence(out: Path) -> list[Path]:
+    """Every file SHA256SUMS covers: the whole bundle but SHA256SUMS itself, a re-run's output and the live folders."""
+    live = live_folders(out)
+    return [p for p in sorted(out.rglob("*")) if p.is_file() and p.name != "SHA256SUMS"
+            and not p.relative_to(out).parts[0].startswith("rerun-") and not any(f in p.resolve().parents for f in live)]
+
+
 def write_sums(out: Path) -> None:
-    lines = [f"{sha256(p.read_bytes()).hexdigest()}  {p.relative_to(out)}" for p in sorted(out.rglob("*"))
-             if p.is_file() and p.name != "SHA256SUMS"]
+    lines = [f"{sha256(p.read_bytes()).hexdigest()}  {p.relative_to(out)}" for p in evidence(out)]
     (out / "SHA256SUMS").write_text("\n".join(lines) + "\n")
 
 
@@ -345,8 +388,7 @@ def verify(out: str | Path) -> list[str]:
     """Every problem that would stop someone outside re-running or trusting the bundle."""
     out = Path(out)
     problems = [f"{name} is missing or empty" for name in REQUIRED if not (out / name).is_file() or not (out / name).stat().st_size]
-    files = {str(p.relative_to(out)) for p in out.rglob("*") if p.is_file() and p.name != "SHA256SUMS"
-             and not p.relative_to(out).parts[0].startswith("rerun-")}
+    files = {str(p.relative_to(out)) for p in evidence(out)}
     listed = {}
     if (out / "SHA256SUMS").is_file():
         listed = {rel: digest for digest, rel in (line.split("  ", 1) for line in (out / "SHA256SUMS").read_text().splitlines())}

@@ -11,12 +11,15 @@
 #
 # Schedule: .github/workflows/ci.yml runs every test nightly (cron 23 4 * * *), on every push to
 # main and on every pull request. It keeps results/offline.xml and results/review.xml (JUnit, with a
-# timestamp) as run artifacts for 90 days, and results/live.xml too when the lab job's secret scan
-# passed; when that scan failed, the control-status job fails, naming ACC-4.
-# .github/workflows/drills.yml runs the restore and power drills weekly and keeps theirs the same way. The control-status job in
-# ci.yml reads them all. The four tests that compare a record's date with today (in verdict-log,
-# outside-levers, risk-register and runbooks) run in ci.yml's review job, which the lab job doesn't
-# wait for, so a review falling due turns that job red without stopping the live tests or the backup.
+# timestamp) as run artifacts for 90 days, and results/live.xml and results/observe-1.xml to
+# observe-3.xml (the NOC's tests, in three NOC jobs that each deploy the full lab and run one group of
+# test files, the Makefile's OBSERVE_1 to OBSERVE_3) too when that job's own secret scan passed; when
+# any of those four scans failed, the control-status job fails, naming ACC-4. .github/workflows/drills.yml runs the restore and power
+# drills weekly and keeps theirs the same way, but a failed scan there turns only that run red, and
+# control-status then reads the last drill results uploaded. The control-status job in ci.yml reads them all. The
+# four tests that compare a record's date with today (in verdict-log, outside-levers, risk-register
+# and runbooks) run in ci.yml's review job, which neither the lab job nor the nightly heartbeat ping
+# waits for, so a review falling due turns that job red without stopping the live tests, the backup or the ping.
 # GitHub disables scheduled runs in a public repo after 60 days with no repository activity,
 # so a quiet repo can miss its period without any test going red.
 #
@@ -81,7 +84,7 @@ controls:
       an adjacency. It checks only the interfaces the inventory puts on a host LAN.
 
   - id: vty-localhost
-    claim: "No routing daemon's management port (vty) answers on a lab link. Every TCP listener on every router is bound to 127.0.0.1, except BGP itself"
+    claim: "No routing daemon's management port (vty) answers on a lab link. Every TCP listener on every router is bound to 127.0.0.1, except BGP itself and the NOC's two exporters, on the router's own loopback"
     test: tests/live/test_management_plane.py::test_router_daemons_listen_on_localhost_only
     period: P31D
     threat: >-
@@ -90,7 +93,9 @@ controls:
     fails_when: >-
       BGP listens on every address; from the ISP side only the peer's own address reaches it, through
       r2's edge filter (wan-filter). UDP listeners (BFD) are not checked. The vtys have no password: anyone with
-      `docker exec` on the host is root on every node, and that is the real management path.
+      `docker exec` on the host is root on every node, and that is the real management path. The exporters'
+      addresses come from expected_state.json; they answer plain HTTP to anyone who reaches the loopback
+      (RISK-32), and frr_exporter holds the vty sockets (RISK-33).
 
   - id: users-reach-web-and-internet
     claim: "Users can reach the web server and the internet"
@@ -261,7 +266,7 @@ controls:
       the carrier itself can still announce anything (RISK-1).
 
   - id: no-plaintext-secret
-    claim: "While `make apply` puts back a hand change and `make drift` runs, no command line, environment, frr-reload log (the routing daemons keep no log file, and their lines reach the container log only while they start, V-005), container log, playbook output, or file in `build/` or `backups/` holds that password in clear, and the session never drops"
+    claim: "While `make apply` puts back a hand change and `make drift` runs, no command line, environment, routing daemons' log (the syslog file on each router, decision 0019), frr-reload log, container log, playbook output, or file in `build/` or `backups/` holds that password in clear, and the session never drops"
     test:
       - tests/live/test_secrets.py::test_no_secret_in_env_argv_logs_or_files
       # Deterministic: it reads the playbooks, so it can't miss a short-lived process.
@@ -437,6 +442,7 @@ controls:
     test:
       - tests/live/test_platform.py::test_running_version_matches_inventory
       - tests/test_render.py::test_ci_pulls_the_image_the_inventory_names
+      - tests/live/observe/test_noc.py::test_sidecars_run_their_pinned_image_in_their_nodes_namespace
     period: P31D
     threat: >-
       A silent upgrade (a re-pushed tag, a different package build) changing behaviour while every
@@ -445,6 +451,463 @@ controls:
       It checks the image, FRR, Alpine and busybox, not every package in the image or the host
       kernel, which the containers share. The digest is checked against what Docker reports for the
       pulled image, so it trusts the local Docker daemon.
+
+  # The NOC (decisions 0018 and 0019): OROS NOT-1, NOT-2, NOT-3 and NOT-7. Run by `make observe`, in CI's
+  # three NOC jobs (observe-1 to observe-3), each on the full lab; the network's own tests never need it.
+  - id: noc-object-state
+    claim: "Every BGP session, OSPF adjacency and BFD peer on a router we own has an alert of its own, which pages while the host still answers ping. The carrier shutting the session, our own end shutting it (Idle (Admin), which a check for state 0 alone misses), an OSPF neighbor whose hellos are dropped, and a BFD peer down while OSPF stays Full each page for that object and no other, within the bound `expected_state.json` states (each end of the OSPF adjacency within 15 s more, counted from when the near end dropped it)"
+    test:
+      - tests/live/observe/test_state.py::test_bgp_session_down_while_the_peer_pings
+      - tests/live/observe/test_state.py::test_bgp_local_admin_shutdown_alerts_too
+      - tests/live/observe/test_state.py::test_ospf_neighbor_down_while_it_pings
+      - tests/live/observe/test_state.py::test_bfd_peer_down_while_ospf_and_ping_stay_up
+      - tests/test_monitoring.py::test_one_rule_per_object_the_inventory_implies
+      - tests/test_monitoring.py::test_state_rules_catch_admin_down_and_a_missing_series
+      - tests/test_monitoring.py::test_an_alert_keeps_its_identity_while_its_series_comes_and_goes
+    period: P31D
+    threat: >-
+      A BGP session or an OSPF adjacency down for hours while every ping is green, found only when
+      users call or the next nightly run fails; a session shut on our own end missed by a check for
+      "down" (0) alone.
+    fails_when: >-
+      The NOC sees the routers over the campus links it watches, so a dead link behind r2 blinds it to
+      what is behind (RISK-31); alert-one-page holds back what depends on the failed part, so it pages
+      once. The pager is a webhook sink on noc, not a person. Only the first BGP session and the
+      first OSPF adjacency are broken live; the rest have the same generated rule. isp, the carrier's, is
+      watched only from r2's side. A 5 s scrape and evaluation suit CI; a real NOC would run longer.
+
+  - id: noc-content-flap-reboot
+    claim: "A web server answering 200 with the wrong page pages, and so does an interface down for 0.3 s between two scrapes, and a newer kernel left unbooted past its reboot window but not inside it"
+    test:
+      - tests/live/observe/test_state.py::test_web_page_with_the_wrong_content_alerts
+      - tests/live/observe/test_state.py::test_sub_second_flap_alerts_although_no_scrape_saw_it_down
+      - tests/live/observe/test_state.py::test_reboot_pending_past_its_window_alerts
+      - tests/test_monitoring.py::test_flap_rule_uses_the_carrier_counter_on_the_routers_own_interfaces
+      - tests/test_monitoring.py::test_pending_reboot_textfile
+    period: P31D
+    threat: >-
+      A server that answers with the wrong content looking healthy, a flapping link no scrape ever sees
+      down, and a kernel patch left unbooted for weeks.
+    fails_when: >-
+      The web check matches one entry only h2's real docroot has, not the whole page. The flap rule reads
+      the carrier counter, so a flap the kernel never counts (a peer that stops forwarding with carrier
+      up) is BFD's job instead. The reboot rule covers the kernel only; a daemon running a replaced
+      binary is `make verify`'s finding, not an alert. The flap is taken on r1's link to fw1 only.
+
+  - id: read-coverage
+    claim: "Every value a live test, netlab, a playbook or a runbook reads from a device is listed in `monitoring/coverage.yml` for FRR 8.4.1, frr_exporter 1.3.1 and node_exporter 1.8.2: exported to the NOC, derived from what is, or a gap with its fallback. A new read, a scrape job or a rule metric the list doesn't name fails `make test`, and every listed metric and log query answers on the live NOC"
+    test:
+      - tests/test_coverage.py::test_every_read_is_listed
+      - tests/test_coverage.py::test_an_unlisted_read_fails
+      - tests/test_coverage.py::test_a_read_nobody_makes_any_more_fails
+      - tests/test_coverage.py::test_every_entry_is_exported_derived_or_gap_with_its_evidence
+      - tests/test_coverage.py::test_an_unlisted_scraper_fails
+      - tests/test_coverage.py::test_a_new_command_program_must_be_placed
+      - tests/live/observe/test_coverage.py::test_every_listed_metric_is_on_the_noc
+      - tests/live/observe/test_coverage.py::test_every_listed_log_query_runs
+      - tests/live/observe/test_coverage.py::test_nothing_scrapes_that_the_list_does_not_name
+    period: P31D
+    threat: >-
+      An operator reading a value off a device by hand during an incident because the NOC never had it,
+      and nobody knowing which values those are until then; a scraper nobody vetted feeding an alert.
+    fails_when: >-
+      The lint finds commands in Python it can parse (literal arguments, the repo's own run helpers),
+      Ansible command and shell tasks, and runbook code spans. A command built at run time from a
+      variable it can't resolve is listed as opaque, by hand. It lists what we read, not what an operator
+      might want to; most entries are gaps today, each with its fallback.
+
+  - id: log-arrival
+    claim: "Every log source has a last-seen check counted where its lines arrive, not by the sender. r1's syslog dropped on the way pages as silent within twice its heartbeat while r1's own count of what its syslogd sends the collector keeps rising, and comes back without a restart of anything. `make testevent` sends a marked line from every source the way its real lines go (for r2's translation log, a real translation, found by its port) and finds each one in the central store"
+    test:
+      - tests/live/observe/test_arrival.py::test_every_source_has_a_last_seen_check
+      - tests/live/observe/test_arrival.py::test_synthetic_event_from_every_source_reaches_the_store
+      - tests/live/observe/test_arrival.py::test_blocked_source_raises_source_silent_and_comes_back_without_a_restart
+      - tests/test_monitoring.py::test_source_silent_bound
+    period: P31D
+    threat: >-
+      A router, firewall or server that stopped logging, found during the incident that needed its logs;
+      a sender's own counters saying all is well while nothing arrives.
+    fails_when: >-
+      Syslog is UDP with no queue or authentication (RISK-34): a whole stream lost pages, but a single
+      lost line or a forged one is not detected. h2's app log's bound is stated (its silent_after plus
+      evaluation): its normal gap is the heartbeat, since its forwarder cuts the NOC's checks and sends a
+      count line per heartbeat's worth (decision 0026), so it rests on those checks. Only r1's export is
+      blocked live; the others have the same generated rule.
+
+  - id: central-log-store
+    claim: "Every router, firewall and server we own logs to one searchable store on the NOC, FRR's routing daemons included, and h2's web server's own log is forwarded by a sidecar running as nobody, with the app unchanged. The store keeps lines the boxes have already rotated away, and no BGP password reaches it"
+    test:
+      - tests/live/observe/test_central_store.py::test_router_daemons_log_to_the_central_store
+      - tests/live/observe/test_central_store.py::test_app_log_forwarded_without_root_and_searchable
+      - tests/live/observe/test_central_store.py::test_history_outlasts_on_box_rotation
+      - tests/live/observe/test_central_store.py::test_no_secret_in_the_central_store
+      - tests/test_monitoring.py::test_app_forwarder_runs_as_nobody_and_reads_the_log_read_only
+    period: P31D
+    threat: >-
+      The line that explains an incident rotated off the box hours ago, or never left the daemon (V-005);
+      an app nobody may change logging only to its own host.
+    fails_when: >-
+      The store is one copy, on the lab host's disk, with no backup (RISK-35). h1, a user's
+      machine, sends nothing (RISK-36), and isp, the carrier's, logs only on its own box. Lines keep
+      busybox's local time and no hostname; the source is named by its address.
+
+  - id: noc-platform
+    claim: "The NOC's sidecars each run their pinned image (tag and digest) in their node's network namespace, every scrape target answers, every rule the inventory implies is loaded, and noc answers on the campus only on its log sources' two ports"
+    test:
+      - tests/live/observe/test_noc.py::test_sidecars_run_their_pinned_image_in_their_nodes_namespace
+      - tests/live/observe/test_noc.py::test_every_target_answers_and_every_rule_is_loaded
+      - tests/live/observe/test_noc.py::test_noc_listens_on_the_campus_only_for_its_sources
+      - tests/test_monitoring.py::test_exporters_listen_on_the_routers_loopback_only
+      - tests/test_monitoring.py::test_rendered_configs_match_the_inventory
+    period: P31D
+    threat: >-
+      A monitoring image re-pushed under the same tag, a rule that failed to load and so never fires, or a
+      NOC service answering the whole campus.
+    fails_when: >-
+      The digest is checked against what Docker reports for the pulled image, so it trusts the local
+      daemon. Answering only on two ports is not authentication: anyone on the campus can send the
+      collector a line naming any router (RISK-34), and the exporters have no TLS (RISK-32).
+
+  # Alert quality (decisions 0020, 0021 and 0022): OROS DEC-1, DEC-4, DEC-5 and NOT-4, in CI's NOC job observe-2.
+  - id: alert-context
+    claim: "Every alert says why it fired (its condition and the signal's value now), what is normal (the usual value and a link to that signal over the last 7 days) and what changed (the last commit `make apply` applied to that router, and when). Every alert of one live outage, 20 or more not counting the cause markers and the heartbeat, carries all three, filled in by Prometheus"
+    test:
+      - tests/live/observe/test_outage.py::test_every_alert_says_why_what_is_normal_and_what_changed
+      - tests/test_alert_context.py::test_every_rule_says_why_it_fired_what_is_normal_and_what_changed
+      - tests/test_alert_context.py::test_the_signal_is_what_the_rule_tests
+    period: P31D
+    threat: >-
+      Whoever is on shift logging in to the router to learn the value, guessing what is normal, or acting
+      on an alert without knowing a change went out an hour before it.
+    fails_when: >-
+      Prometheus resends a firing alert's annotations about once a minute, so the value now can be a
+      minute old. The link opens the NOC's own Prometheus, which answers only inside noc. An alert about
+      fw1 or h2 names the lab's last router apply, since their config comes from the topology at deploy.
+      A change made by hand on a box is not a commit; finding it is `make drift`'s job.
+
+  - id: alert-silence
+    claim: "A silence covers one object of one alert rule, or one device for at most 4 hours, ends within 7 days, and names who set it, why, and a record. `make silence` refuses a wider or open-ended one and reports a silence added by hand. A silenced flap on one router interface stays quiet while the same flap on another router pages, and pages again once the silence has ended"
+    test:
+      - tests/live/observe/test_silence.py::test_a_silenced_flap_still_pages_on_another_router_and_after_the_silence_ends
+      - tests/test_silence.py::test_a_silence_wider_than_one_object_is_refused
+      - tests/test_silence.py::test_a_silence_that_does_not_end_soon_is_refused
+      - tests/test_silence.py::test_a_silence_without_a_reason_or_a_record_is_refused
+      - tests/test_silence.py::test_the_alert_path_heartbeat_cannot_be_silenced
+      - tests/test_silence.py::test_a_silence_added_by_hand_is_reported
+      - tests/test_silence.py::test_apply_adds_each_current_silence_once_and_skips_ended_ones
+    period: P31D
+    threat: >-
+      A whole router silenced to stop one port flapping, so its next real failure stays quiet; a silence
+      that never ends; a reason nobody can find when the finding comes back.
+    fails_when: >-
+      Alertmanager still takes any silence through its API, and `make silence` reports a hand-added one
+      only when it runs (RISK-41). A silence is checked against the rules generated today. Only one flap
+      alert is silenced live; the checks on the file are offline.
+
+  - id: alert-one-page
+    claim: "A router cut off from every link pages once, NodeDown, while the alerts that follow from it (its own exporters, its neighbors' sessions with it, the devices behind it) are held back in Alertmanager. frr_exporter killed beside a healthy router, and that router's link to fw1 cut, in the same window page once each, and nothing held back pages after all three recover. A link down for 7 s, which a scrape sees but which is too short for LinkDown, pages once, as a flap. What each alert depends on is computed from the inventory's graph of devices and links"
+    test:
+      - tests/live/observe/test_outage.py::test_a_parent_failure_pages_once_and_a_killed_service_pages_again
+      - tests/live/observe/test_outage.py::test_a_link_down_for_seconds_pages_once_as_a_flap
+      - tests/test_dependencies.py::test_dependencies_come_from_the_inventory_graph
+      - tests/test_dependencies.py::test_a_flap_is_never_held_back_by_its_own_link
+      - tests/test_monitoring.py::test_flap_rule_uses_the_carrier_counter_on_the_routers_own_interfaces
+      - tests/test_monitoring.py::test_every_scrape_job_has_a_target_down_rule
+      - tests/test_dependencies.py::test_every_alert_lists_only_causes_and_every_cause_has_one_inhibit_rule
+      - tests/test_dependencies.py::test_no_two_causes_hold_each_other_back
+      - tests/test_dependencies.py::test_markers_are_in_alertmanager_before_what_they_hold_back
+      - tests/test_dependencies.py::test_a_cause_keeps_holding_back_through_the_slowest_recovery
+      - tests/test_dependencies.py::test_a_new_router_needs_no_hand_tuning
+    period: P31D
+    threat: >-
+      One failure paging twenty times, so the cause is one page among many (RISK-31), and a second,
+      unrelated failure in the same minutes lost in the noise.
+    fails_when: >-
+      A real failure behind a cause pages only once the cause has cleared, up to 75 s later, and a short
+      one behind a cause seen for a single scrape (one lost ping) can go unpaged (RISK-42). The NOC's
+      own uplink pages as r2, and the NOC's own services are outside the model (RISK-43). One router, one
+      exporter and one link are broken live; the other causes have the same generated rules.
+
+  - id: alert-deadman
+    claim: "Each unattended job (drift, backup, restore drill, power drill) reports its success as its last step, and a job whose last success is older than its window pages. The alert path proves itself: a heartbeat alert is mailed every 10 s, and when mail stops arriving AlertPathSilent pages on the webhook, the second channel"
+    test:
+      - tests/live/observe/test_deadman.py::test_a_job_whose_last_success_is_a_window_old_pages
+      - tests/live/observe/test_deadman.py::test_a_broken_mail_path_pages_on_the_second_channel
+      - tests/test_jobs.py::test_every_job_reports_success_as_its_last_step
+      - tests/test_jobs.py::test_every_window_matches_the_jobs_schedule
+      - tests/test_jobs.py::test_a_job_that_never_reported_pages_from_the_nocs_start
+      - tests/test_jobs.py::test_the_heartbeat_goes_by_mail_and_its_silence_pages_on_the_webhook
+      - tests/test_jobs.py::test_success_without_a_noc_warns_and_still_pings_the_heartbeat
+      - tests/test_jobs.py::test_a_failed_heartbeat_warns_and_the_job_still_passes
+      - tests/test_jobs.py::test_the_alert_path_is_not_due_before_the_first_resend
+      - tests/test_jobs.py::test_only_a_listed_job_can_report
+      - tests/test_jobs.py::test_only_a_scheduled_run_that_passed_pings_the_outside_check
+    period: P31D
+    threat: >-
+      A nightly backup or drift check that quietly stopped running, found on the day the backup is
+      needed; an alert path that broke and so carries no alarm about itself.
+    fails_when: >-
+      The lab's NOC exists only during a CI run, so GitHub not starting the nightly run is seen only by
+      the outside check at HEARTBEAT_URL, which is not set up yet (RISK-40, RISK-25). The NOC's own
+      death raises nothing inside it (RISK-40). A success is the job's own word, kept in the
+      pushgateway's memory (RISK-44). Only drift runs live; the other jobs end with the same make line,
+      checked offline. The first heartbeat mail after the NOC starts is due only a minute later, when
+      Prometheus resends what Alertmanager missed while starting, so a mail path broken from the start
+      pages after 90 s, not 30 s.
+
+  - id: loss-microburst
+    claim: "A burst that the averages hide is traced to its queue. 3000 datagrams that leave h2 in under a second overflow the bulk class of h2's HTB: QueueDrops pages for h2 eth1 within its stated bound, the queue's drop count is exactly what was sent and never arrived, and `tc -s class` names the bulk class. h2 eth1's byte counter counts only what left the queue. Meanwhile h2's 5-minute average stays under 5% of its link, its interface drop counter stays at 0, and the NOC's web check and ping never fail"
+    test:
+      - tests/live/observe/test_loss.py::test_a_microburst_the_average_hides_is_traced_to_its_queue
+      - tests/test_monitoring.py::test_queue_drop_rule_for_every_node_with_a_node_exporter
+      - tests/live/observe/test_loss.py::test_the_servers_exporter_answers_the_noc_and_nobody_out_of_scope
+    period: P31D
+    threat: >-
+      A burst shorter than a scrape overflows a queue: users see stalls and retransmits while every graph, ping and interface counter says the link is idle, and the team chases the application or the carrier.
+    fails_when: >-
+      Only root qdiscs are exported, so the class is read on h2 itself. The routers' veth ports have no queue at all. QueueDrops shows increase()'s estimate, which extrapolates; the queue's own counter is exact. The burst is UDP from one host to its gateway; TCP's own backoff, and drops in a driver or a switch ASIC, are not exercised. h2's exporter answers plain HTTP (RISK-32).
+
+  - id: loss-rate-limited-hop
+    claim: "A router that answers only 10 of the 50 pings a second it gets is called a rate limit by `make locate`, not loss, while 20% loss injected on the carrier link at the same time is still placed on r2-isp and handed to the carrier"
+    test:
+      - tests/live/test_locate.py::test_a_hop_that_rate_limits_pings_is_not_loss_while_real_loss_is_placed
+      - tests/test_locate.py::test_loss_must_persist_to_the_destination
+    period: P31D
+    threat: >-
+      A middle hop that polices pings to itself shows loss in mtr, and the team blames a router that forwards everything.
+    fails_when: >-
+      The rate limit and the loss are made with iptables on ICMP only (limit and statistic matches); this kernel has no netem (docs/LAB_PARITY.md). Loss that a later hop hides (a lossy link followed by a rate-limited hop) is not separated.
+
+  - id: loss-counts-documented
+    claim: "Every metric the NOC collects says in `monitoring/coverage.yml` what it counts: the unit, counter or gauge, the direction and whether it counts before or after the queue, and for a counter when it wraps and when it resets. A metric without its entry, a counter without its wrap or reset, or an alert rule that reads a counter outside increase(), rate(), irate() or resets() fails `make test`, and each documented type is the one its exporter declares"
+    test:
+      - tests/test_coverage.py::test_every_read_is_listed
+      - tests/test_coverage.py::test_every_metric_says_what_it_counts
+      - tests/test_coverage.py::test_a_rule_reading_a_counter_raw_fails
+      - tests/live/observe/test_loss.py::test_each_metric_is_the_type_its_exporter_declares
+    period: P31D
+    threat: >-
+      An engineer reads a counter as something it isn't (a gauge named _total, a byte count with headers in it, an interface counter that never sees the queue), or a rule pages on a reset.
+    fails_when: >-
+      The notes are checked for presence and type, not for truth: what each one says about direction or wraps comes from kernel and exporter documentation, and is tested live only where a counts entry names a proven_by test.
+
+  - id: loss-known-bytes
+    claim: "A known byte count matches the NOC's counters. 4000 datagrams of 100 bytes from h1 to the carrier's address show up in r1's receive and r2's transmit counters, as Prometheus stored them, within 5% of the bytes on the wire, and within 1%, so each frame is counted with its 14-byte Ethernet header (9.9% of these frames) and without a checksum (+0.02% to +0.06% in three runs here). r2's node_exporter restarts in the middle with no reset in the series and no page. Every interface in the lab is a veth pair, so that is the only interface type tested"
+    test:
+      - tests/live/observe/test_loss.py::test_a_known_byte_count_matches_the_counters_across_an_exporter_restart
+    period: P31D
+    threat: >-
+      A graph that is off by a header, a direction or a missing multiplier sends a capacity or loss decision the wrong way, and an agent restart shows as a spike.
+    fails_when: >-
+      veth is the only interface type in the lab: no physical port, LAG, sub-interface or NIC offload is tested. The counters are node_exporter's reading of the kernel, not SNMP, and node_exporter is the agent that restarts. Background traffic on the two interfaces (BGP keepalives, a few probes) is inside the 1%.
+
+  - id: loss-counter-reset
+    claim: "A queue counter that starts again at zero is flagged, not paged: after h2's HTB is replaced, resets() flags the fall, rate() over it stays at 0, and QueueDrops stays quiet past its bound. A 32-bit wrap shows no spike: the rendered QueueDrops rule, run by promtool over a drop counter that wraps at 2^32 after 14 drops, shows 13 at most, never a jump of about 4.29e9, and clears once the wrap leaves its window"
+    test:
+      - tests/live/observe/test_loss.py::test_a_reset_queue_counter_is_flagged_and_pages_nobody
+      - tests/live/observe/test_loss.py::test_a_32_bit_wrap_of_the_queue_counter_shows_no_spike
+    period: P31D
+    threat: >-
+      A counter reset or a wrap shows as a cliff or a spike and pages the shift for traffic that never happened.
+    fails_when: >-
+      resets() flags the fall when someone asks; no rule pages on it. The wrap is a made-up series run through promtool, Prometheus' own rule tester in the pinned image, against the real rule: no queue here drops four billion packets. increase() reads a wrap as a reset and loses the drops between the last scrape before it and the wrap.
+
+  - id: loss-flight-recorder
+    claim: "A link failure leaves evidence of the moment. With r3's port to h2 down for one second, the flight recorder on both ends sends a complete state dump (interfaces and their counters, queues, filters, and r3's OSPF, BFD and routes) to the central store within 13 s, taken while the port was still down. A watcher that is killed is started again within 8 s, with a line in the store that says so. `make evidence` copies every node's dump and its own log off the box before a planned reset, and every dump is in the central store too, with no BGP password in any of it"
+    test:
+      - tests/live/observe/test_evidence.py::test_a_stopped_flight_recorder_is_armed_again
+      - tests/live/observe/test_evidence.py::test_a_flap_leaves_a_state_dump_in_the_central_store
+      - tests/live/observe/test_evidence.py::test_evidence_before_a_reset_is_kept_off_the_box
+      - tests/test_monitoring.py::test_flight_recorder_is_armed_on_a_link_failure_and_only_reads
+    period: P31D
+    threat: >-
+      A transient fault is gone by the time anyone looks, and the reboot that fixes it erases the box's own log.
+    fails_when: >-
+      The recorder dumps state, not packets. It sends over clear UDP syslog (RISK-34), so a dump sent while the node's path to the NOC is still down is lost; it waits 3 s, which covers a short flap only. At most one dump every 30 s per node. A dump fills about a third of a box's own small log. Nothing watches the loop that starts a stopped watcher again: if that loop alone is killed, the node's heartbeat goes on and nothing notices until the next observe run's flap test.
+
+  - id: loss-evidence-after-reset
+    claim: "After a power cut of the whole lab, the NOC included, the evidence is still there: r2's flight-recorder dump from a link failure just before the cut, and every line r2's own log held from its last five minutes, are in the central store, while r2 has lost its own copy. The store was restarted shortly before the cut, as after an earlier one, and the cut came after its first checkpoint since. A weekly job is set up to run it"
+    test:
+      - tests/live/test_power_event.py::test_evidence_outlives_a_power_cut
+      - tests/test_monitoring.py::test_the_central_store_keeps_its_data_on_the_lab_host
+    period: P31D
+    threat: >-
+      The power cut that resets a node resets the central store too, so the evidence of what led up to it is lost with both.
+    fails_when: >-
+      One copy, on the lab host's disk (RISK-35), in a folder any local user can write (RISK-45). A single node can't be hard-reset on its own here, so the drill cuts the whole lab. The weekly job has not run on GitHub yet; here the cut was the sandbox's whole-lab redeploy. The drill runs only in drills.yml (the lab job skips it), so control-status has no result for this control until that job has run on main. Lines still in flight at the moment of the cut are not checked: the drill waits until r2's lines are in the store before it cuts. A second cut within about a minute of a restart of the store can lose lines it took in since: 4 of r2's last 111 and 15 of its last 120 in two drill runs without the wait for the checkpoint (V-027, RISK-46). Lines r2 writes at boot before its route to the NOC is up never leave it (RISK-34).
+
+  - id: logvol-cut-at-source
+    claim: "One named kind of line is cut at h2's own forwarder before it leaves h2: web-check, the NOC's web check's request line from the NOC's address, answered 200. 36 of the check's own requests are written to h2's log and never reach the store, which gets the forwarder's count lines instead, while the same request from a user and a failed request from the NOC arrive as written. The same request answered 500, another page and another client on the NOC's LAN pass too; the same request from noc itself is cut (RISK-55), and so is a check that fails on content, since it still answers 200. Every log source has a daily ingest budget, counted in bytes at the collector, and all of them over the whole retention fit store_mb, the disk set aside for raw lines. Over the 30-minute false-positive review each source's pace as a day is within its budget, on the running NOC each source's bytes so far (its last 24 h, or since the lab started) are within it, and a source whose last 24 h passes its budget fires LogIngestOverBudget"
+    test:
+      - tests/live/observe/test_volume.py::test_noisy_kind_cut_at_the_source_while_wanted_lines_arrive
+      - tests/live/observe/test_volume.py::test_every_source_within_its_budget
+      - tests/test_volume.py::test_forwarder_cuts_the_named_kind_and_nothing_else
+      - tests/test_volume.py::test_the_cut_follows_the_web_check
+      - tests/test_volume.py::test_collector_counts_bytes_not_characters
+      - tests/test_volume.py::test_an_unnamed_kind_is_never_cut
+      - tests/test_volume.py::test_budget_rule_pages_once_a_source_passes_its_day
+      - tests/test_volume.py::test_every_source_has_a_budget_and_a_rule
+      - tests/test_volume.py::test_budgets_the_store_cannot_hold_are_refused
+      - tests/test_volume.py::test_a_source_without_a_budget_is_refused
+      - tests/test_volume.py::test_a_cut_kind_netlab_does_not_know_is_refused
+      - tests/test_volume.py::test_a_cut_source_must_wait_a_heartbeat_before_it_is_silent
+      - tests/test_detections.py::test_a_source_over_its_budget_during_the_review_fails
+      - tests/test_detections.py::test_the_review_measures_every_source_the_store_keeps
+    period: P31D
+    threat: >-
+      The store filling with the NOC's own check while nobody knows which source spends its disk; a cut
+      meant for noise that drops the line explaining an incident, or drops a whole source or severity.
+    fails_when: >-
+      The cut matches what an access line says (client address, request, status), so the same request made
+      from noc by anything other than the check is cut too, and so is a check that fails on content, which
+      still answers 200 and shows only as a count (RISK-55). The budget counts the bytes the collector hands Loki, not
+      Loki's disk, and only pages (RISK-56); once a day is over it stays firing for that day (RISK-57). The
+      live check reads the lab's own bytes, so on a lab up less than a day it covers only that time; the
+      day's figure is the review's pace. store_mb is checked by arithmetic, not against Loki's disk. The
+      page itself is proven in Prometheus' own rule evaluator, not live, because a live page would stay up
+      for a day. Routers' syslog, mostly Ansible's module lines (V-030), is not cut.
+
+  - id: logvol-detection-coverage
+    claim: "[`docs/detections.md`](docs/detections.md) is generated from the alert rules the NOC runs: one row per detection with what it detects, the data it reads, its sensor and where that sits, the objects it watches, its blind spots and its pages over 30 minutes of a stated benign workload, with no blank cell. A detection that looks back further than the review says so in its cell. `make test` fails on a rule with no row, a hand edit, or a review older than 92 days, run on other rules or on uncommitted changes, with a step that failed or ran fewer times than stated, or that stopped counting before its slowest page could arrive; the rows are the rules the running NOC has loaded"
+    test:
+      - tests/test_detections.py::test_table_has_a_full_row_for_every_deployed_rule_and_a_current_review
+      - tests/test_detections.py::test_every_alert_the_rules_raise_is_a_row
+      - tests/test_detections.py::test_a_rule_without_a_row_fails
+      - tests/test_detections.py::test_a_blank_blind_spot_fails
+      - tests/test_detections.py::test_a_review_older_than_its_cycle_fails
+      - tests/test_detections.py::test_a_review_of_other_rules_fails
+      - tests/test_detections.py::test_a_review_shorter_than_the_stated_workload_fails
+      - tests/test_detections.py::test_a_review_with_a_failed_step_fails
+      - tests/test_detections.py::test_a_step_that_raises_counts_as_failed_and_runs_on
+      - tests/test_detections.py::test_a_review_step_that_ran_fewer_times_than_planned_fails
+      - tests/test_detections.py::test_a_change_of_wait_alone_stales_a_figure
+      - tests/test_detections.py::test_a_review_on_a_tree_with_uncommitted_changes_fails
+      - tests/test_detections.py::test_a_review_that_stopped_counting_before_its_slowest_page_fails
+      - tests/test_detections.py::test_a_detection_that_looks_back_longer_than_the_review_says_so
+      - tests/test_detections.py::test_target_down_watches_only_what_answers_its_own_scrape
+      - tests/test_detections.py::test_a_detection_the_review_never_measured_has_a_blank_cell
+      - tests/test_detections.py::test_a_hand_edited_table_fails
+      - tests/test_detections.py::test_a_source_over_its_budget_during_the_review_fails
+      - tests/test_detections.py::test_the_review_starts_while_the_watchdog_fires
+      - tests/test_detections.py::test_the_review_does_not_start_while_another_alert_is_pending
+      - tests/live/observe/test_detections.py::test_table_rows_are_the_rules_the_running_noc_has_loaded
+    period: P31D
+    threat: >-
+      A quiet NOC read as cover for what it never sees; a detection that pages on normal work until people
+      stop reading its pages; a table that was right once and drifted from the rules.
+    fails_when: >-
+      Each false-positive figure is 30 minutes of a stated workload in the lab, not a real network's normal
+      work (RISK-58), and a real fault in that window counts as false. PendingRebootOverdue,
+      LogIngestOverBudget and JobMissed look back further than the review, so their 0 measures nothing,
+      which their cells say. The review is a committed file: the fp-review workflow can run it on GitHub, monthly or when the
+      repository owner starts it by hand, and uploads what the pager received once its own secret scan
+      passed, but a person commits it. Blind spots are written by hand, so an entry is only as good
+      as whoever wrote it; the check proves it is there and not blank. make test fails 92 days after the
+      last review, and on any rule change, until make fp-review runs again on a full lab.
+
+  - id: attrib-accounts
+    claim: "Each person and the CM tool has a named account with its own uid on every router we own, and FRR answers an account only through an accounting proxy that records every command as one line under the uid the kernel reports, not the name the shell claims, with secrets hidden, abbreviated ones too. The proxy sends each record to the collector from a port only root can send from, and the collector takes a record only from that port of a router we own, so a line an account writes to syslog, sends to the collector itself or hides in a command is not taken for one. A record reaches the central store within 10 s, and after root deletes every accounting line from the router's own log, which only root can change, the central copy is unchanged and names the real account. Root itself still goes past the proxy (RISK-60)"
+    test:
+      - tests/live/test_access.py::test_each_router_we_own_has_the_named_accounts
+      - tests/live/test_access.py::test_frr_answers_a_person_only_through_the_accounting_proxy
+      - tests/live/test_access.py::test_the_record_names_the_account_the_kernel_reports
+      - tests/live/test_access.py::test_only_root_sends_from_the_ports_the_collector_trusts
+      - tests/live/observe/test_accounting.py::test_record_leaves_the_box_and_outlives_root_deleting_its_copy
+      - tests/live/observe/test_accounting.py::test_a_record_an_account_forges_is_not_taken_for_one
+      - tests/test_attribution.py::test_every_router_we_own_gets_each_account_and_the_proxy
+      - tests/test_attribution.py::test_a_secret_typed_into_vtysh_is_hidden_in_its_record
+      - tests/test_attribution.py::test_the_labs_own_config_is_recorded_as_typed
+      - tests/test_attribution.py::test_no_command_puts_a_line_of_its_own_in_the_records
+      - tests/test_attribution.py::test_only_a_record_from_the_senders_own_port_counts
+    period: P31D
+    threat: >-
+      A change nobody will own, made under a shared root account, and the one record of it deleted from
+      the box by whoever made it, or written again under someone else's name.
+    fails_when: >-
+      Root on the router uses FRR's own sockets and can stop the proxy, so what root does is not recorded,
+      and root on the router or in one of its sidecars can send from the proxy's port (RISK-60); the console
+      in this lab is root. The records cross the campus as clear UDP: one can be lost, and a host on the
+      campus can forge one from a router's address and the proxy's port (RISK-34). The proxy records
+      commands sent, not whether each took effect, and a word that only happens to start a secret keyword
+      hides the rest of its command.
+
+  - id: attrib-unexpected-admin
+    claim: "Any account but root (RISK-60) that the inventory doesn't list pages as UnexpectedAdmin, naming the router and the account, within the bound `expected_state.json` states of its first FRR command, whether it was added to the admin group by hand (the proxy lets it in) or not (the proxy refuses it). A listed person doesn't page, each page clears once that account has been quiet for 60 s, and a record an account on the router forges counts for nothing. A shell login that never opens FRR's CLI is not seen (RISK-61)"
+    test:
+      - tests/live/observe/test_accounting.py::test_an_account_not_on_the_list_pages_and_a_listed_one_does_not
+      - tests/live/observe/test_accounting.py::test_a_record_an_account_forges_is_not_taken_for_one
+      - tests/live/test_access.py::test_an_account_outside_the_group_is_refused_and_recorded
+      - tests/test_attribution.py::test_unexpected_admin_rule_per_router_excludes_only_the_inventory_accounts
+      - tests/test_attribution.py::test_only_a_record_from_the_senders_own_port_counts
+    period: P31D
+    threat: >-
+      An account added by hand, a contractor's left over, or one an attacker made, used on a router for
+      days before anyone looks.
+    fails_when: >-
+      It sees only FRR use: a shell login that never opens FRR's CLI writes no line (RISK-61), and root's
+      vtysh goes past the proxy and pages nothing (RISK-60). A record forged on the campus from a router's
+      address and the proxy's port pages too, and a lost one doesn't (RISK-34). An account the inventory
+      lists is trusted whatever it does.
+
+  - id: attrib-drift-actor
+    claim: "When a router differs from its intent, `make drift` shows each differing line's running value and names who set it, from the command records at the NOC: after alice and then bob set the same line, it names bob, whose value is running, and not alice. `make apply` puts the intent back, and its commands are recorded under the CM tool's own account. When root then sets bob's value again outside the proxy, the lookup `make drift` runs names no one for either line, and a record alice forges under another name for her own change leaves her named"
+    test:
+      - tests/live/observe/test_accounting.py::test_drift_names_whoever_set_the_running_value_last
+      - tests/live/observe/test_accounting.py::test_a_record_an_account_forges_is_not_taken_for_one
+      - tests/test_attribution.py::test_drift_lines_are_read_with_their_context_and_state
+      - tests/test_attribution.py::test_the_newest_record_that_set_a_line_is_named
+      - tests/test_attribution.py::test_a_removed_line_is_named_by_its_no_record
+      - tests/test_attribution.py::test_a_line_changed_again_outside_the_proxy_names_no_one
+      - tests/test_attribution.py::test_a_password_line_is_matched_without_its_secret
+      - tests/test_attribution.py::test_the_lookup_says_so_when_the_noc_does_not_answer
+    period: P31D
+    threat: >-
+      A drifted line found by the nightly check, with hours spent finding who typed it while the session
+      it broke stays down, or the wrong person blamed for it.
+    fails_when: >-
+      A record holds the command as typed, not the stanza it was typed under or the daemon's answer, so
+      the same command under another interface can be named, or hide the record that did set the line, and
+      a refused command can be named (RISK-62). A change from root outside the proxy names no one (RISK-60).
+      It names people only on routers we own; isp is administered as root.
+
+  - id: attrib-nat
+    claim: "r2 translates LAN-A, and nothing else, to one address the carrier routes to us: a user's connection reaches the internet from it, the server LAN and r2 itself keep their own addresses, no other device translates, nothing from the internet reaches an inside host through that address unasked, and a translation added by hand fails the drift check, which names it"
+    test:
+      - tests/live/test_nat.py::test_users_leave_from_the_assigned_address_and_nothing_else_is_translated
+      - tests/live/test_nat.py::test_nat_is_one_rule_for_lan_a_only
+      - tests/live/test_nat.py::test_nothing_reaches_inside_through_the_nat_address_unasked
+      - tests/live/test_edge.py::test_edge_filter_hand_change_is_flagged
+      - tests/test_attribution.py::test_nat_is_one_rule_for_the_users_out_of_the_wan_only
+    period: P31D
+    threat: >-
+      A NAT wider than needed, hiding servers or the router's own traffic behind the users' address, or
+      opening a way in from the internet.
+    fails_when: >-
+      The test's far end is the carrier stand-in, and it counts TCP connections only. The NAT's own state
+      is the kernel's conntrack table, which a full table or a reboot clears; connections then start again
+      with new translations.
+
+  - id: attrib-whois
+    claim: "An outside complaint giving the NAT address, a port and a time names the inside host behind it from the NOC's copy of r2's translation log alone: `make whois` names h1 and the port it used, a port nobody held or a time before the connection names no one, and two inside addresses using the same inside port to the same far end are each named by the outside port they got. A translation line an account on r2 forges names no one, since the collector takes the log only from a port below 1024 that no account on r2 but root can send from. The translation log has its own last-seen check, and `make testevent` makes a real translation and finds it"
+    test:
+      - tests/live/observe/test_whois.py::test_a_complaint_names_the_inside_host_from_the_noc_alone
+      - tests/live/observe/test_whois.py::test_the_same_inside_port_from_two_hosts_names_each_by_its_own_outside_port
+      - tests/live/observe/test_accounting.py::test_a_record_an_account_forges_is_not_taken_for_one
+      - tests/live/observe/test_arrival.py::test_every_source_has_a_last_seen_check
+      - tests/live/observe/test_arrival.py::test_synthetic_event_from_every_source_reaches_the_store
+      - tests/test_attribution.py::test_translation_log_lines_parse
+      - tests/test_attribution.py::test_the_outside_port_names_the_inside_host_that_held_it_then
+      - tests/test_attribution.py::test_only_a_record_from_the_senders_own_port_counts
+    period: P31D
+    threat: >-
+      An abuse complaint about the NAT address that nobody can answer, or that blames the wrong user.
+    fails_when: >-
+      The log records when each translation began, not when it ended, over UDP: a lost line names no one,
+      and a reused outside port needs the far end to narrow it (RISK-63). `make whois` looks back an hour
+      unless told to look further, and takes a translation stamped at most 2 s after the complaint's time,
+      so a complainant whose clock runs further behind r2's is told nobody held the port (RISK-63). A line
+      forged on the campus from r2's address and the log's port is taken (RISK-34), as is one from root on
+      r2 (RISK-60). The second inside host is a second address on h1, standing in for a second user.
 
   - id: verdict-log
     claim: "Every odd behaviour in the log has one verdict (my config, normal behaviour, platform bug or lab artifact), the version it was seen on, and a fix or workaround. None may stay unclassified past 5 working days"
@@ -478,7 +941,7 @@ controls:
       failure-mode tests, not that the reasoning is sound. A decision made with no record is not seen.
 
   - id: selection-records
-    claim: "FRR, Containerlab, Ansible, iptables, gitleaks, Docker, GitHub Actions and restic each have a selection record with its constraint, a no-purchase line, staffing, and sources its maker didn't write, a measurement of our own among them. A new image in the inventory, Makefile, hooks or CI fails the check until it has one"
+    claim: "FRR, Containerlab, Ansible, iptables, gitleaks, Docker, GitHub Actions, restic, Prometheus with Alertmanager, node_exporter with blackbox_exporter, frr_exporter, Loki and Vector each have a selection record with its constraint, a no-purchase line, staffing, and sources its maker didn't write, a measurement of our own among them. A new image in the inventory, Makefile, hooks or CI fails the check until it has one"
     test:
       - tests/test_selections.py::test_every_selection_record_lints_clean
       - tests/test_selections.py::test_sources_from_the_seller_alone_are_rejected
@@ -512,7 +975,7 @@ controls:
     threat: Shortcuts nobody decided on, and accepted risks that outlive the reason they were accepted.
     fails_when: >-
       It knows only the risky line kinds in netlab/risks.py; a new kind of shortcut needs a new
-      detector, and a gap with no config line (RISK-9, RISK-10, RISK-12, RISK-20, RISK-27) is tied to nothing. RISK-15's
+      detector, and a gap with no config line (RISK-9, RISK-10, RISK-12, RISK-20, RISK-27, RISK-31, RISK-36, RISK-40, RISK-41, RISK-42, RISK-43, RISK-44, RISK-56, RISK-57, RISK-58 and RISK-62) is tied to nothing. RISK-15's
       detector reads the hosts' lines in the topology, so collecting the hosts won't flag it stale by
       itself. Every review_by is 2027-01-15, so CI's review job goes red on 2027-01-16 by design; the
       lab job doesn't wait for it.
@@ -733,13 +1196,15 @@ controls:
       - tests/test_scope.py::test_every_device_has_a_scope_decision
       - tests/test_scope.py::test_register_the_topology_contradicts_is_refused
       - tests/test_scope.py::test_segmentation_probes_every_out_of_scope_device
+      - tests/live/observe/test_loss.py::test_the_servers_exporter_answers_the_noc_and_nobody_out_of_scope
     period: P31D
     threat: >-
       The payments segment's scope quietly growing: a server added to LAN-B with no decision, a filter
       called out of scope, or an out-of-scope system that can reach a service it shouldn't.
     fails_when: >-
       It is a toy: no card data, no assessor (acceptance is open, decision 0013). It probes the services
-      the inventory lists over TCP, and echo pings. h1's ping exception is wider than its reason (fw1's
+      the inventory lists over TCP, and echo pings. h2's node_exporter port is a sidecar's, so only a NOC
+      job on the full lab (observe-3) probes it. h1's ping exception is wider than its reason (fw1's
       allow-icmp passes every ICMP type), and whether LAN-A's reach (h2:80 and pings) makes it
       connected-to is an assessor's call nobody has made. Outbound from LAN-B is not restricted (PCI
       DSS 1.3.2 not met). The clause wording was checked against a secondary source, not the PCI SSC
@@ -857,7 +1322,8 @@ controls:
     fails_when: >-
       The throwaway router has no links, so the drill shows the config loads, not that the restored
       router forms adjacencies. Its image, daemons file and sysctls come from build/, not from the
-      backup. A backup missing a line still boots cleanly; that is caught when it is captured
+      backup, and of the topology's binds it mounts only the read-only ones: the live router's FRR
+      sockets (run/), which its exporter reads, stay out of the drill. A backup missing a line still boots cleanly; that is caught when it is captured
       (capture-complete) and by the sha256 check at the destination (backup-at-destination). The
       drills behind this entry ran in the development sandbox against a scratch repository;
       drills.yml drills against the CI destination in the Actions cache.
@@ -882,7 +1348,7 @@ controls:
       activity), neither runs and nothing alerts. That needs a check from outside GitHub (RISK-25).
 
   - id: power-event-drill
-    claim: "After a whole-lab power cycle every node comes back by itself from its startup config: an unsaved change on r2 is gone and OSPF, BFD and BGP are up; once `make apply` has set the BGP password again (it is in no startup config), h1 reaches the web server through fw1 and nothing has drifted. Routing was back 10.8 to 20.2 s after the cut over four runs here. A weekly job is set up to run it"
+    claim: "After a whole-lab power cycle every node comes back by itself from its startup config: an unsaved change on r2 is gone and OSPF, BFD and BGP are up; once `make apply` has set the BGP password again (it is in no startup config), h1 reaches the web server through fw1 and nothing has drifted. On the full lab the NOC then scrapes every target and hears every log source again, with nothing firing. Routing was back 10.8 to 20.2 s after the cut over four runs here before the NOC was added, and 73.9 and 83.7 s over two runs of the full lab. That extra minute matches the 60 s watchfrr then waited, its default, before it started again a daemon that crashed as it started (V-011), which 3 of 5 other full-lab cycles watched here showed. With the daemons file's restart interval, routing was back 14.9 and 18.0 s after the cut, and the NOC settled after 94.1 and 101.6 s, over two runs. The NOC was settled 147.2 and 185.6 s after the cut. A weekly job is set up to run it"
     test: tests/live/test_power_event.py::test_power_event_recovers_from_startup_config
     period: P31D
     threat: >-
@@ -896,6 +1362,11 @@ controls:
       BGP session stays down against a real carrier, and in the lab it came back with no MD5 (RISK-28). In
       drills.yml on GitHub the cut is `containerlab deploy --reconfigure`; in the development sandbox it
       was the stand-in script's whole-lab redeploy (LAB_PARITY.md).
+      On the full lab Prometheus' history from before the cut is gone, because it keeps its data inside
+      its container; the central store keeps its own on the lab host's disk (decision 0025), one copy
+      (RISK-35). The drill waits up to 240 s
+      for routing, so it passes through one daemon restart after a startup crash (V-011) and only
+      reports the slower time.
 
   - id: runbooks
     claim: "Runbooks for link failure, BGP down, config drift, restoring a router from backup, a power event, carrier loss and a DDoS blackhole at the ISP each name an owner, a coordinator, who updates stakeholders, a review date and their hosts. The check fails on a missing field, a review older than 180 days, or a host that isn't in the inventory or in the runbook's own host list"

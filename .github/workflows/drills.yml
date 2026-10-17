@@ -72,6 +72,9 @@ jobs:
     timeout-minutes: 20
     env:
       CLAB_VERSION: "0.68.0"
+      # Each job's last make line also pings this outside check (decision 0022), on scheduled runs only,
+      # so a push or a pull request never stands in for a night that didn't run.
+      HEARTBEAT_URL: ${{ github.event_name == 'schedule' && secrets.HEARTBEAT_URL || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -81,9 +84,11 @@ jobs:
       - run: pip install -r requirements.txt -r requirements-ansible.txt
       - name: Install Containerlab
         run: bash -c "$(curl -sL https://get.containerlab.dev)" -- -v "$CLAB_VERSION"
-      - name: Pull router and backup images
+      - name: Pull every image the full lab runs, and the backup image
+        # The drills run on the full lab, the NOC's sidecars included, so the power cut is drilled on
+        # everything a real one would hit (the sidecars must come back after their nodes).
         run: |
-          docker pull frrouting/frr:v8.4.1
+          python3 -m netlab images | xargs -n1 docker pull
           docker pull restic/restic:0.16.4
       - name: Create this run's BGP password
         # No GitHub secret exists, so every run gets a new random one, 0600 in a 0700 folder outside
@@ -94,7 +99,7 @@ jobs:
           # Masked: if a value ever reached this log, GitHub would print *** instead. echo is a shell
           # builtin, so the value is on no command line.
           for f in "$RUNNER_TEMP"/netlab-secrets/*; do echo "::add-mask::$(cat "$f")"; done
-      - name: Deploy
+      - name: Deploy (network and NOC)
         id: deploy
         run: make deploy
       - name: Restore the backup repository (fails if it is missing)
@@ -110,8 +115,22 @@ jobs:
       - name: Power-event drill (whole-lab containerlab deploy --reconfigure)
         if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
         run: make power-drill
+      - name: Secret scan of this run's results and build/
+        id: secret-scan
+        # As in ci.yml's lab job: this job holds this run's BGP password, and its results carry what the drills
+        # printed (a failed power drill quotes r2's own log lines), so nothing is uploaded until this passed
+        # (OROS ACC-4). It runs after a failed drill too. grep: as root, and only exit 1 (no match) is clean.
+        # A failed scan withholds this run's drill results and turns the run red; control-status then reads the
+        # last ones uploaded.
+        if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
+        run: |
+          make gitleaks
+          for f in "$NETLAB_SECRETS"/*; do
+            rc=0; sudo -n grep -rlF -f "$f" $(ls -d backups results build 2>/dev/null) || rc=$?
+            if [ "$rc" != 1 ]; then echo "::error::this run's BGP password is in the files above, or a file could not be read (grep exit $rc)"; exit 1; fi
+          done
       - name: Upload drill results
-        if: always()
+        if: ${{ always() && steps.secret-scan.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: drill-results

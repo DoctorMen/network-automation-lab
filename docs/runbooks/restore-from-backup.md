@@ -24,6 +24,11 @@ this runbook is for when the backup is the source. The backups are restic snapsh
 
 ## Steps
 
+Before anything else, keep what only the router has: `make evidence NODE=<router>` copies its state
+dump and its own log into `results/evidence/` and fails unless the dump also reached the central store
+([decision 0025](../decisions/0025-flight-recorder.md)). Loading a backup or rebuilding the router
+loses both on the box.
+
 1. **Reach the backup.** `BACKUP_REPO` and `BACKUP_PASSWORD` as in [docs/backups.md](../backups.md)
    (defaults `/mnt/backup/netlab-restic` and `~/.config/netlab/restic-password`). restic runs in its
    pinned image, the same way `make backup` runs it:

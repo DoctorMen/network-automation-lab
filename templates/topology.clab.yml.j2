@@ -9,11 +9,34 @@ topology:
     # `docker exec`, which needs no network.
     network-mode: none
   nodes:
+{% set watchfrr = ". /usr/lib/frr/frrcommon.sh && exec /usr/lib/frr/watchfrr $watchfrr_options $(daemon_list)" %}
 {% for name in inv.routers %}
     {{ name }}:
       kind: linux
+      # Starts watchfrr the way the image's own start script (docker-start) does, but with the daemons file's
+      # watchfrr_options, which that script leaves out (V-011). frrcommon.sh, which reads the daemons file, is a
+      # bash script. tini, the image's entrypoint, stays the container's first process. docker-start also defines
+      # the log_*_msg functions frrcommon.sh calls on its error paths; this does not, so there bash says
+      # 'command not found' instead of the reason.
+{% if name in mon.exporters %}
+      # /var/run/frr is shared with this router's frr_exporter (decision 0018). Unlike /var/run on real
+      # gear it survives a restart, and a stale pid file would point FRR's start script at whatever
+      # process has that number now. So the router empties it, and gives it to FRR's user, first.
+      cmd: bash -c "chown frr:frr /var/run/frr && rm -f /var/run/frr/* && {{ watchfrr }}"
+{% else %}
+      cmd: bash -c "{{ watchfrr }}"
+{% endif %}
       sysctls:
         net.ipv4.ip_forward: 1
+{% if name in mon.exporters %}
+        # The exporters listen on the loopback, and start before zebra has put the address there.
+        net.ipv4.ip_nonlocal_bind: 1
+{% endif %}
+{% if name in root_only_ports %}
+        # Only root may send from a port below 1024, the ports the collector trusts for command records and
+        # the translation log (decision 0029). Docker sets 0 in a container, which lets any account.
+        net.ipv4.ip_unprivileged_port_start: {{ unprivileged_port_start }}
+{% endif %}
       binds:
         # Read-only: the rendered files are the intent. A writable bind would let a hand change
         # saved with `write memory` (or an edit to daemons) overwrite build/ and slip past the
@@ -24,8 +47,33 @@ topology:
 {% if name in edge %}
         # What the router enforces at its edges (filters, reverse-path checks): read-only like frr.conf.
         - {{ name }}/edge.sh:/edge.sh:ro
+{% endif %}
+{% if name in mon.exporters %}
+        # FRR's sockets, read by frr_exporter, and the pending-reboot metric, read by node_exporter.
+        - {{ name }}/run:/var/run/frr
+        - {{ name }}/textfile:/textfile
+        - monitoring/kernel.py:/monitoring/kernel.py:ro
+{% endif %}
+{% if name in mon.sources %}
+        - monitoring/agent.sh:/monitoring/agent.sh:ro
+{% endif %}
+{% if name in access %}
+        # Named accounts, the accounting proxy and the vtysh that uses it (decision 0029).
+        - access:/access:ro
+{% endif %}
       exec:
+{% if name in edge %}
         - sh /edge.sh
+{% endif %}
+{% if name in access %}
+        - sh /access/access.sh
+{% endif %}
+{% if name in mon.sources %}
+        # Syslog to the NOC's collector, a heartbeat, and the pending-reboot metric (decision 0019).
+        - sh /monitoring/agent.sh
+{% else %}
+        # Not ours to collect: the carrier's own log stays on its box (busybox syslogd, rotated).
+        - syslogd -s {{ inv.logging.on_box.size_kb }} -b {{ inv.logging.on_box.rotated }}
 {% endif %}
 {% endfor %}
 {% for name in inv.firewalls %}
@@ -39,15 +87,48 @@ topology:
         # Read-only for the same reason as frr.conf: firewall.sh is the firewall's startup
         # config and the drift check's intent, so it must not be editable from the node.
         - {{ name }}/firewall.sh:/firewall.sh:ro
+{% if name in mon.sources %}
+        - monitoring/agent.sh:/monitoring/agent.sh:ro
+{% endif %}
       exec:
         - sh /firewall.sh
+{% if name in mon.sources %}
+        - sh /monitoring/agent.sh
+{% endif %}
 {% endfor %}
 {% for name, h in inv.hosts.items() %}
+{% set apps = mon.apps.get(name, {}) %}
     {{ name }}:
       kind: linux
       entrypoint: sh
+{% if h.services is defined %}
       # Listeners bind to 0.0.0.0, so they can start before the lab links exist.
-      cmd: -c "{% for port in h.services | default([]) %}python3 -m http.server {{ port }} >/dev/null 2>&1 & {% endfor %}sleep infinity"
+{% endif %}
+{% if apps %}
+      # http.server writes its access log to stderr. For an app the NOC collects, that goes to a file its
+      # forwarder reads (decision 0019); nothing else about how the app runs changes.
+{% endif %}
+{% if name == mon.host %}
+      # The NOC's webhook sink, Alertmanager's receiver (decision 0018), on 127.0.0.1 only.
+{% endif %}
+{% if name in mon.servers %}
+      # Its node_exporter listens on this host's address, and starts before the exec step below adds it.
+      sysctls:
+        net.ipv4.ip_nonlocal_bind: 1
+{% endif %}
+      cmd: -c "{% if name == mon.host %}python3 /noc/sink.py {{ mon.ports.sink }} >/dev/null 2>&1 & {% endif %}{% for port in h.services | default([]) %}python3 -m http.server {{ port }} >/dev/null {% if port in apps %}2>>/applog/{{ apps[port] }}-{{ port }}.log{% else %}2>&1{% endif %} & {% endfor %}sleep infinity"
+{% if name == mon.host or name in mon.sources or apps %}
+      binds:
+{% if name == mon.host %}
+        - {{ name }}/sink.py:/noc/sink.py:ro
+{% endif %}
+{% if name in mon.sources %}
+        - monitoring/agent.sh:/monitoring/agent.sh:ro
+{% endif %}
+{% if apps %}
+        - {{ name }}/applog:/applog
+{% endif %}
+{% endif %}
       exec:
         - ip addr add {{ h.address }} dev {{ h.interface }}
         - ip route replace default via {{ h.gateway }}
@@ -65,6 +146,29 @@ topology:
 {% endfor %}
 {% for c in q.classes if c.sport is defined %}
         - "tc filter add dev {{ q.interface }} parent 1: protocol ip prio 1 u32 match ip sport {{ c.sport }} 0xffff flowid 1:{{ c.id }}"
+{% endfor %}
+{% endif %}
+{% if name in mon.sources %}
+        - sh /monitoring/agent.sh
+{% endif %}
+{% endfor %}
+{% for name, s in mon.sidecars.items() %}
+    # Shares {{ s.netns }}'s network namespace: it is reached on {{ s.netns }}'s addresses and adds no link.
+    {{ name }}:
+      kind: linux
+      image: {{ s.image }}
+      network-mode: container:{{ s.netns }}
+{% if s.user is defined %}
+      user: "{{ s.user }}"
+{% endif %}
+{% if s.cap_add is defined %}
+      cap-add: {{ s.cap_add | tojson }}
+{% endif %}
+      cmd: {{ s.cmd | tojson }}
+{% if s.binds %}
+      binds:
+{% for b in s.binds %}
+        - {{ b }}
 {% endfor %}
 {% endif %}
 {% endfor %}

@@ -56,7 +56,7 @@ failure_modes:
 - raw/ (every command and its output as printed), pcap/ (ICMP on our hand-off port while the edge pings the far side, with the capture script), support/ (FRR's support bundle from each router we own on the path, with the vendored command list minus `show running-config`);
 - versions.txt (image digests, FRR, kernel, Docker, what deployed the lab (read from Containerlab's labels on the nodes) and the Containerlab installed on this host, netlab commit), time.txt (UTC, each device's clock against the host's, the host's sync state);
 - lab/ (the rendered topology and configs) and, in a lab run, lab/condition.sh to recreate the fault;
-- finding.env and reproduce.sh, and SHA256SUMS over all of it.
+- finding.env and reproduce.sh, and SHA256SUMS over all of it except the folders lab/ binds into its nodes (a router's run/, h2's applog/), which hold only an EMPTY file and which the lab writes into as it starts.
 
 reproduce.sh is plain sh. CI's `reproduce` job downloads the bundle on a runner that never checks out the repo, stands the lab up from lab/, requires "Did not reproduce" on the healthy lab, recreates the fault, and requires "Reproduced" with the same segment and owner.
 

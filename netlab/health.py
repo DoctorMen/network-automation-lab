@@ -16,6 +16,7 @@ import json
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import yaml
@@ -48,10 +49,11 @@ def problems(expected: dict, lab: str) -> list[str]:
         peers = run_json(f"clab-{lab}-{s['router']}", "show bgp summary").get("ipv4Unicast", {}).get("peers", {})
         if peers.get(s["address"], {}).get("state") != "Established":
             found.append(f"{s['router']}: BGP session to {s['peer']} is not Established")
-    for src in expected["hosts"]:
-        for dst, address in expected["hosts"].items():
-            if dst != src and not reaches(f"clab-{lab}-{src}", address):
-                found.append(f"{src}: no reply from {dst} ({address})")
+    # Every host pair at once: with the NOC's host there are six, and the gate runs this every second.
+    pairs = [(src, dst, address) for src in expected["hosts"] for dst, address in expected["hosts"].items() if dst != src]
+    with ThreadPoolExecutor(max_workers=len(pairs) or 1) as pool:
+        replies = list(pool.map(lambda p: reaches(f"clab-{lab}-{p[0]}", p[2]), pairs))
+    found += [f"{src}: no reply from {dst} ({address})" for (src, dst, address), ok in zip(pairs, replies) if not ok]
     return found
 
 

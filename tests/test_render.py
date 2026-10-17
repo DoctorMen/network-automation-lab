@@ -1,9 +1,11 @@
 """Rendered configs should say exactly what the inventory says."""
 import json
+import shlex
 from pathlib import Path
 
 import yaml
 
+from netlab import monitoring
 from netlab.backup import IMAGE as RESTIC_IMAGE
 from netlab.inventory import load
 from netlab.render import render_all, render_firewall, render_router
@@ -61,6 +63,24 @@ def test_daemons_match_protocols():
     assert "bfdd=no" in render_router(inv, "isp")["daemons"]
 
 
+def test_every_router_restarts_a_crashed_daemon_within_seconds(tmp_path):
+    """V-011: FRR 8.4.1's zebra or bgpd crashes as it starts now and then, and with watchfrr's defaults (60 s, doubling
+    up to 600 s) isp's zebra was still down when make apply's 120 s wait ran out. Every router's daemons file sets
+    watchfrr's restart interval to 5 s, doubling up to 60 s, and every router's start command runs watchfrr with
+    $watchfrr_options, which the image's own start (docker-start) leaves out. tini, the image's entrypoint, stays."""
+    render_all(inv, tmp_path)
+    nodes = yaml.safe_load((tmp_path / "topology.clab.yml").read_text())["topology"]["nodes"]
+    watchfrr = ". /usr/lib/frr/frrcommon.sh && exec /usr/lib/frr/watchfrr $watchfrr_options $(daemon_list)"
+    for router in inv.routers:
+        daemons = (tmp_path / router / "daemons").read_text().splitlines()
+        assert 'watchfrr_options="--min-restart-interval 5 --max-restart-interval 60"' in daemons, router
+        start = shlex.split(nodes[router].get("cmd", ""))
+        assert start[:2] == ["bash", "-c"] and len(start) == 3 and "entrypoint" not in nodes[router], (router, start)
+        # A router with exporters empties FRR's run folder, which it shares with them, first (decision 0018).
+        first = "chown frr:frr /var/run/frr && rm -f /var/run/frr/* && " if router in monitoring.exporter_routers(inv) else ""
+        assert start[2] == first + watchfrr, (router, start[2])
+
+
 def test_firewall_default_drop_and_rule_order():
     script = render_firewall(inv, "fw1")
     assert "iptables -P FORWARD DROP" in script
@@ -77,7 +97,13 @@ def test_web_rule_matches_only_connection_openers():
 def test_render_all_writes_a_consistent_lab(tmp_path):
     render_all(inv, tmp_path)
     topo = yaml.safe_load((tmp_path / "topology.clab.yml").read_text())
-    assert set(topo["topology"]["nodes"]) == set(inv.devices)
+    # Every device, plus the NOC's sidecars (decision 0018), each in another node's network namespace.
+    assert set(topo["topology"]["nodes"]) == set(inv.devices) | set(monitoring.sidecars(inv))
+    for name, cfg in monitoring.sidecars(inv).items():
+        assert topo["topology"]["nodes"][name]["network-mode"] == f"container:{cfg['netns']}"
+    # conntrack reads the router's translations only with CAP_NET_ADMIN, which the topology asks for by name.
+    caps = {name: n["cap-add"] for name, n in topo["topology"]["nodes"].items() if "cap-add" in n}
+    assert caps == {f"{r}-nat-log": ["NET_ADMIN"] for r in monitoring.nat_logs(inv)} and caps, caps
     assert topo["topology"]["defaults"]["image"] == inv.platform["image"]
     assert len(topo["topology"]["links"]) == len(inv.links)
     for node in topo["topology"]["nodes"].values():
@@ -86,7 +112,7 @@ def test_render_all_writes_a_consistent_lab(tmp_path):
     expected = json.loads((tmp_path / "expected_state.json").read_text())
     assert expected["ospf_neighbors"]["r2"] == ["r1", "r3"]
     assert expected["bfd_peers"]["r1"] == {"10.0.12.1": "eth1", "10.0.13.1": "eth2"}
-    assert expected["passive_interfaces"] == {"r1": [], "r2": [], "r3": ["eth3"]}
+    assert expected["passive_interfaces"] == {"r1": [], "r2": ["eth4"], "r3": ["eth3"]}  # r2 eth4: the NOC's LAN
     assert expected["platform"] == inv.platform
     assert expected["bgp_sessions"][0]["peer"] == "isp"
 
@@ -100,16 +126,25 @@ def test_render_is_deterministic(tmp_path):
 
 
 def test_ci_pulls_the_image_the_inventory_names():
-    """CI deploys the image the inventory records, so the live version check tests the real thing. The
-    drills workflow pulls that image too, and exactly the restic image netlab.backup runs."""
+    """CI deploys the images the inventory records, so the live version checks test the real thing: the lab
+    job the router image, each of the three NOC jobs every image the full lab runs (`netlab images`). The drills
+    workflow, which runs on the full lab too, pulls the same list, and exactly the restic image
+    netlab.backup runs."""
     ci = yaml.safe_load((INVENTORY.parents[1] / ".github" / "workflows" / "ci.yml").read_text())
     steps = [step for job in ci["jobs"].values() for step in job["steps"]]
     pulls = [step["run"].split()[-1] for step in steps if step.get("run", "").startswith("docker pull")]
     drills = yaml.safe_load((INVENTORY.parents[1] / ".github" / "workflows" / "drills.yml").read_text())["jobs"]
     drill_pulls = {job: [line.split()[-1] for step in drills[job]["steps"] for line in step.get("run", "").splitlines()
                          if line.strip().startswith("docker pull")] for job in drills}
-    assert drill_pulls == {"backup-init": [RESTIC_IMAGE], "drills": [inv.platform["image"], RESTIC_IMAGE]}
+    assert drill_pulls == {"backup-init": [RESTIC_IMAGE], "drills": [RESTIC_IMAGE]}
     assert pulls == [inv.platform["image"]]
+    noc = [job for job in ci["jobs"] if job.startswith("observe")]
+    assert noc == ["observe-1", "observe-2", "observe-3"]
+    for job in noc:
+        observe = [step["run"] for step in ci["jobs"][job]["steps"] if "netlab images" in step.get("run", "")]
+        assert observe and "docker pull" in observe[0], f"{job} doesn't pull what `netlab images` lists"
+    drill_images = [line for step in drills["drills"]["steps"] for line in step.get("run", "").splitlines() if "netlab images" in line]
+    assert drill_images and "docker pull" in drill_images[0], "the drills job doesn't pull what `netlab images` lists"
 
 
 def test_canary_goes_first_with_the_rollout_settings(tmp_path):
@@ -139,10 +174,18 @@ def test_h2_port_is_shaped_with_a_web_class(tmp_path):
 
 
 def test_every_node_has_one_exec_list(tmp_path):
-    """Each node's deploy steps are one exec list with no key given twice: h2's address, route and QoS, r2's and r3's edge.sh, fw1's firewall.sh."""
+    """Each node's deploy steps are one exec list with no key given twice: h2's address, route and QoS, r2's and
+    r3's edge.sh, fw1's firewall.sh, and last, on every log source, the NOC's agent (decision 0019)."""
     render_all(inv, tmp_path)
     nodes = yaml.load((tmp_path / "topology.clab.yml").read_text(), Loader=OneKeyLoader)["topology"]["nodes"]
-    assert {n: v["exec"] for n, v in nodes.items() if n in inv.routers and "exec" in v} == {"r2": ["sh /edge.sh"], "r3": ["sh /edge.sh"]}
-    assert nodes["fw1"]["exec"] == ["sh /firewall.sh"]
+    agent = "sh /monitoring/agent.sh"
+    sources = monitoring.syslog_sources(inv)
+    for n in sources:
+        assert nodes[n]["exec"][-1] == agent and nodes[n]["exec"].count(agent) == 1, n
+    assert not [n for n, v in nodes.items() if agent in v.get("exec", []) and n not in sources]
+    # Routers we own also set up their accounts and accounting proxy, just before the agent (decision 0029).
+    acct = ["sh /access/access.sh"]
+    assert {n: v["exec"][:-1] for n, v in nodes.items() if n in inv.routers and n in sources} == {"r1": acct, "r2": ["sh /edge.sh", *acct], "r3": ["sh /edge.sh", *acct]}
+    assert nodes["fw1"]["exec"][:-1] == ["sh /firewall.sh"]
     h2 = nodes["h2"]["exec"]
     assert h2[0].startswith("ip addr add ") and h2[1].startswith("ip route replace default ") and h2[2].startswith("tc qdisc add ")

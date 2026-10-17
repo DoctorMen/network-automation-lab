@@ -1,6 +1,7 @@
 """The backup's destination check and the single-item restore's stanza cut, without a lab."""
 import io
 import os
+import shlex
 import subprocess
 import tarfile
 from pathlib import Path
@@ -128,3 +129,50 @@ def test_stanza_is_one_top_level_block():
     assert "  aggregate-address 10.0.0.0/8 summary-only" in item and "router ospf" not in item
     assert restore.stanza(R2, "router rip") == ""
 
+
+
+def test_a_throwaway_router_starts_the_way_the_lab_starts_it(tmp_path):
+    """The restore drill's throwaway router runs its node's own start command from the topology, so watchfrr gets
+    the daemons file's restart interval (V-011), and not the image's default start, which leaves it out."""
+    inv = backup.load(ROOT / "inventory" / "network.yml")
+    render_all(inv, tmp_path)
+    nodes = yaml.safe_load((tmp_path / "topology.clab.yml").read_text())["topology"]["nodes"]
+    config = tmp_path / "restored.conf"
+    config.write_text(R2)
+    for router in inv.routers:
+        cmd = restore.Scratch(tmp_path, router, config).cmd
+        image = cmd.index(inv.platform["image"])
+        assert cmd[image + 1:] == shlex.split(nodes[router]["cmd"]) != [], router
+
+
+def test_the_boot_check_waits_for_the_daemons_after_watchfrrs_options():
+    """watchfrr's command line gives its options first (--min-restart-interval 5 ...), then the daemons it looks
+    after. The boot check waits for each of those daemons, and takes no option or option value for one."""
+    ps = ("PID   COMMAND\n"
+          "/sbin/tini -- bash -c . /usr/lib/frr/frrcommon.sh && exec /usr/lib/frr/watchfrr $watchfrr_options $(daemon_list)\n"
+          "/usr/lib/frr/watchfrr --min-restart-interval 5 --max-restart-interval 60 zebra bgpd staticd\n"
+          "/usr/lib/frr/zebra -d -F traditional -A 127.0.0.1 -s 90000000\n"
+          "/usr/lib/frr/bgpd -d -F traditional -A 127.0.0.1\n"
+          "/usr/lib/frr/staticd -d -F traditional -A 127.0.0.1\n")
+    assert restore.booted(ps)
+    assert not restore.booted(ps.replace("/usr/lib/frr/bgpd -d", "[bgpd]")), "booted with bgpd down"
+    assert not restore.booted(ps + "/bin/bash /usr/lib/frr/watchfrr.sh restart all\n"), "booted while a start script runs"
+    assert not restore.booted(ps + "vtysh -b\n"), "booted while the config loads"
+    assert not restore.booted("PID   COMMAND\n/sbin/tini -- bash -c . /usr/lib/frr/frrcommon.sh && exec /usr/lib/frr/watchfrr "
+                              "$watchfrr_options $(daemon_list)\n"), "booted before watchfrr started"
+
+
+def test_a_throwaway_router_shares_nothing_with_the_live_one(tmp_path):
+    """The restore drill's throwaway router mounts the rendered intent read-only, and none of the folders the
+    live router shares with its NOC sidecars: its FRR sockets and pid files, and its pending-reboot metric."""
+    inv = backup.load(ROOT / "inventory" / "network.yml")
+    render_all(inv, tmp_path)
+    config = tmp_path / "restored.conf"
+    config.write_text(R2)
+    cmd = restore.Scratch(tmp_path, "r2", config).cmd
+    mounts = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--mount"]
+    targets = {m.split(",dst=")[1].split(",")[0] for m in mounts}
+    assert {"/etc/frr/frr.conf", "/etc/frr/daemons", "/etc/frr/vtysh.conf"} <= targets
+    assert all(m.endswith(",readonly") for m in mounts)
+    assert not targets & {"/var/run/frr", "/textfile"}, f"the throwaway mounts the live router's {sorted(targets)}"
+    assert f"type=bind,src={config.resolve()},dst=/etc/frr/frr.conf,readonly" in mounts

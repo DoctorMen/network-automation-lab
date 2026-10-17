@@ -6,7 +6,7 @@ LAB_ENV ?= local
 NOTE    ?=
 
 .PHONY: help validate render test deploy live drift apply locate measure destroy all
-.PHONY: secrets gitleaks finding risks review
+.PHONY: secrets gitleaks finding risks review deploy-network observe coverage testevent alerts silence ingest detections fp-review whois
 
 help:            ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-15s %s\n", $$1, $$2}'
@@ -25,15 +25,67 @@ test:            ## Offline tests (no lab needed), except the dated reviews (mak
 review:          ## Dated reviews: a verdict unclassified past 5 working days, a lever, risk or runbook past its review date
 	$(PY) -m pytest -q tests --ignore=tests/live -m review --junitxml=results/review.xml
 
-deploy: render secrets ## Render, start the lab with Containerlab, then set what isn't rendered (BGP passwords)
+deploy: render secrets ## Render, start the lab with Containerlab, then set what isn't rendered (BGP passwords, silences)
 	$(CLAB) deploy -t $(TOPO) --reconfigure
+	$(MAKE) apply
+	$(MAKE) silence
+
+deploy-network: render secrets ## As deploy, but the network's own nodes only: no NOC sidecars (CI's lab job)
+	$(CLAB) deploy -t $(TOPO) --reconfigure --node-filter $$($(PY) -m netlab nodes)
 	$(MAKE) apply
 
 live:            ## Test the running lab: routing, firewall, failover, drift checks, locate (JUnit in results/)
-	$(PY) -m pytest -v tests/live --junitxml=results/live.xml
+	$(PY) -m pytest -v tests/live --ignore=tests/live/observe --junitxml=results/live.xml
+
+# The NOC's tests in three groups of about equal time, one CI job each (each deploys the full lab):
+# make observe OBSERVE_GROUP=2 runs one group, into results/observe-2.xml. With no OBSERVE_GROUP it runs them all.
+OBSERVE_1 = tests/live/observe/test_state.py tests/live/observe/test_arrival.py tests/live/observe/test_central_store.py tests/live/observe/test_coverage.py tests/live/observe/test_noc.py
+OBSERVE_2 = tests/live/observe/test_outage.py tests/live/observe/test_silence.py tests/live/observe/test_deadman.py
+OBSERVE_3 = tests/live/observe/test_loss.py tests/live/observe/test_evidence.py tests/live/observe/test_volume.py tests/live/observe/test_detections.py tests/live/observe/test_accounting.py tests/live/observe/test_whois.py
+OBSERVE_GROUP ?=
+observe:         ## Test the NOC on a full lab (make deploy): alerts, log arrival, central store (JUnit in results/; OBSERVE_GROUP=1, 2 or 3 for one group)
+	$(PY) -m pytest -v $(if $(OBSERVE_GROUP),$(or $(OBSERVE_$(OBSERVE_GROUP)),$(error OBSERVE_GROUP=$(OBSERVE_GROUP) names no group: 1, 2 or 3)),tests/live/observe) --junitxml=results/observe$(if $(OBSERVE_GROUP),-$(OBSERVE_GROUP)).xml
+
+coverage:        ## Every value a test or runbook reads from a device has a metric or log query (monitoring/coverage.yml)
+	$(PY) -m netlab.coverage
+
+testevent:       ## Send a marked line from every log source and show where it arrived: make testevent
+	$(PY) -m netlab.observe testevent
+
+alerts:          ## What is firing now, and what the NOC's pager (the webhook sink) has received
+	$(PY) -m netlab.observe alerts
+
+silence:         ## Check monitoring/silences.yml (one object, time-boxed, a reason and a record) and add each to Alertmanager
+	$(PY) -m netlab.silence
+
+# Each unattended job's last line reports its success to the NOC (and HEARTBEAT_URL, when set). Make runs
+# it only when every line before it succeeded, so a job that fails or never starts sends nothing (NOT-4).
+SUCCESS = $(PY) -m netlab.observe success
+
+NODE    ?=
+MINUTES ?= 15
+.PHONY: evidence logs
+evidence:        ## Before a planned reset: each node's state dump and own log, into results/evidence/ and the central store (NODE=r2 for one)
+	$(PY) -m netlab.evidence take $(if $(NODE),--node $(NODE))
+
+logs:            ## A node's last lines from the central store, also after a reset: make logs NODE=r2 MINUTES=15
+	$(PY) -m netlab.evidence show --node "$(NODE)" --minutes "$(MINUTES)"
+
+ingest:          ## Each log source's bytes at the collector in the last 24 h (or since the lab started) against its daily budget; fails if one is over
+	$(PY) -m netlab.observe ingest
+
+detections:      ## Write docs/detections.md from the deployed rules; fails on a rule with no row, a blank cell, a stale review
+	$(PY) -m netlab.detections
+
+fp-review:       ## On a full lab: run the benign workload (30 min), count every page, write monitoring/fp-review.yml (LAB_ENV=...)
+	$(PY) -m netlab.detections review --env $(LAB_ENV)
+
+whois:           ## Which inside host held a NAT address and port at a time: make whois ADDR=198.51.100.64 PORT=41000 AT=2026-10-16T05:40:00Z [REMOTE=203.0.113.1]
+	$(PY) -m netlab.who flow "$(ADDR)" "$(PORT)" "$(AT)" $(if $(REMOTE),--remote "$(REMOTE)")
 
 drift:           ## Back up routers and firewall, fail on drift or on a backup missing running config
 	cd ansible && ansible-playbook drift.yml
+	$(SUCCESS) drift
 
 apply:           ## Roll intended config out, canary first; roll back and stop on a failed health gate (diff only, no restarts)
 	cd ansible && ansible-playbook deploy.yml
@@ -58,35 +110,43 @@ secrets:         ## Create any missing lab secret (BGP MD5 passwords) in NETLAB_
 	$(PY) -m netlab secrets
 
 GITLEAKS ?= docker run --rm -v "$(CURDIR)":/repo zricethezav/gitleaks:v8.21.2
-gitleaks:        ## Scan every commit, then backups/, results/ and build/ if present, for secrets (gitleaks)
+# The folders `make gitleaks` scans after the history; the false-positive review's workflow adds the two it rewrites.
+SCAN_DIRS ?= backups results build
+
+gitleaks:        ## Scan every commit, then backups/, results/ and build/ if present (SCAN_DIRS), for secrets (gitleaks)
 	$(GITLEAKS) git /repo --config /repo/.gitleaks.toml --redact --verbose --no-banner
-	for d in backups results build; do [ ! -d $$d ] || $(GITLEAKS) dir /repo/$$d --config /repo/.gitleaks.toml --redact --verbose --no-banner || exit 1; done
+	for d in $(SCAN_DIRS); do [ ! -d $$d ] || $(GITLEAKS) dir /repo/$$d --config /repo/.gitleaks.toml --redact --verbose --no-banner || exit 1; done
 
 destroy:         ## Tear the lab down
 	$(CLAB) destroy -t $(TOPO) --cleanup
 
-all: test deploy live drift review ## Everything CI does
+all: test deploy live observe drift review ## Everything CI does (CI's lab job runs live on deploy-network, its three NOC jobs observe)
 
 # Backups (OROS REC-1, REC-3). BACKUP_REPO is the destination: a restic repository on a disk or share
 # that outlives this machine. If it isn't mounted, `make backup` fails; it never creates one.
 BACKUP_REPO     ?= /mnt/backup/netlab-restic
 BACKUP_PASSWORD ?= $(HOME)/.config/netlab/restic-password
-# The power cut for `make power-drill`: every node stopped and started again from its rendered files.
+# The power cut for `make power-drill`: every node stopped and started again from its rendered files,
+# each NOC sidecar after the node whose network namespace it shares. That is the full lab (make deploy);
+# on a lab from make deploy-network, add the same --node-filter, or the cut starts the sidecars too.
 POWER_CYCLE     ?= $(CLAB) deploy -t $(TOPO) --reconfigure
 
 .PHONY: backup backup-init restore-drill power-drill control-status
 
 backup:          ## Send backups/ (from make drift) to BACKUP_REPO and verify it there; fails if the repo is missing
 	$(PY) -m netlab.backup run --repo "$(BACKUP_REPO)" --password-file "$(BACKUP_PASSWORD)"
+	$(SUCCESS) backup
 
 backup-init:     ## Create the restic repository at BACKUP_REPO, once, by hand (make backup never does)
 	$(PY) -m netlab.backup init --repo "$(BACKUP_REPO)" --password-file "$(BACKUP_PASSWORD)"
 
 restore-drill:   ## Boot every router's latest backup on throwaway routers, and restore one stanza on its own
 	BACKUP_REPO="$(BACKUP_REPO)" BACKUP_PASSWORD="$(BACKUP_PASSWORD)" $(PY) -m pytest -v tests/live/test_restore.py --junitxml=results/restore-drill.xml
+	$(SUCCESS) restore-drill
 
-power-drill:     ## Power-cycle the whole lab and check it comes back by itself from startup config
+power-drill:     ## Power-cycle the whole lab: it comes back by itself from startup config, the NOC too, and r2's evidence is still in the store
 	POWER_CYCLE="$(POWER_CYCLE)" $(PY) -m pytest -v tests/live/test_power_event.py --junitxml=results/power-drill.xml
+	$(SUCCESS) power-drill
 
 control-status:  ## Fail if any control's latest test is red or older than its period (reads CI runs with gh)
 	$(PY) -m netlab.control_status

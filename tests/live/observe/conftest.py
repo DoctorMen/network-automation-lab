@@ -1,0 +1,112 @@
+"""The NOC's own tests (decisions 0018 and 0019): they need the full lab, sidecars included (`make deploy`),
+and run as `make observe`. The network's tests (`make live`) never need them.
+
+Every value they compare against comes from expected_state.json's `monitoring` block, generated from the
+inventory. Each test that breaks something puts it back, and checks its alert against the moment it
+broke it: an alert raised before the test started can't count."""
+import re
+import subprocess
+import time
+from datetime import datetime
+
+import pytest
+
+from netlab.observe import Noc
+
+from ..conftest import wait_for
+
+
+def pytest_collection_modifyitems(items):
+    """The central store's secret search runs last, so it also reads the flight-recorder dumps every other test set off."""
+    last = [i for i in items if i.name == "test_no_secret_in_the_central_store"]
+    items[:] = [i for i in items if i not in last] + last
+
+
+@pytest.fixture(scope="session")
+def mon(expected):
+    if not expected.get("monitoring"):
+        pytest.skip("the inventory has no monitoring block")
+    return expected["monitoring"]
+
+
+@pytest.fixture(scope="session")
+def noc(lab_name, mon):
+    """The NOC, settled: every scrape answering, Loki ready, every log source heard from, and nothing firing
+    but Watchdog, the alert path's heartbeat, which always fires (decision 0022). A lab started without its
+    sidecars (make deploy-network) has no NOC, and these tests can't run there."""
+    sidecar = f"clab-{lab_name}-{mon['sidecars'][0]}"
+    if subprocess.run(["docker", "inspect", sidecar], capture_output=True).returncode:
+        pytest.skip(f"{sidecar} is not running: the NOC's tests need the full lab (make deploy), not make deploy-network")
+    n = Noc(lab_name, mon["host"])
+    # Right after a deploy the first heartbeat may have gone out before OSPF had a route to the NOC; the
+    # next one is a heartbeat later. If it never settles, the tests say what is wrong.
+    wait_for(lambda: n.settled(mon["sources"]), timeout=mon["heartbeat"] + 60, interval=3)
+    return n
+
+
+def firing(noc, state="firing"):
+    """Every alert Prometheus has in this state, except Watchdog, which fires all the time."""
+    return noc.firing(state)
+
+
+def halfway_between_scrapes(noc, interval, **labels):
+    """Sleep until halfway between two scrapes of this target. Prometheus scrapes a target at a fixed offset,
+    so its last scrape says when the next ones come; a change made here is as far from both as it can be."""
+    target = next(t for t in noc.targets() if all(t["labels"].get(k) == v for k, v in labels.items()))
+    # Prometheus writes nanoseconds; Python reads at most microseconds.
+    last = datetime.fromisoformat(re.sub(r"(\.\d{6})\d*", r"\1", target["lastScrape"]).replace("Z", "+00:00")).timestamp()
+    time.sleep((last + interval / 2 - time.time()) % interval)
+
+
+def held_back_by(noc, alert, **labels):
+    """The causes this object's alert lists in its deps label, read from the rules the running NOC has loaded. A
+    label the rule doesn't carry (a queue's device comes from its series) matches every rule."""
+    found = set()
+    for r in noc.rules():
+        own = r.get("labels") or {}
+        if r.get("type") == "alerting" and r["name"] == alert and all(own.get(k, v) == v for k, v in labels.items()):
+            found |= set(own.get("deps", "/").strip("/").split("/")) - {""}
+    return found
+
+
+def quiet(noc, alert, timeout=90, **labels):
+    """Wait until this object's alert is neither pending nor firing, the pager's last word on it was "resolved",
+    and no cause it lists in deps has its marker firing, before a test breaks the object: Alertmanager sends no
+    new page for an alert it already paged, nor for one a marker holds back. A previous test's knock-on can still
+    be resolving (FRR drops a link's BFD session when OSPF drops the adjacency there), and a marker keeps
+    firing 75 s after its cause recovered (decision 0021)."""
+    causes = held_back_by(noc, alert, **labels)
+
+    def holding():
+        return [a["labels"]["cause"] for a in noc.alerts("firing", alertname="CauseSeen") if a["labels"].get("cause") in causes]
+
+    def calm():
+        if noc.alerts(None, alertname=alert, **labels) or holding():
+            return False
+        last = {}
+        for x in noc.notifications(0, alertname=alert, **labels):
+            last[tuple(sorted(x["labels"].items()))] = x["status"]
+        return all(s == "resolved" for s in last.values())
+    assert wait_for(calm, timeout=timeout, interval=1), \
+        f"{alert} {labels} was still active, or held back by {holding()}, before the test broke anything: " \
+        f"{noc.alerts(None, alertname=alert, **labels)}"
+
+
+def wait_alert(noc, alert, since, timeout, **labels):
+    """The first firing notification the sink received for this alert after `since`, or None."""
+    def delivered():
+        return next((x for x in noc.notifications(since, alertname=alert, **labels) if x["status"] == "firing"), None)
+    return wait_for(delivered, timeout=timeout, interval=1)
+
+
+def wait_resolved(noc, alert, since, timeout, **labels):
+    def delivered():
+        return next((x for x in noc.notifications(since, alertname=alert, **labels) if x["status"] == "resolved"), None)
+    return wait_for(delivered, timeout=timeout, interval=1)
+
+
+def others_firing(noc, alert, since, **labels):
+    """Notifications for this alert after `since` about any other object: there should be none."""
+    return [x["labels"] for x in noc.notifications(since, alertname=alert)
+            if x["status"] == "firing" and any(x["labels"].get(k) != v for k, v in labels.items())]
+

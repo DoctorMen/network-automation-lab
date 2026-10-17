@@ -49,7 +49,13 @@ gone. It runs `make apply`, because the BGP password is in no startup config ([d
 authentication on both ends, then that h1 reaches h2:80 through fw1 and `drift.yml` passes. It redeploys every node, so it is skipped in
 `make live` and runs weekly in `.github/workflows/drills.yml`, after the restore drill. Measured here:
 36.5 s for the test before it ran `make apply`, 70 to 80 s with it (four runs on 2026-10-15; `make
-apply` takes about 40 s with the canary rollout); routing back 10.8 to 20.2 s after the cut.
+apply` takes about 40 s with the canary rollout); routing back 10.8 to 20.2 s after the cut. On the
+full lab with the NOC (two runs on 2026-10-16), where the drill also waits for the NOC to settle:
+148.3 and 187.3 s for the test, routing back 73.9 and 83.7 s after the cut, about a minute later,
+as when a daemon crashes as it starts and watchfrr starts it again (V-011). In those runs watchfrr
+still waited its default 60 s before starting a crashed daemon again; each router's daemons file now
+sets 5 s, doubling for each restart in a row up to 60 s (V-011). With it, over two runs, routing was back
+14.9 and 18.0 s after the cut, and the NOC settled after 94.1 and 101.6 s.
 
 ## Consequences
 
@@ -57,5 +63,8 @@ apply` takes about 40 s with the canary rollout); routing back 10.8 to 20.2 s af
   deploy --reconfigure` is the cut (not `make deploy`, which sets the password again itself), then the
   runbook's steps. A run by someone other than its author goes in
   `docs/runbooks/dry-runs.yml`.
-- CI time for the redeploy on a GitHub runner is not measured yet; the drills job has its own
-  20-minute limit.
+- On a GitHub runner the power-event drill's step took 133 s (07:48:58 to 07:51:11 UTC) in drills.yml run
+  38869378128 (main, 3d3770c), inside the drills job's own 20-minute limit. The restore drill in that
+  run failed in 2 s (07:48:56 to 07:48:58 UTC): run 38869409916, the backup start order's step 1, had
+  created the repository and kept it in the cache at 07:47:21 UTC, so the drill found it, but no backup
+  had been taken into it yet.

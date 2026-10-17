@@ -42,8 +42,12 @@
     # router's daemons file starts must answer first (`show daemons` lists the ones vtysh reaches),
     # and FRR's start script (watchfrr.sh, which ends with `vtysh -b`, the config load) must be done.
     # Up to 120 s: zebra or bgpd sometimes crashes as it starts (on GitHub all four routers' zebra
-    # once), and watchfrr starts it again, with its config, only after its minimum restart
-    # interval (60 s) (V-011). netlab/restore.py waits for a throwaway router the same way.
+    # once), and watchfrr starts it again, with its config, after its restart interval: 5 s, doubling
+    # for each restart in a row up to 60 s, as each router's daemons file sets it (V-011). On a throwaway
+    # router zebra answered again 10.2, 10.6 and 20.1 s after three crashes in a row. With watchfrr's
+    # defaults it took 65.2 s, then 120.6 s: two crashes outlast this wait, and isp's zebra, which
+    # crashed twice, was still down at its end in CI run 38972784804.
+    # netlab/restore.py waits for a throwaway router the same way.
     # First, so the health baseline below is taken with the routers answering.
     - name: Wait until every routing daemon answers and FRR has loaded its config (bgpd included)
       ansible.builtin.command:
@@ -121,10 +125,12 @@
       when: not ansible_check_mode
       block:
         # NETLAB_PASSWORDS=drop hides the password lines from frr-reload.py. Otherwise it sees a password
-        # the intended file doesn't have and deletes it, running `no neighbor ... password <it>` on vtysh's
-        # command line, logging that line to /var/log/frr/frr-reload.log and taking the session down.
+        # the intended file doesn't have and deletes it, running the `no neighbor` command with the password
+        # on vtysh's command line, logging that line to /var/log/frr/frr-reload.log and taking the session down.
         - name: Apply only the difference, without restarting daemons
-          ansible.builtin.command: /usr/lib/frr/frr-reload.py --reload --bindir {{ vtysh_dir }} {{ intended }}
+          # --rundir: frr-reload.py writes the lines it applies to a file there first, and FRR's own run folder
+          # is not the CM tool's to write (it runs under its own account on a router we own, decision 0029).
+          ansible.builtin.command: /usr/lib/frr/frr-reload.py --reload --rundir {{ fallback | dirname }} --bindir {{ vtysh_dir }} {{ intended }}
           environment:
             NETLAB_PASSWORDS: drop
           when: listed | length > 0
@@ -188,7 +194,7 @@
         # password, so this re-creates it from the fallback without one, and the session stays down
         # until the inventory is reverted and make apply runs. Seen in the lab: a wrong remote-as on r2.
         - name: Roll back to the fallback
-          ansible.builtin.command: /usr/lib/frr/frr-reload.py --confdir {{ fallback | dirname }} --bindir {{ vtysh_dir }} --reload {{ fallback }}
+          ansible.builtin.command: /usr/lib/frr/frr-reload.py --confdir {{ fallback | dirname }} --rundir {{ fallback | dirname }} --bindir {{ vtysh_dir }} --reload {{ fallback }}
           environment:
             NETLAB_PASSWORDS: drop
           changed_when: true
@@ -215,3 +221,14 @@
       run_once: true
       changed_when: false
       check_mode: false  # read-only
+
+    # Last, once the batch is in and verified: the commit each router now runs, which every NOC alert about
+    # it shows as its latest change (OROS DEC-1, decision 0020). Without a NOC this only warns.
+    - name: Record the applied commit on the NOC (netlab.observe applied)
+      ansible.builtin.command:
+        cmd: "{{ netlab }}.observe applied {{ ansible_play_batch | join(' ') }}"
+        chdir: "{{ playbook_dir }}/.."
+      delegate_to: localhost
+      run_once: true
+      changed_when: false
+      when: not ansible_check_mode

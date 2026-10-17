@@ -608,3 +608,484 @@
   presented_to: pending
   presented_on: null
   presented_evidence: null
+
+# The NOC (decision 0018) and the central log store (decision 0019).
+- id: RISK-31
+  kind: accepted-risk
+  title: the NOC watches in band, so a dead link blinds it to what is behind
+  likelihood: 3
+  impact: 2
+  reasoning: >-
+    noc sits on its own LAN behind r2 (10.30.30.0/24), and every scrape, probe and log line crosses the
+    campus links it watches. Decision 0007 took the management network away because Docker's default
+    route leaked traffic, and a second LAN only for monitoring would hide the failures users see. When
+    r2 or the r1-r2 and r2-r3 links fail together, the NOC loses its view of r1, r3, fw1 and h2 at once:
+    each pages on its own (TargetDown, the per-object rules on absent(), SourceSilent), so the cause is
+    one page among many. Decision 0021 now holds back what depends on a failed device or link, so it
+    pages once (RISK-42, RISK-43).
+  compensating_control: tests/test_monitoring.py::test_state_rules_catch_admin_down_and_a_missing_series
+  compensates: a series the NOC stops receiving pages as down, so blindness is never silence
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-32
+  kind: accepted-risk
+  title: the exporters and the NOC's endpoints have no TLS and no password
+  detectors: [exporter-plain-http]
+  likelihood: 2
+  impact: 2
+  reasoning: >-
+    frr_exporter and node_exporter answer plain HTTP on each router's loopback, which OSPF carries to the
+    whole campus, so any host that reaches a loopback reads the routing table, BGP peers, interface
+    counters and kernel version. h2, on the toy payments segment, answers its own node_exporter (interface
+    and queue counters only) on its LAN address, which fw1 and r2's WAN filter close to every out-of-scope
+    device (tests/live/observe/test_loss.py::test_the_servers_exporter_answers_the_noc_and_nobody_out_of_scope).
+    Nothing they serve is a secret (the BGP password is not in any metric),
+    and they can't be written to over HTTP. Prometheus, Alertmanager, blackbox and Loki answer on
+    127.0.0.1 inside noc only. The collector's syslog and forwarder ports take lines from anyone on the
+    campus (RISK-34). The fix is exporter-toolkit's --web.config.file with TLS and basic auth, and the
+    same on Prometheus' scrape configs.
+  compensating_control: tests/live/test_management_plane.py::test_router_daemons_listen_on_localhost_only
+  compensates: each router answers on the campus only for BGP and its two exporters on its loopback, and noc only on its sources' ports (test_noc_listens_on_the_campus_only_for_its_sources)
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-33
+  kind: accepted-risk
+  title: frr_exporter holds FRR's vty sockets, which accept config commands
+  detectors: [vty-socket-shared]
+  likelihood: 1
+  impact: 3
+  reasoning: >-
+    frr_exporter reads FRR's state the documented way, JSON over each daemon's vty socket in
+    /var/run/frr. The folder is mounted read-only into its sidecar, but a read-only mount doesn't stop a
+    connect() to a socket, and FRR's vty takes `configure terminal` from whoever connects. A compromised
+    or malicious exporter image could change routing. The image is pinned by tag and its digest is
+    checked against the inventory on every observe run, it runs nothing but the exporter, and a change
+    it made by hand would show as drift. FRR has no read-only vty, so the fix is a different collector
+    (a polling sidecar that holds the sockets, with the exporter outside).
+  compensating_control: tests/live/test_collection.py::test_unsaved_change_is_flagged
+  compensates: a config change made through vtysh that intent doesn't hold fails the drift check, which names the line
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-34
+  kind: accepted-risk
+  title: syslog crosses the campus as clear UDP, so lines can be lost or forged
+  detectors: [syslog-udp]
+  likelihood: 2
+  impact: 2
+  reasoning: >-
+    busybox syslogd, the only syslog daemon in the router image, sends each line once over UDP 514 with
+    no acknowledgement, queue or authentication (RFC 5426). A congested or dead link loses the lines
+    behind it for good, and any host on the campus can send a line naming any router's address. The
+    collector names a line by its source address only, and takes a command record or a translation line
+    only from its sender's port below 1024 (decision 0029), which keeps out the router's other accounts but
+    not a host that forges both on the wire. A whole stream lost pages as SourceSilent within
+    twice its heartbeat; a single lost line, or a forged one, is not detected. The fix is a TLS syslog
+    sender (RFC 5425) in a sidecar, reading FRR's lines from a socket rather than the image's syslogd.
+  compensating_control: tests/live/observe/test_arrival.py::test_blocked_source_raises_source_silent_and_comes_back_without_a_restart
+  compensates: a source whose lines stop arriving pages within twice its heartbeat, and its own counters can't hide it
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-35
+  kind: accepted-risk
+  title: the central log store is one copy, on the lab host's disk
+  detectors: [log-store-one-copy]
+  likelihood: 3
+  impact: 2
+  reasoning: >-
+    Loki keeps its chunks, index and write-ahead log in build/noc/loki on the lab host, bound into the
+    noc-loki container (decision 0025), so a redeploy or a power cut of the lab finds it again. It is still
+    one copy: nothing replicates it or backs it up, deleting build/ or losing the host's disk loses the 720 h
+    it keeps, and a CI runner's copy ends with the run. A real NOC would keep it on durable storage,
+    replicated, and longer than 720 h if PCI DSS 10.5.1's 12 months applied (decision 0013 keeps that scope
+    a toy). The boxes keep only 16 KB and one rotated file each, by design, so the store is the only history.
+  compensating_control: tests/live/test_power_event.py::test_evidence_outlives_a_power_cut
+  compensates: a power cut or redeploy of the whole lab, the NOC included, keeps every line the store had; not the loss of the host's disk
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-36
+  kind: accepted-risk
+  title: h1, a user's machine, sends no logs
+  likelihood: 2
+  impact: 1
+  reasoning: >-
+    Every router, firewall and server we own sends syslog to the NOC, and h2's web app its own log; h1 is
+    a user's machine on LAN-A, which a NOC doesn't run a forwarder on. What it does on the network is
+    seen at fw1, its only way out, whose own lines (and later its connection and NAT logs, OROS FND-5)
+    reach the store. A compromise on h1 that never crosses fw1 is not logged anywhere central.
+  compensating_control: tests/live/observe/test_arrival.py::test_synthetic_event_from_every_source_reaches_the_store
+  compensates: fw1, LAN-A's only way out, is a source, and its test event reaches the store on every observe run
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-40
+  kind: accepted-risk
+  title: the NOC watches itself, so its own death raises nothing inside it
+  likelihood: 2
+  impact: 3
+  reasoning: >-
+    JobMissed and AlertPathSilent run on the NOC's own Prometheus and page through its own Alertmanager,
+    and the mailbox that proves the mail path sits on the same host (decision 0022). If Prometheus,
+    Alertmanager or the whole NOC stops, neither can fire. Only a receiver outside the NOC that expects
+    the pings would notice. HEARTBEAT_URL is that receiver, for the jobs and the nightly run, but nobody
+    has set it up yet, and nothing outside the lab expects the Watchdog. The mail path outside the NOC
+    (a relay, a provider) is not in the lab.
+  compensating_control: tests/test_jobs.py::test_success_without_a_noc_warns_and_still_pings_the_heartbeat
+  compensates: a job's success still pings HEARTBEAT_URL when the NOC can't take it, so an outside check sees the job even with the NOC down
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-41
+  kind: accepted-risk
+  title: a silence added by hand in Alertmanager skips the file's checks until make silence runs
+  likelihood: 2
+  impact: 2
+  reasoning: >-
+    Alertmanager takes any silence through its API, amtool or its web page, however wide and however
+    long. monitoring/silences.yml and its checks (decision 0020) hold only the silences written there.
+    Nothing stops a person on shift from silencing a whole router by hand; make silence then names it and
+    fails, but only when someone runs it or make deploy runs it. Closing the API to everyone but make
+    silence would need a proxy in front of Alertmanager.
+  compensating_control: tests/test_silence.py::test_a_silence_added_by_hand_is_reported
+  compensates: make silence lists every active silence the file doesn't hold, with who set it and when it ends, and fails
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-42
+  kind: accepted-risk
+  title: a real failure behind a cause waits until the cause has cleared
+  likelihood: 2
+  impact: 2
+  reasoning: >-
+    While a cause fires, every alert that lists it in deps is held back (decision 0021), whether it
+    follows from the cause or is a second failure behind it. A cause's marker keeps firing 75 s after it
+    recovers, so the dependents still recovering behind it don't page. A failure that is still true then
+    pages, up to 75 s later than it would have on its own. A cause seen for a single scrape (one lost
+    ping, one slow scrape) holds back for those 75 s everything that lists it with no page of its own,
+    so a short alert behind it in that time, such as a flap on a port of the router behind, would never
+    be paged (read from the rules, not measured). A flap never waits behind its own link, so the short
+    outage of a link itself still pages, and a queue's drops never wait behind their own node, whose ping
+    the same burst can drop (V-031).
+    Telling the two apart needs a view from beyond the cause, which an in-band NOC doesn't have (RISK-31).
+  compensating_control: tests/live/observe/test_outage.py::test_a_parent_failure_pages_once_and_a_killed_service_pages_again
+  compensates: a failure on a part that doesn't depend on the cause still pages at once, and nothing held back pages late once the cause has cleared
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-43
+  kind: accepted-risk
+  title: the NOC's own uplink pages as its first hop, and the NOC's services are outside the dependency model
+  likelihood: 2
+  impact: 1
+  reasoning: >-
+    The dependency graph runs from noc, so the link from noc to r2 has no far end the NOC can watch past
+    it: when it fails, everything goes quiet behind r2, and the one page is NodeDown for r2. blackbox,
+    Prometheus and Alertmanager run beside noc and are not vertices in the graph; blackbox down pages
+    once for each job it serves.
+  compensating_control: tests/test_dependencies.py::test_dependencies_come_from_the_inventory_graph
+  compensates: r2, the NOC's first hop, covers every other device in the model, so a dead uplink is still one page
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-44
+  kind: accepted-risk
+  title: a job's success is its own word, and the pushgateway keeps it in memory
+  likelihood: 2
+  impact: 2
+  reasoning: >-
+    Each unattended job's last make line pushes its success to the pushgateway (decision 0022). Make
+    runs it only after every earlier line succeeded, but a job whose steps pass while doing too little
+    still reports success. The pushgateway keeps what was pushed in memory, so a redeploy starts it empty
+    and the window then counts from the NOC's start: a job that never ran since pages one window later.
+  compensating_control: tests/test_jobs.py::test_every_job_reports_success_as_its_last_step
+  compensates: each job's success line is the last line of its make target, so a failed step sends nothing
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-45
+  kind: accepted-risk
+  title: the central log store's folder on the lab host is writable by every user
+  detectors: [store-world-writable]
+  likelihood: 1
+  impact: 2
+  reasoning: >-
+    Loki runs as its image's user (uid 10001), not as whoever renders the lab, so render makes
+    build/noc/loki mode 0777 for Loki to write there (decision 0025). Any user with a shell on the lab
+    host can then add to, change or delete the store's files, and with them the logs and flight-recorder
+    dumps a later investigation would rely on. The lab host is a single-user machine or a CI runner, and
+    the store holds no secret (tests/live/observe/test_central_store.py::test_no_secret_in_the_central_store).
+    The fix on a shared host is a folder owned by uid 10001, made once by an administrator, or a Docker
+    volume.
+  compensating_control: tests/test_monitoring.py::test_the_central_store_keeps_its_data_on_the_lab_host
+  compensates: nothing about who writes there; it shows the folder is the store's and that render never empties it
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-46
+  kind: accepted-risk
+  title: lines the central store takes in during the minute after it restarts are lost if it crashes again in that minute
+  detectors: [store-checkpoint-window]
+  likelihood: 1
+  impact: 2
+  reasoning: >-
+    Loki 3.1.1 starts each stream's count of lines again after it replays its write-ahead log, and the next
+    replay drops what was counted since as duplicates until a new checkpoint is written (V-027). Loki
+    checkpoints every 30 s here, so its first checkpoint after a start is done about a minute later (57 s
+    in one run here). A second power cut inside that minute can lose lines the store took in since the
+    first, the flight-recorder dumps included: up to all of them on a stream with history, fewer on a young
+    one (4 of r2's last 111 lines in one drill run without the wait); the nodes' own copies went with the same cuts. Two cuts a
+    minute apart are a failing supply or a breaker being tried, the case where the evidence matters most.
+    The fix is a Loki release that keeps the counts across a replay, or a store that writes each line
+    through before it answers.
+  compensating_control: tests/live/test_power_event.py::test_evidence_outlives_a_power_cut
+  compensates: it shows lines survive a cut once the first checkpoint after a restart is written, not inside the minute before it
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-55
+  kind: accepted-risk
+  title: h2's forwarder cuts every GET / from the NOC's address answered 200, not only the NOC's own check, and a check that fails on content too
+  detectors: [log-cut-at-source]
+  likelihood: 2
+  impact: 2
+  reasoning: >-
+    The cut (decision 0026) matches a line by its client address (the collector's, 10.30.30.10), its
+    request line (GET / HTTP/1.1) and a 200 status, because that is all an access line says. So an
+    operator on noc loading h2's page, or anything else on noc making that same request, is cut with the
+    check and reaches the store only as a count. A check that fails on content (WebContentWrong) still
+    answers 200, so its lines are cut too: the page fires, but the store shows those checks only as
+    counts. A request from any other address, any other page and any other status are forwarded as
+    written. Anyone able to run commands on noc already holds the NOC's store and rules. The check could
+    be told apart with no change to the app: http.server answers GET /?netlab-check with the same page
+    and logs the query string, so a marked check URL would let the cut take only the check. That is not
+    done, because the check would then no longer ask for exactly what a user asks for, and a real app
+    can answer a marked URL differently (a cache, a router, a redirect).
+  compensating_control: tests/live/observe/test_volume.py::test_noisy_kind_cut_at_the_source_while_wanted_lines_arrive
+  compensates: only that one kind is cut, every cut line is counted in the store, a failed request (404) from the NOC arrives as written, and a check that fails on content still pages
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-56
+  kind: accepted-risk
+  title: the ingest budget counts the bytes the collector hands the store, and only pages
+  likelihood: 2
+  impact: 2
+  reasoning: >-
+    log_bytes_total adds up the length of each line's message at the collector. Loki's own disk use adds
+    an index and labels and takes compression off, so a source at its budget can use more or less disk
+    than its budget says; store_mb is checked against the budgets, not against Loki's disk. Nothing stops
+    a source over its budget: LogIngestOverBudget pages once its last 24 h passes it, and every line is
+    still stored, so a flood can fill noc's disk in less than a day. Lines from an address the collector
+    can't map are labelled node=unknown, with no budget. A real NOC would also set Loki's per-stream rate
+    limits, which drop lines.
+  compensating_control: tests/test_volume.py::test_budget_rule_pages_once_a_source_passes_its_day
+  compensates: a source over its day's budget pages, named by node and source, with the day's total in the page
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-57
+  kind: accepted-risk
+  title: a source over its day's budget pages once and stays firing for the rest of that day
+  likelihood: 2
+  impact: 1
+  reasoning: >-
+    LogIngestOverBudget reads the last 24 h, as a licence or a store counts it. Once a burst puts a source
+    over, the alert stays firing until the burst is more than a day old (tests/test_volume.py proves it
+    clears then), so a second flood from the same source that day is no new page. A pace alert would
+    catch it, and would also page on the operator's normal bursts (make drift and make apply every five
+    minutes), which is why the budget is a day's total (decision 0026).
+  compensating_control: none (`make ingest` shows each source's current pace against its budget on demand)
+  compensates: while it fires, the page names the source and its day's total, and `make ingest` shows whether it is still sending
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-58
+  kind: accepted-risk
+  title: each detection's false-positive figure comes from 30 minutes of a stated workload in the lab
+  likelihood: 3
+  impact: 2
+  reasoning: >-
+    `make fp-review` (decision 0027) counts every page over 30 minutes of a stated benign workload: a
+    user's page loads and pings, and the operator's drift, apply, verify, testevent and locate every five
+    minutes, on a lab with nothing broken. A real campus has other normal work (maintenance windows,
+    a carrier that flaps, many users at once, a reboot window that runs out), and slower patterns than
+    30 minutes. So a figure of 0 is 0 pages over that workload, not a rate for a real network. Two
+    detections look back further than the review, PendingRebootOverdue (a reboot pending over 1 h) and
+    LogIngestOverBudget (a day's bytes), so their 0 measures nothing; their cells say so, and
+    LogIngestOverBudget's figure is the review's per-day ingest table. The review can't tell a real fault
+    in its window from a false page, so a figure can overstate, and a page the workload caused that
+    arrives more than its 120 s wait after the workload ends would be missed.
+  compensating_control: tests/test_detections.py::test_table_has_a_full_row_for_every_deployed_rule_and_a_current_review
+  compensates: the workload is stated in docs/detections.md, every figure is from the current 92-day cycle and from the rules that run now
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-60
+  kind: accepted-risk
+  title: root on a router changes FRR with no record, and can stop the accounting
+  detectors: [root-skips-accounting]
+  likelihood: 2
+  impact: 4
+  reasoning: >-
+    The accounting proxy (decision 0029) sees only what reaches FRR through it. Root keeps FRR's own
+    sockets (root and frrvty), so vtysh as root goes straight to the daemons, and root can also stop the
+    proxy or delete the box's copy of the records. The collector trusts a record, or a line of r2's
+    translation log, by the port below 1024 it came from, which root may send from: root on the router,
+    and root in any of its sidecars, which share its network namespace (frr_exporter and the translation
+    log run as root), can send a line the collector takes for one. In this lab root is the `docker exec`
+    console, which every live test and the carrier's isp use, and which anyone who can run docker on the
+    host has. frr_exporter shares the same sockets (RISK-33). What already reached the NOC stays there,
+    and a change with no record names no one in `make drift`, even after the CM tool put the intent back
+    in between. The fix is no shared root: a login
+    per person through sshd with short-lived certificates (OROS ACC-3, a later build), sudo rules that
+    leave root to break-glass use, and an alert on any FRR change no record explains.
+  compensating_control: tests/live/observe/test_accounting.py::test_record_leaves_the_box_and_outlives_root_deleting_its_copy
+  compensates: a record is at the NOC within seconds, and root deleting the box's copy leaves the NOC's whole
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-61
+  kind: accepted-risk
+  title: a shell login that never opens FRR's CLI is recorded nowhere
+  detectors: [shell-login-unrecorded]
+  likelihood: 3
+  impact: 2
+  reasoning: >-
+    The routers have no sshd or login daemon; a person reaches one through the host's console (`docker exec`,
+    then su to their account), which writes no login record. UnexpectedAdmin reads the proxy's lines, so an
+    unlisted account pages when it opens FRR's CLI or is refused by the proxy, not when it only runs shell
+    commands. Without root those can't change routing, filters or FRR's config: the iptables and FRR sockets
+    need root or frrvty. The fix is sshd with its own log lines at the NOC, which a later build adds (OROS ACC-3).
+  compensating_control: tests/live/observe/test_accounting.py::test_an_account_not_on_the_list_pages_and_a_listed_one_does_not
+  compensates: an unlisted account pages the moment it touches FRR, in the admin group or not
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-62
+  kind: accepted-risk
+  title: the drift check matches records by a command's text, not its stanza or its result
+  likelihood: 2
+  impact: 2
+  reasoning: >-
+    `make drift` names who set each differing line from the command records (decision 0030): the newest
+    record of the same command decides, and is named only if it set the running value, or for a missing
+    line removed or replaced the intended one. A record holds the command as typed, not the interface or
+    stanza it was typed under, nor whether the daemon accepted it. So the same command typed since under
+    another interface can name the wrong person, or hide the record that did set the line and name no one,
+    and a command the daemon refused can be named. A change made outside the proxy (RISK-60) names no one,
+    and says so. The fix is to keep each session's context with its records (the proxy sees every line of
+    the session, under one pid) and the daemon's answer to each command.
+  compensating_control: tests/live/observe/test_accounting.py::test_drift_names_whoever_set_the_running_value_last
+  compensates: with two people changing the same line, the one whose value is running is named, not the other, and a value root set again after `make apply` names no one
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-63
+  kind: accepted-risk
+  title: the translation log can lose a translation, and records only when each began
+  detectors: [nat-log-start-only]
+  likelihood: 2
+  impact: 3
+  reasoning: >-
+    r2's translation log (decision 0031) is conntrack's NEW events sent as syslog over UDP: a line lost on the
+    way or dropped by conntrack itself when its netlink buffer overflows under load is gone, and a complaint
+    about that translation names no one. A dead log pages as SourceSilent within twice its heartbeat (measured
+    once by hand: 93 s after its last line, bound 120 s); a single lost line is not detected (RISK-34). It
+    records when a translation began, not when it ended, so an outside
+    port reused for a different far end is told apart only when the complaint gives the far end's address and
+    port, and `make whois` looks back an hour by default. It takes a translation stamped at most 2 s after the
+    complaint's time (--skew), which fits the lab's one clock: a complainant whose clock runs further behind
+    r2's is told nobody held the port until --skew is widened. The fix is DESTROY events too, a sender with a
+    queue (or the kernel's own NAT log, sent by a TCP or TLS forwarder), longer lookups against the 720 h
+    store, and a skew taken from how far off the complainant's clock is known to be.
+  compensating_control: tests/live/observe/test_whois.py::test_the_same_inside_port_from_two_hosts_names_each_by_its_own_outside_port
+  compensates: two inside hosts on the same inside port to the same far end are each named by their own outside port
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null
+
+- id: RISK-64
+  kind: accepted-risk
+  title: the drift check reads the edge routers' filters as root
+  detectors: [drift-play-as-root]
+  likelihood: 1
+  impact: 2
+  reasoning: >-
+    The FRR half of `make drift` and all of `make apply` run as the CM tool's own account (decision 0029), so
+    their commands are recorded. iptables needs root, and the kernel's tables have no accounting of their own,
+    so the play that reads r2's and r3's filters and NAT runs as root, like the console. It only reads
+    (iptables -S and iptables-save) and replays the intent in a separate, empty network namespace. The fix is a
+    sudo rule letting the CM tool's account run iptables -S and iptables-save only, logged like its FRR commands.
+  compensating_control: tests/live/test_edge.py::test_edge_filter_hand_change_is_flagged
+  compensates: any change to the filters or the NAT, by whoever made it, fails the drift check, which names it
+  owner: DoctorMen
+  review_by: 2027-01-15
+  presented_to: pending
+  presented_on: null
+  presented_evidence: null

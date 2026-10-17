@@ -1,0 +1,622 @@
+# What the NOC sees of every value we read from a device (OROS NOT-2, decision 0018).
+#
+# `make coverage` (netlab/coverage.py; tests/test_coverage.py runs it in `make test`) finds every command the live tests,
+# netlab's own tools, the Ansible playbooks and the runbooks run on a device, and fails when one of
+# them reads something this file doesn't list. Each entry is marked:
+#   exported  an exporter the NOC already scrapes carries the value (metric:)
+#   derived   the NOC works it out from other metrics or from the central log store (metric: or logql:, how:)
+#   gap       this platform and version export nothing for it; fallback: says what we do instead
+# tests/live/observe/test_coverage.py checks on a running lab that every metric named here exists in
+# Prometheus, and every logql query returns lines.
+#
+# The statuses hold for the versions below. Another FRR or exporter release can export more (or less):
+# re-check the gaps when one of these changes.
+platform:
+  frr: 8.4.1_git                # inventory/network.yml platform.frr
+  frr_exporter: v1.3.1          # collectors: bgp, ospf, bfd (its defaults)
+  node_exporter: v1.8.2         # collectors: netclass, netdev, netstat, qdisc, textfile on routers; netdev, qdisc on h2
+  blackbox_exporter: v0.25.0
+  vector: 0.40.1
+  loki: 3.1.1
+  pushgateway: v1.9.0
+  mailpit: v1.20
+
+# Every Prometheus job, and what it reads. No check depends on a scraper that isn't here: the lint fails
+# on a job this list lacks, and on an alert rule that uses a metric no collector lists.
+collectors:
+  frr:
+    exporter: frr_exporter, a sidecar in each owned router's network namespace
+    # FRR's own machine-readable interface: the daemons' JSON replies over their vty sockets, the same
+    # sockets vtysh uses. Nothing parses a CLI screen.
+    reads: "`show ... json` from bgpd, ospfd and bfdd over /var/run/frr/*.vty"
+    metrics: [frr_bgp_peer_state, frr_bgp_peer_uptime_seconds, frr_bgp_peer_prefixes_received_count_total,
+              frr_bgp_peer_prefixes_advertised_count_total, frr_ospf_neighbor_adjacencies, frr_bfd_peer_state,
+              frr_collector_up]
+  node:
+    exporter: node_exporter, a sidecar in each owned router's and server's network namespace
+    reads: /sys/class/net (netclass), /proc/net/dev (netdev), /proc/net/netstat and snmp (netstat), each
+      interface's root qdisc over netlink (qdisc), and the pending-reboot file netlab/kernel.py writes
+      (textfile). On h2 only netdev and qdisc
+    metrics: [node_network_up, node_network_carrier, node_network_carrier_changes_total,
+              node_network_transmit_errs_total, node_network_transmit_drop_total, node_network_receive_bytes_total,
+              node_network_receive_packets_total, node_network_transmit_bytes_total, node_qdisc_drops_total,
+              node_qdisc_bytes_total, node_netstat_Udp_RcvbufErrors, node_netstat_TcpExt_IPReversePathFilter,
+              node_netstat_TcpExt_TCPMD5Failure, node_netstat_TcpExt_TCPMD5NotFound, node_netstat_TcpExt_TCPMD5Unexpected,
+              node_netstat_Udp_OutDatagrams, node_reboot_required, node_reboot_required_since_seconds]
+  web:
+    exporter: blackbox_exporter on noc
+    reads: an HTTP GET of each inventory web check, from the NOC, and the body checked for its expected text
+    metrics: [probe_success]
+  icmp:
+    exporter: blackbox_exporter on noc
+    reads: a ping from the NOC to each log source and BGP peer
+    metrics: [probe_success]
+  logs:
+    exporter: vector (the collector on noc)
+    reads: its own count, size and last-seen time of the lines each source sent, of each mail the NOC's mailbox
+      (Mailpit) reports receiving (source mail, the alert path's heartbeat), and of each account in the routers'
+      accounting records (decision 0029)
+    metrics: [log_last_seen_seconds, log_lines_total, log_bytes_total, admin_last_seen_seconds]
+  pushgateway:
+    exporter: the pushgateway on noc (decisions 0020 and 0022)
+    # Nothing here is read from a device: each value is what a job or `make apply` pushed as its last step.
+    reads: each unattended job's last success time (netlab.observe success) and the commit `make apply` last
+      applied to each router (netlab.observe applied), plus the pushgateway's own start time
+    metrics: [netlab_config_applied_timestamp_seconds, process_start_time_seconds]
+    # Only there once a job has run since the NOC started; JobMissed fires without it (decision 0022), and
+    # tests/live/observe/test_deadman.py checks a real make drift brings it.
+    after_push: [netlab_job_last_success_timestamp_seconds]
+  up:
+    exporter: Prometheus itself, on noc
+    reads: whether each scrape above answered, and which of its own alerts fire (ALERTS, read by InterfaceFlapped
+      so the flap that ends a link outage LinkDown paged for doesn't page again)
+    metrics: [up, ALERTS]
+
+# What each metric above counts (OROS DEC-2, decision 0024): the unit, a counter or a gauge, and for an
+# interface or queue counter its direction and where it counts (before or after the queue). A counter also
+# says when it wraps and when it resets: Prometheus' increase() and rate() read any fall as a reset and
+# count from the new value, so neither ever shows a fall as a spike, and resets() flags each one. The lint
+# fails on a metric without its entry, on a counter an alert rule reads outside increase(), rate(), irate()
+# or resets(), and on a proven_by test that doesn't exist. tests/live/observe/test_loss.py checks each
+# type against what the exporter itself declares. Interfaces in the lab are all veth pairs: no physical
+# port, LAG or sub-interface is in use.
+counts:
+  frr_bgp_peer_state:
+    counts: a BGP session's state, read from bgpd at each scrape. 1 Established, 0 down, 2 administratively down
+    type: gauge
+  frr_bgp_peer_uptime_seconds:
+    counts: seconds since the session last became Established, by bgpd's clock. It falls to 0 each time the session drops
+    type: gauge
+  frr_bgp_peer_prefixes_received_count_total:
+    counts: prefixes the session holds from the peer now (not a running total, despite the name)
+    type: gauge
+  frr_bgp_peer_prefixes_advertised_count_total:
+    counts: prefixes we send the peer now (not a running total, despite the name)
+    type: gauge
+  frr_ospf_neighbor_adjacencies:
+    counts: Full OSPF adjacencies on an interface now
+    type: gauge
+  frr_bfd_peer_state:
+    counts: a BFD session's state now, 1 up and 0 anything else
+    type: gauge
+  frr_collector_up:
+    counts: 1 while the daemon behind one frr_exporter collector answered this scrape
+    type: gauge
+  node_network_up:
+    counts: 1 while the interface's operational state is up
+    type: gauge
+  node_network_carrier:
+    counts: 1 while the interface has carrier, at the moment of the scrape only. A flap between two scrapes is
+      not in it; node_network_carrier_changes_total is
+    type: gauge
+  node_network_carrier_changes_total:
+    counts: carrier changes, each way, so one down and up again is 2
+    type: counter
+    wraps: a 32-bit kernel counter (atomic_t); at one change a second it would take 136 years
+    resets: when the interface is created again, that is when its node restarts
+    proven_by: [tests/live/observe/test_evidence.py::test_a_flap_leaves_a_state_dump_in_the_central_store]
+  node_network_transmit_errs_total:
+    counts: packets the interface failed to send (driver errors), outbound
+    type: counter
+    wraps: a 64-bit kernel counter (rtnl_link_stats64); it does not wrap in the life of a lab
+    resets: when the interface is created again, that is when its node restarts
+  node_network_transmit_drop_total:
+    counts: packets the interface itself dropped on the way out (a veth whose peer could not take them). Not the
+      queue's drops in front of it, which are node_qdisc_drops_total and which this counter never sees
+    type: counter
+    wraps: a 64-bit kernel counter (rtnl_link_stats64); it does not wrap in the life of a lab
+    resets: when the interface is created again, that is when its node restarts
+    proven_by: [tests/live/observe/test_loss.py::test_a_microburst_the_average_hides_is_traced_to_its_queue]
+  node_network_receive_bytes_total:
+    counts: bytes received, inbound, as the interface counts them, so with each frame's 14-byte Ethernet
+      header and without its checksum
+    type: counter
+    wraps: a 64-bit kernel counter (rtnl_link_stats64); it does not wrap in the life of a lab
+    resets: when the interface is created again, that is when its node restarts. Not when node_exporter
+      restarts, since the count is the kernel's
+    proven_by: [tests/live/observe/test_loss.py::test_a_known_byte_count_matches_the_counters_across_an_exporter_restart]
+  node_network_receive_packets_total:
+    counts: packets received, inbound. TCP over a veth arrives in segments of up to 64 KB (GSO), so a packet
+      here is not one frame on a wire
+    type: counter
+    wraps: a 64-bit kernel counter (rtnl_link_stats64); it does not wrap in the life of a lab
+    resets: when the interface is created again, that is when its node restarts
+  node_network_transmit_bytes_total:
+    counts: bytes sent, outbound, with the 14-byte Ethernet header, after the queue (qdisc), so a packet the
+      queue dropped is not in it
+    type: counter
+    wraps: a 64-bit kernel counter (rtnl_link_stats64); it does not wrap in the life of a lab
+    resets: when the interface is created again, that is when its node restarts. Not when node_exporter
+      restarts, since the count is the kernel's
+    proven_by: [tests/live/observe/test_loss.py::test_a_known_byte_count_matches_the_counters_across_an_exporter_restart,
+                tests/live/observe/test_loss.py::test_a_microburst_the_average_hides_is_traced_to_its_queue]
+  node_qdisc_drops_total:
+    counts: packets an interface's root queue (qdisc) dropped, outbound, before the interface; for HTB, the drops
+      of every class under it. Only root qdiscs are exported, so which class dropped is `tc -s class show`
+    type: counter
+    wraps: a 32-bit counter (gnet_stats_queue.drops), so it wraps at 4294967296 drops. A wrap is a fall, which
+      increase() reads as a reset; it loses the drops between the last scrape before the wrap and the wrap itself,
+      and never shows a jump of about 4.29e9
+    resets: when the qdisc is replaced (tc qdisc del and add, or the node restarts)
+    proven_by: [tests/live/observe/test_loss.py::test_a_microburst_the_average_hides_is_traced_to_its_queue,
+                tests/live/observe/test_loss.py::test_a_reset_queue_counter_is_flagged_and_pages_nobody,
+                tests/live/observe/test_loss.py::test_a_32_bit_wrap_of_the_queue_counter_shows_no_spike]
+  node_qdisc_bytes_total:
+    counts: bytes an interface's root queue passed on to the interface, outbound
+    type: counter
+    wraps: a 64-bit counter (gnet_stats_basic.bytes); it does not wrap in the life of a lab
+    resets: when the qdisc is replaced (tc qdisc del and add, or the node restarts)
+    proven_by: [tests/live/observe/test_loss.py::test_a_reset_queue_counter_is_flagged_and_pages_nobody]
+  node_netstat_Udp_RcvbufErrors:
+    counts: UDP datagrams this node dropped because the receiving socket's buffer was full
+    type: counter
+    exported_as: untyped
+    wraps: a 64-bit kernel counter (per-CPU SNMP MIB, summed); it does not wrap in the life of a lab
+    resets: when the node restarts
+  node_netstat_TcpExt_IPReversePathFilter:
+    counts: packets the reverse-path filter dropped, on all of the node's interfaces together
+    type: counter
+    exported_as: untyped
+    wraps: a 64-bit kernel counter (per-CPU SNMP MIB, summed); it does not wrap in the life of a lab
+    resets: when the node restarts
+  node_netstat_TcpExt_TCPMD5Failure:
+    counts: TCP segments dropped because their MD5 signature was wrong
+    type: counter
+    exported_as: untyped
+    wraps: a 64-bit kernel counter (per-CPU SNMP MIB, summed); it does not wrap in the life of a lab
+    resets: when the node restarts
+  node_netstat_TcpExt_TCPMD5NotFound:
+    counts: TCP segments dropped because they had no MD5 signature where one was expected
+    type: counter
+    exported_as: untyped
+    wraps: a 64-bit kernel counter (per-CPU SNMP MIB, summed); it does not wrap in the life of a lab
+    resets: when the node restarts
+  node_netstat_TcpExt_TCPMD5Unexpected:
+    counts: TCP segments dropped because they carried an MD5 signature where none was expected
+    type: counter
+    exported_as: untyped
+    wraps: a 64-bit kernel counter (per-CPU SNMP MIB, summed); it does not wrap in the life of a lab
+    resets: when the node restarts
+  node_netstat_Udp_OutDatagrams:
+    counts: UDP datagrams the node sent that its queue took. One the queue dropped is counted under
+      Udp SndbufErrors instead, while the sender's send() still reports success (V-026)
+    type: counter
+    exported_as: untyped
+    wraps: a 64-bit kernel counter (per-CPU SNMP MIB, summed); it does not wrap in the life of a lab
+    resets: when the node restarts
+  node_reboot_required:
+    counts: 1 while a newer kernel is installed than the one running (netlab/kernel.py), as of the textfile's last rewrite
+    type: gauge
+  node_reboot_required_since_seconds:
+    counts: the Unix time the waiting kernel was installed, 0 if none is
+    type: gauge
+  probe_success:
+    counts: 1 if the NOC's last probe of the target (a ping, or a page with the expected content) succeeded
+    type: gauge
+  log_last_seen_seconds:
+    counts: the Unix time, by the collector's clock, at which the last line from a node and source arrived
+      there. Arrival, not when the box wrote it, because busybox sends no year and no zone. For source mail,
+      the last alert mail the NOC's mailbox reported receiving (decision 0022)
+    type: gauge
+  log_lines_total:
+    counts: lines the collector received from a node and source since the collector started
+    type: counter
+    wraps: a 64-bit float in Vector; it does not wrap in the life of a lab
+    resets: when the collector (noc-collector) restarts
+  admin_last_seen_seconds:
+    counts: the Unix time, by the collector's clock, at which the last accounting record of an account on a router
+      arrived there, one series per router, account and event (accept, refuse or command); only records from the
+      accounting proxy's port count (decision 0029)
+    type: gauge
+  log_bytes_total:
+    counts: bytes of the message of each line the collector received from a node and source since the
+      collector started (VRL length(), bytes and not characters); LogIngestOverBudget compares its last 24 h
+      with the source's daily budget (decision 0026)
+    type: counter
+    wraps: a 64-bit float in Vector; it does not wrap in the life of a lab
+    resets: when the collector (noc-collector) restarts
+  netlab_config_applied_timestamp_seconds:
+    counts: the Unix time, by the lab host's clock, at which `make apply` last applied a commit to a router and
+      passed its gate (netlab.observe applied); one series per router and commit, with the commit and its subject
+      as labels. The pushgateway keeps it in memory only, so a redeploy of the NOC starts it empty
+    type: gauge
+  netlab_job_last_success_timestamp_seconds:
+    counts: the Unix time, by the lab host's clock, at which an unattended job (drift, backup, restore drill, power
+      drill) last pushed its success as its last step (netlab.observe success); one series per job, with the job's
+      name as its job label. JobMissed compares its age with the job's schedule and grace. The pushgateway keeps it
+      in memory only, so a redeploy of the NOC starts it empty (RISK-44)
+    type: gauge
+  process_start_time_seconds:
+    counts: the Unix time at which the exporter's process started; on the pushgateway, the moment it started
+      empty, from which JobMissed and AlertPathSilent count when nothing has arrived since
+    type: gauge
+  up:
+    counts: 1 if Prometheus' last scrape of the target answered, 0 if not (Prometheus' own, per target)
+    type: gauge
+  ALERTS:
+    counts: 1 for each alert rule's series while it is pending or firing, with alertstate saying which; the series
+      ends when the alert resolves (Prometheus' own, per alert)
+    type: gauge
+
+# Programs that change a device and read nothing from it (the lint counts them as actions, not reads).
+actions: [kill, mkdir, rm, cp, mv, touch, umask, seq, sleep, printf, diff, logger, frr-reload.py, watchfrr.sh, adduser, deluser]
+
+# Commands built at run time, which the lint can't read from the source.
+opaque:
+  - where: tests/live/test_qos.py::test_backup_yields_to_web
+    why: replays h2's rendered tc lines from build/topology.clab.yml to put the QoS back (writes only)
+  - where: tests/live/test_verify.py::test_qos_change_confirmed_from_class_counters
+    why: replays h2's rendered tc lines from build/topology.clab.yml to put the QoS back (writes only)
+  - where: tests/live/observe/test_loss.py::test_a_reset_queue_counter_is_flagged_and_pages_nobody
+    why: replays h2's rendered tc lines from build/topology.clab.yml to start its queue's counters again (writes only)
+
+reads:
+  # --- Routing state: each object's own state, alerted on per object (NOT-1) ---
+  - read: vtysh show ip ospf neighbor
+    value: each OSPF neighbor is Full
+    status: exported
+    metric: frr_ospf_neighbor_adjacencies
+    alert: OSPFNeighborDown
+  - read: vtysh show bgp summary
+    value: each BGP session is Established, and how many prefixes it received
+    status: exported
+    metric: frr_bgp_peer_state, frr_bgp_peer_prefixes_received_count_total
+    alert: BGPSessionDown
+  - read: vtysh show bfd peers
+    value: each BFD peer is up
+    status: exported
+    metric: frr_bfd_peer_state
+    alert: BFDPeerDown
+  - read: vtysh show bfd peers brief
+    value: each BFD peer is up (the link-failure runbook's first look)
+    status: exported
+    metric: frr_bfd_peer_state
+    alert: BFDPeerDown
+  - read: vtysh show bgp ipv4 unicast neighbors <arg> advertised-routes
+    value: r2 sends the carrier our aggregate
+    status: derived
+    metric: frr_bgp_peer_prefixes_advertised_count_total{node="r2"}
+    how: the count of what r2 advertises; 1 is the aggregate alone. Which prefix it is comes from the
+      intended config, and make drift fails on any change to it
+  - read: vtysh show bgp neighbors <arg>
+    value: the session's state, whether TCP MD5 is on, and how often it dropped
+    status: derived
+    metric: frr_bgp_peer_state, frr_bgp_peer_uptime_seconds
+    logql: '{source="syslog"} |= "%ADJCHANGE" |= "Down"'
+    how: state is exported; each drop resets the session's uptime and logs an ADJCHANGE Down line
+      (bgp log-neighbor-changes), counted with count_over_time. Whether MD5 is on is not exported by
+      FRR 8.4.1's JSON or frr_exporter v1.3.1; make drift's password tags check it (decision 0016)
+  - read: vtysh show daemons
+    value: every routing daemon answers
+    status: derived
+    metric: frr_collector_up
+    how: frr_collector_up{collector} is 1 while bgpd, ospfd and bfdd each answer frr_exporter; TargetDown fires
+      when the exporter itself doesn't
+  - read: vtysh show ip route
+    value: every router's loopback is in every routing table
+    status: derived
+    metric: probe_success{job="icmp"}
+    how: the NOC pings every router's loopback from its own LAN, which needs the route on every router on the
+      way there and back
+  - read: vtysh show ip route ospf
+    value: the host LANs are learned through OSPF
+    status: derived
+    metric: probe_success{job="icmp", node="h2"}
+    how: the NOC reaches h2 through r2 and r3, which only have LAN-B as an OSPF route
+  - read: vtysh show ip route <arg>
+    value: which next hop and interface a prefix (or the default route) uses
+    status: gap
+    fallback: frr_exporter v1.3.1 has no route collector. Which link carries a path follows from the per-link
+      OSPF adjacency and BFD alerts; tests/live/test_failover.py and test_routing.py check the next hops
+      on every CI run
+  - read: vtysh show ip route bgp
+    value: the carrier sees only our aggregate (plus any blackhole /32 we send it)
+    status: derived
+    metric: frr_bgp_peer_prefixes_advertised_count_total{node="r2"}
+    how: what r2 advertises is what isp receives; 1 is the aggregate alone, 2 while an RTBH trigger is on
+  - read: vtysh show bgp ipv4 unicast <arg>
+    value: an RTBH trigger is advertised to the ISP, with its community
+    status: derived
+    metric: frr_bgp_peer_prefixes_advertised_count_total{node="r2"}
+    how: the advertised count rises by one per trigger; the community itself is in the running config
+      (make drift fails while a trigger is on, docs/runbooks/ddos-rtbh.md)
+  - read: vtysh show ip ospf
+    value: a router's OSPF router ID
+    status: gap
+    fallback: it is the router's loopback, rendered from the inventory into the read-only intent; make drift
+  - read: vtysh show ip ospf interface <arg>
+    value: the host LAN interfaces are passive
+    status: gap
+    fallback: no exporter carries an interface's passive flag. It is a line of the intended config, so make
+      drift fails on any change; tests/live/test_routing.py checks it on every CI run
+  - read: vtysh show running-config
+    value: the running config matches the intent
+    status: gap
+    fallback: no exporter carries a config. make drift backs up and diffs every router and the firewall
+      every night (REC-2). FRR's `log commands` would put each vtysh line in the central store, and with it
+      the BGP password lines make apply sends; it is left off on purpose (decision 0019). Instead the routers'
+      accounting proxy sends every FRR command an account but root runs, secrets hidden, from a port only
+      root can send from (decision 0029), and make drift names who set each differing line from those
+      records (decision 0030)
+  - read: vtysh show interface description
+    value: which neighbor an interface faces
+    status: gap
+    fallback: no exporter carries an interface's description. It is rendered from the inventory's links into
+      the read-only intent (make drift), and OSPFNeighborDown and BFDPeerDown already name the neighbor
+  - read: vtysh show version
+    value: the FRR release running
+    status: gap
+    fallback: frr_exporter reports its own version, not FRR's. tests/live/test_platform.py checks every node
+      against the inventory on every CI run
+  # --- Interfaces and counters ---
+  - read: ip -s link show
+    value: an edge port's TX errors and drops (ours or the carrier's?), RX bytes and packets (a flood?)
+    status: exported
+    metric: node_network_transmit_errs_total, node_network_transmit_drop_total, node_network_receive_bytes_total, node_network_receive_packets_total
+  - read: nstat -az TcpExtTCPMD5Failure TcpExtTCPMD5NotFound TcpExtTCPMD5Unexpected
+    value: whether the carrier signs BGP with another password, with none, or r2 has none
+    status: exported
+    metric: node_netstat_TcpExt_TCPMD5Failure, node_netstat_TcpExt_TCPMD5NotFound, node_netstat_TcpExt_TCPMD5Unexpected
+  - read: ip link show
+    value: an interface is up
+    status: exported
+    metric: node_network_up, node_network_carrier
+    alert: InterfaceFlapped
+  - read: nstat -az TcpExtIPReversePathFilter
+    value: packets a strict reverse-path filter dropped
+    status: exported
+    metric: node_netstat_TcpExt_IPReversePathFilter
+  - read: ip route show
+    value: the carrier blackholes an RTBH target
+    status: derived
+    metric: frr_bgp_peer_prefixes_advertised_count_total{node="r2"}
+    how: the carrier's table is not ours to read (isp is observed, not logged into); r2 advertising the
+      trigger is what we can see, and the carrier's own acknowledgement is the runbook's step 4
+  - read: ip route get
+    value: the carrier still routes our addresses to r2
+    status: derived
+    metric: probe_success{job="icmp", node="isp"}
+    how: the NOC pings the carrier's side of the hand-off; the reply comes back only through r2
+  - read: cat /proc/sys/net/ipv4/conf/<arg>/rp_filter
+    value: the reverse-path filter mode on r3's server-LAN port
+    status: gap
+    fallback: node_exporter's sysctl collector is not enabled here. The mode is set by r3's read-only edge.sh,
+      and the drops it causes are exported (node_netstat_TcpExt_IPReversePathFilter)
+  - read: tc class show
+    value: h2's QoS classes, the bytes each carried and the packets each dropped
+    status: gap
+    fallback: node_exporter's qdisc collector on h2 sees the root HTB qdisc, whose drops page as QueueDrops,
+      and not its classes. Which class dropped is read on h2 itself (docs/runbooks/hidden-loss.md); make
+      verify reads the class counters on demand; tests/live/test_qos.py on every CI run
+  - read: tc qdisc show
+    value: an interface's queue, and the packets it dropped
+    status: exported
+    metric: node_qdisc_drops_total, node_qdisc_bytes_total
+    alert: QueueDrops
+  # --- Filters ---
+  - read: iptables -L
+    value: packets each firewall rule matched
+    status: gap
+    fallback: node_exporter v1.8.2 has no iptables collector and no iptables exporter is installed. The
+      counters are read by tests/live/test_controls.py on every CI run; the rules themselves by make drift
+  - read: iptables -S
+    value: the live ruleset matches the intent
+    status: gap
+    fallback: make drift replays the intent and diffs every night (REC-2)
+  - read: iptables -C
+    value: one rule is present
+    status: gap
+    fallback: make drift, as for iptables -S
+  - read: iptables-save
+    value: the live ruleset, for the backup
+    status: gap
+    fallback: make drift backs it up into backups/ every night
+  - read: netstat -ln<arg>
+    value: which TCP and UDP ports the NOC itself answers on
+    status: gap
+    fallback: tests/live/observe/test_noc.py on every observe run
+  - read: netstat -ltn
+    value: which TCP ports a router listens on
+    status: gap
+    fallback: no exporter lists sockets. tests/live/test_management_plane.py checks every router on every CI run
+  # --- Versions and pending changes ---
+  - read: uname
+    value: the kernel running, against the newest installed
+    status: exported
+    metric: node_reboot_required, node_reboot_required_since_seconds
+    alert: PendingRebootOverdue
+  - read: ls /lib/modules
+    value: the kernels installed
+    status: exported
+    metric: node_reboot_required, node_reboot_required_since_seconds
+    alert: PendingRebootOverdue
+  - read: readlink
+    value: a daemon still runs a binary that has been replaced
+    status: gap
+    fallback: make verify, on demand and after every make apply (decision 0018 keeps the textfile to the kernel)
+  - read: ps
+    value: which processes run, and how they were started
+    status: gap
+    fallback: no process exporter. make verify checks the daemons; tests/live/observe/test_central_store.py the
+      web server the forwarder reads. A flight-recorder watcher that stops is started again by agent.sh, with a
+      line in the store that says so (tests/live/observe/test_evidence.py)
+  - read: cat /proc/<arg>/stat
+    value: a container's start time (was it restarted?)
+    status: gap
+    fallback: a restart re-sends a node's startup lines, which the central store keeps; tests/live/observe/test_arrival.py
+      checks it after a source is restored
+  - read: cat /proc/<arg>/status
+    value: which user a process runs as
+    status: gap
+    fallback: tests/live/observe/test_central_store.py checks the forwarder runs as nobody on every observe run
+  - read: cat /etc/frr/daemons
+    value: which daemons should run
+    status: gap
+    fallback: the file is the read-only intent; make verify and make drift
+  - read: . /etc/os-release
+    value: the Alpine release
+    status: gap
+    fallback: tests/live/test_platform.py on every CI run
+  - read: apk
+    value: the FRR and busybox packages installed
+    status: gap
+    fallback: tests/live/test_platform.py on every CI run
+  - read: cat /var/log/messages*
+    value: what a node logged
+    status: exported
+    logql: '{source="syslog"}'
+    metric: log_lines_total
+  # On a router we own the same file holds its accounting proxy's records too; the proxy sends each one to the
+  # store from its own port as it writes it, and tests/live/observe/test_accounting.py shows the central copy
+  # is whole after root deletes the box's.
+  - read: cat /var/log/messages.<arg> /var/log/messages
+    value: what a node still keeps of its own log, oldest first (make evidence, before a reset), and on a router
+      we own its accounting proxy's records
+    status: exported
+    logql: '{source=~"syslog|accounting"}'
+    metric: log_lines_total
+  - read: cat /applog/<arg>-<arg>.log
+    value: every line h2's web server wrote, before its forwarder cut any
+    status: derived
+    logql: '{source="http"} |= "netlab-cut: "'
+    how: each line of a kind the forwarder cuts is counted in its count lines (decision 0026); every other
+      line is in the store as the app wrote it
+  - read: tail /var/log/messages
+    value: a node's latest log lines
+    status: exported
+    logql: '{source="syslog"}'
+    metric: log_last_seen_seconds
+  # --- What a node can reach ---
+  - read: ping
+    value: a host or hop answers
+    status: exported
+    metric: probe_success{job="icmp"}
+  - read: wget
+    value: h2 serves its real page
+    status: exported
+    metric: probe_success{job="web"}
+    alert: WebContentWrong
+  - read: nc -z
+    value: a TCP port answers from a given place
+    status: gap
+    fallback: which ports answer from where is the segmentation test's job (tests/live/test_scope.py,
+      test_edge.py) on every CI run; the NOC probes only the web check's port
+  - read: traceroute
+    value: the hops on a path
+    status: gap
+    fallback: make locate, on demand (docs/runbooks/carrier-loss.md)
+  - read: python3 SCAN
+    value: which ports answer from the internet side
+    status: gap
+    fallback: tests/live/test_edge.py on every CI run
+  - read: python3 SPOOF
+    value: a forged source is dropped
+    status: gap
+    fallback: tests/live/test_edge.py on every CI run; the drops are exported (node_netstat_TcpExt_IPReversePathFilter)
+  - read: python3 FORGE_ACK
+    value: a forged mid-stream ACK is dropped by fw1
+    status: gap
+    fallback: tests/live/test_controls.py on every CI run
+  - read: python3 COMPLAINT
+    value: the address and port a connection from inside arrives from at the carrier, all an abuse complaint from outside can give
+    status: gap
+    fallback: tests/live/test_nat.py on every CI run; which inside host held that address and port at a time is
+      make whois, from r2's translation log in the central store (decision 0031)
+  - read: python3 <arg>
+    value: web latency during a bulk copy (tests/live/tools/web_latency.py and backup.py)
+    status: gap
+    fallback: tests/live/test_qos.py on every CI run
+  # --- Evidence for a third party (make finding) ---
+  - read: python3 capture.py
+    value: ICMP on our hand-off port while r2 pings past it
+    status: gap
+    fallback: make finding captures it on demand (decision 0017). The flight recorder (decision 0025) dumps
+      state, not packets, when a link fails
+  - read: python3 SUPPORT
+    value: FRR's support bundle
+    status: gap
+    fallback: make finding, on demand
+  - read: sh /monitoring/agent.sh dump
+    value: a node's interfaces, counters, queues, filters and routing state, all at one moment
+    status: derived
+    logql: '{source="syslog"} |= "flightrec"'
+    how: each dump also goes to the central store, every line with the dump's id, and the flight recorder
+      sends one by itself when a link fails (decision 0025)
+  - read: python3 BURST
+    value: how many datagrams a test burst sent, and how many of them arrived
+    status: derived
+    metric: node_qdisc_drops_total, node_netstat_Udp_RcvbufErrors
+    how: what was sent and not received was dropped by a queue (QueueDrops) or by a full receive buffer;
+      tests/live/observe/test_loss.py checks the queue's count is exactly the difference
+  - read: python3 CLOCK
+    value: each device's clock against the host's
+    status: gap
+    fallback: make finding, on demand; every node reads the host's kernel clock
+  # --- Secrets that must not be anywhere ---
+  - read: grep /var/log /var/run/frr /tmp
+    value: no BGP password in FRR's logs (syslog's file and frr-reload's) or scratch files
+    status: derived
+    logql: '{source="syslog"} |= "password"'
+    how: router logs are in the central store too, so tests/live/observe/test_central_store.py searches every
+      line there for the password itself; this query is the line an operator would search first
+  - read: grep /tmp/rollback /var/log/frr
+    value: no BGP password in a rollback file
+    status: gap
+    fallback: tests/live/test_rollout.py on every CI run
+  - read: grep /proc/[0-9]*/cmdline /proc/[0-9]*/environ /root/.ansible
+    value: no BGP password on a command line, in an environment or in Ansible's files
+    status: gap
+    fallback: tests/live/test_secrets.py on every CI run
+  # --- Accounts and their records (decision 0029) ---
+  - read: id
+    value: an account exists on a router, with its uid and groups
+    status: gap
+    fallback: nothing exports the accounts a router has. access.sh creates them from the inventory at every
+      deploy; tests/live/test_access.py checks them on every CI run, and an FRR command or a refused
+      connection by any account but root that the inventory doesn't list pages as UnexpectedAdmin (metric
+      admin_last_seen_seconds); a login alone is not seen (RISK-61)
+  - read: ls /tmp/netlab-bin /tmp/rollback
+    value: only the CM tool's account can write its scratch folders
+    status: gap
+    fallback: set by access.sh at deploy; tests/live/test_access.py on every CI run
+  - read: ls /var/log/messages
+    value: only root can change the router's own copy of its records
+    status: gap
+    fallback: agent.sh starts syslogd under umask 027 at deploy; tests/live/test_access.py on every CI run
+  - read: ls /var/log/frr
+    value: frr-reload.py's log folder is the CM tool's and the admin group's, setgid and sticky, so root can append to the CM tool's log there and an admin can't swap it
+    status: gap
+    fallback: access.sh makes it the CM tool's, 3775, at deploy; tests/live/test_access.py on every CI run (V-032)
+  - read: ls /var/log/frr/frr-reload.log
+    value: frr-reload.py's log is the CM tool's to write as well as root's, so make apply can log after a reload as root
+    status: gap
+    fallback: access.sh creates it the CM tool's, 0640, in a folder that is the CM tool's, 3775, at deploy;
+      tests/live/test_access.py on every CI run
+  - read: ls /home/<arg>
+    value: an account a test added by hand left no home folder behind once it was deleted
+    status: gap
+    fallback: tests/live/test_access.py and tests/live/observe/test_accounting.py on every CI run
+  - read: python3 INJECT
+    value: whether a command sent to the accounting proxy can put a record of its own in the store
+    status: gap
+    fallback: tests/live/observe/test_accounting.py on every CI run

@@ -5,7 +5,8 @@
 # vtysh (--bindir), so a BGP password shows as its sha256 tag, here and in any failure message.
 # Vars: config (path on the control node), label (staging name), mismatch (failure text),
 #       with_password_tags (add the tag each password should have; the intended config has none),
-#       fail_on_difference (default true; deploy.yml only wants the plan).
+#       fail_on_difference (default true; deploy.yml only wants the plan),
+#       name_actors (default false; drift.yml: name who set each differing line, decision 0030).
 - name: Stage the {{ label }} config on the router
   ansible.builtin.copy:
     content: "{{ lookup('file', config) }}\n{{ password_tags if with_password_tags | default(false) else '' }}"
@@ -37,9 +38,24 @@
          | select('search', 'cannot be removed') | reject('search', '"frr version ')
          | list }}
 
+# Who set each differing line (OROS CHG-6): the newest command record the NOC holds for it, from the router's
+# accounting proxy (decision 0029). It reads the NOC only; if the NOC doesn't answer, it says so, and the
+# difference still fails the check below.
+- name: Name who set each differing line
+  ansible.builtin.command:
+    cmd: "{{ ansible_playbook_python }} -m netlab.who set {{ inventory_hostname }}"
+    stdin: "{{ reload_test.stdout }}"
+    chdir: "{{ playbook_dir }}/.."
+  delegate_to: localhost
+  register: who_set
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: name_actors | default(false) and listed | length > 0
+
 - name: Fail on any difference
   ansible.builtin.assert:
     that: listed + unremovable == []
-    fail_msg: "{{ inventory_hostname }} {{ mismatch }}:\n{{ reload_test.stdout }}\n{{ unremovable | join('\n') }}"
+    fail_msg: "{{ inventory_hostname }} {{ mismatch }}:\n{{ reload_test.stdout }}\n{{ unremovable | join('\n') }}\n{{ who_set.stdout | default('') }}"
     success_msg: "{{ inventory_hostname }} running config matches the {{ label }} config"
   when: fail_on_difference | default(true)

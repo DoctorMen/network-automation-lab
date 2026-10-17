@@ -60,7 +60,9 @@
     - "2026-10-16, docker logs of the lab's r1 and r2 at start: ZEBRA and BFD lines from before the daemons detach, frrcommon.sh's 'kill' and 'Cannot stop zebra' lines, then WATCHFRR's up to 'all daemons up' and nothing from the daemons after"
     - "lab r2 show logging: 'Stdout logging: level informational', 'Syslog logging: disabled', 'File logging: disabled'"
     - "throwaway: with log commands on, 'show interface brief' never appeared in docker logs; after 'log file /tmp/frr.log informational' it did, in the file"
-  workaround: "'log file <path>' works (throwaway above); not applied, because nothing in the lab reads FRR logs yet"
+    - "2026-10-15, lab na6 after the fix: Loki on noc holds '{node=\"r1\",source=\"syslog\"} ospfd[32]: AdjChg: Nbr 10.255.0.2(default) on eth1:10.0.12.0: Full -> Deleted (KillNbr)' and r2's 'bgpd[34]: %ADJCHANGE: neighbor 198.51.100.1(isp) in vrf default Up'; tests/live/observe/test_central_store.py::test_router_daemons_log_to_the_central_store clears an adjacency and finds ospfd's line there"
+  workaround: "'log file <path>' works (throwaway above); superseded by the fix"
+  fixed_in: "decision 0019 (wave 2's base build): frr.conf says 'log syslog informational', with log-adjacency-changes and bgp log-neighbor-changes; busybox syslogd keeps a copy on the box and forwards every line to the NOC"
 
 - id: V-006
   opened: 2026-10-15
@@ -117,7 +119,7 @@
 - id: V-011
   opened: 2026-10-15
   version: frrouting/frr:v8.4.1 (FRR 8.4.1_git), throwaway restore-drill routers (--network none) in the sandbox, 4 CPUs shared with another lab; the lab's own routers on containerlab 0.68.0, GitHub ubuntu-24.04
-  symptom: in about 1 throwaway boot in 20, zebra or bgpd crashes as it starts and only comes back about 60 s later, so the restore drill's 60 s boot wait timed out once, and its zebra-only boot check let a drill run while bgpd was down; on GitHub, make apply's first wait (30 s) ran out with zebra down
+  symptom: in about 1 throwaway boot in 20, zebra or bgpd crashes as it starts and only comes back about 60 s later, so the restore drill's 60 s boot wait timed out once, and its zebra-only boot check let a drill run while bgpd was down; on GitHub, make apply's first wait (30 s) ran out with zebra down, and later its 120 s wait ran out on isp, whose zebra crashed twice
   verdict: platform-bug
   evidence:
     - "2026-10-15, 15 rounds of 4 throwaway routers booted at once (r1, r2, r3, isp): in 3 rounds one router had no /usr/lib/frr/zebra process at 12 s; each round finished booting at 66.9 to 67.5 s, the rest at 1.1 to 1.5 s"
@@ -132,7 +134,13 @@
     - "it never showed on main: there `make deploy` ran no make apply, and the live tests' 120 s settle wait covered one watchfrr restart"
     - "CI run 38834167787 (commit a3133d2, deploy.yml's first task waiting up to 120 s): in make apply's production batch r3's wait retried 14 times, about 30 s longer than the other routers', then the rollout passed on every router; 47 live tests passed and drift was clean"
     - "2026-10-16, classified platform-bug from the evidence above by the AI assistant that built this change; no FRR maintainer has confirmed it. Signal 11 is a segmentation fault in FRR's own zebra and bgpd as they start, in the development sandbox (LAB_PARITY.md) and on GitHub's runners alike, and nothing in this config or the container setup is known to cause it. No core dump was taken and no upstream bug report is linked, so the class rests on the crash signal; a cause traced to this config or to running in containers would make it my-config or lab-artifact"
-  workaround: Scratch.wait_booted waits until every daemon on watchfrr's command line runs and no start script is left, up to 120 s, which covers one watchfrr restart; the drill then passes, slower. deploy.yml's first task now waits the same way (up to 120 s, until no start script is left)
+    - "2026-10-16, the full lab with the NOC (20 containers, the stand-in's whole-lab redeploy): in 3 of 5 watched cycles r2, and once r1 and r3 as well, had zebra or bgpd down 15 s after the cut, once with 'bgpd crashed in startup, signal 11' in docker logs and once with nothing there and zebra gone 0.7 s after it started, before the sidecars and the links. isp, which has no exporter, never did. Two power drills had routing back at 73.9 and 83.7 s; build/wave1's network on the same host had it back at 10.3 s and a daemon down on one router (r3) in 4 cycles. 21 boots of r2's rendered config on throwaway routers with its start command and run/ bind, up to 4 at once, had none, so what makes the full lab hit it more often is not known"
+    - "2026-10-16, CI run 38972784804 (commit 3354da8), GitHub ubuntu-24.04, deploy.yml's first task waiting up to 120 s: in NOC job 3's deploy the wait ran out on isp at 22:02:54. isp's watchfrr started at 21:59:59 and its zebra was gone after the first 'watchfrr.sh restart all'; watchfrr logged 'startup did not complete within timeout' at 22:00:54 and ran 'restart all' again at 22:01:06, 67 s after it started, and zebra was gone again ('Cannot stop zebra: pid 31 not running', then no 'zebra state -> up'). Nothing started it again before the wait ended. r2's and r3's zebra was gone once and came back at 22:01:06. In the lab job r3's zebra was gone the same way and came back with 'restart all' at 22:00:42, 66 s after its watchfrr started. Neither job's docker logs had 'signal 11' or a backtrace, and zebra left no message of its own"
+    - "2026-10-16, frrouting/frr:v8.4.1 with --network none, zebra killed with SIGSEGV the moment it existed, timed until vtysh -c 'show daemons' listed zebra again: with the image's own start (watchfrr's defaults, 60 s doubling up to 600 s) 65.2 s after the first crash, then 120.6 s after the second, about 186 s for the two, longer than deploy.yml's 120 s wait. With --min-restart-interval 5 --max-restart-interval 60: 10.2, 10.6 and 20.1 s after three crashes in a row. With -m 5 -M 10, about 10 s each; with -m 1 -M 10, about 5.5 s each"
+    - "lab na16 at commit 3354da8, before the change: every router's watchfrr ran with no options (r1's: '/usr/lib/frr/watchfrr zebra ospfd staticd bfdd'), and tests/live/test_startup_crash.py's throwaway isp, started with the image's own start, did not have zebra back when the test gave up, 30 s after the first crash. After the change it failed the same way once more with Scratch made to leave out the node's start command"
+    - "after the change, the same test's throwaway isp, started with its node's own start command, 15 runs (3 one after another, then 12 two at a time): zebra answered again with its config loaded 5.8 to 15.7 s after the first crash (11 of them under 7 s) and 10.7 to 20.9 s after the second"
+    - "review of the same commit, 28 more runs of that test with a 30 s bound: 2 failed, zebra back 30.0 and 30.1 s after the second crash, and docker logs showed 'zebra crashed in startup, signal 11' on watchfrr's restart after it, so the next restart came 20 s later. The bound is 45 s since, which leaves room for one crash of zebra's own after either induced crash"
+  workaround: "Each router's daemons file sets watchfrr_options to --min-restart-interval 5 --max-restart-interval 60, and each router's start command (topology.clab.yml) runs watchfrr with them, the way the image's own start script does but with the options that script leaves out. The restore drill's throwaway routers run the same start command (Scratch). watchfrr then starts again a daemon that crashed as it started after 5 s, doubling for each restart in a row up to 60 s, instead of 60 s doubling up to 600 s. The crash itself still happens. Scratch.wait_booted (every daemon on watchfrr's command line) and deploy.yml's first task (every daemon the daemons file starts, in show daemons) still wait until those daemons run and no start script is left, up to 120 s. tests/test_render.py checks the options and the start commands; tests/live/test_startup_crash.py checks that every lab router's watchfrr runs with them and that a throwaway isp has zebra back within 45 s after each of two crashes in a row"
 
 - id: V-012
   opened: 2026-10-15
@@ -162,3 +170,125 @@
   evidence:
     - "2026-10-15, a lab with ansible_pipelining false: tests/live/test_secrets.py found it in AnsiballZ_command.py under /root/.ansible/tmp in clab-<lab>-r2 and clab-<lab>-isp, and under the controller's /root/.ansible/tmp/ansible-local-*. Without pipelining, Ansible writes each module with its arguments to a temp file on the target; no_log only hides output"
   workaround: ansible_pipelining true in ansible/group_vars/routers.yml, which pipes the module to the remote Python instead (decision 0016)
+
+- id: V-015
+  opened: 2026-10-16
+  version: prom/prometheus:v2.53.0, tynany/frr_exporter:v1.3.1, FRR 8.4.1_git
+  symptom: BFDPeerDown reached the pager 28 s after r1's BFD session to r2 went down, past its 27 s bound, in one full live run of three
+  verdict: my-config
+  evidence:
+    - "2026-10-16, lab na6, tests/live/observe/test_state.py::test_bfd_peer_down_while_ospf_and_ping_stay_up: 'paged 28.0 s after BFD went down'"
+    - "Prometheus history for that run (query_range, 1 s step, times from BFD going down): frr_bfd_peer_state{node=\"r1\",peer=\"10.0.12.1\"} missing from about +3 s to +14 s, then 0; frr_ospf_neighbor_adjacencies{iface=\"eth1\"} 0 at +4 s, 1 at +14 s; ALERTS pending from +8 s to +17 s, then a second pending series from +18 s, firing at +28 s. FRR deletes the session when OSPF drops the adjacency and adds it back, still down, when OSPF re-forms"
+    - "The rule was `frr_bfd_peer_state{...} != 1 or absent(...)`: the series half keeps the target's labels (job, instance, owner, role), absent() gives node and peer only, so the alert changed identity when the series came back and its 10 s `for` started again"
+  fixed_in: "decision 0018 (wave 2's base build): every per-object rule is `max by (<the object's keys>) (... ) or absent(...)`, so both halves label the alert alike, and owner and role are rule labels; tests/test_monitoring.py::test_an_alert_keeps_its_identity_while_its_series_comes_and_goes"
+
+- id: V-020
+  opened: 2026-10-16
+  version: prom/prometheus:v2.53.0, prom/alertmanager:v0.27.0, FRR 8.4.1_git
+  symptom: With r3 cut off and frr_exporter killed beside r1, the pager got three pages instead of two, NodeDown for h2 (behind r3) as well, in one full live run of three; the same test alone had passed
+  verdict: my-config
+  evidence:
+    - "2026-10-16, lab na10, full `pytest -v tests/live` at commit 500ab80, tests/live/observe/test_outage.py::test_a_parent_failure_pages_once_and_a_killed_service_pages_again: \"pages for this outage: [('NodeDown', 'h2', 'h2'), ('NodeDown', 'r3', 'r3'), ('TargetDown', 'r1', 'frr@r1')]\""
+    - "Every cause's page, r3's and h2's alike, had `keep_firing_for: 75s`, and h2's page is held back only while a cause it lists fires. h2 answers its probe a scrape after r3 does, so its page went on firing a few seconds after r3's ended and was sent then. The Prometheus history of that run was not kept (the lab was rebuilt); the order is read from the rules"
+    - "After the fix, the same outage (Prometheus query_range, 1 s step): NodeDown for r3 and for h2 both end at +313 s, while CauseSeen for r3 fires until +389 s, so h2's page ends 76 s inside r3's hold"
+  fixed_in: "decision 0021 (commit 2221f20): the markers keep firing 75 s after recovery and no page does; tests/test_dependencies.py::test_a_cause_keeps_holding_back_through_the_slowest_recovery"
+
+- id: V-021
+  opened: 2026-10-16
+  version: prom/prometheus:v2.53.0, prom/alertmanager:v0.27.0, prom/node-exporter:v1.8.2
+  symptom: r1's link to fw1 down for 7 s paged nothing, though InterfaceFlapped fired once the carrier was back
+  verdict: my-config
+  evidence:
+    - "2026-10-16, review of commit 4decaae on lab na10: with r1 eth3 down 7.1 s, Prometheus had InterfaceFlapped firing, LinkDown and NodeDown for fw1 pending, CauseSeen for the link and for fw1 firing, and the pager had received nothing. A 0.3 s flap timed onto a scrape of r1's node_exporter gave the same: the link's marker fired and nothing paged"
+    - "Each InterfaceFlapped listed its own link in deps. The link's marker fires on the first scrape that sees it down and keeps firing 75 s, while LinkDown needs its condition for 10 s, so the flap was held back by a cause whose own page never came"
+    - "2026-10-16, lab na10, with the old deps put back: tests/live/observe/test_outage.py::test_a_link_down_for_seconds_pages_once_as_a_flap failed with \"r1 eth3 down for 7 s did not page\"; with the fix it passed"
+  fixed_in: "decision 0021 (commit 231e6d3): a flap lists its router and what is in front of it, never its own link, and stays quiet for 40 s after LinkDown for its link fired; tests/test_dependencies.py::test_a_flap_is_never_held_back_by_its_own_link"
+
+- id: V-022
+  opened: 2026-10-16
+  version: prom/alertmanager:v0.27.0
+  symptom: Watchdog, routed with repeat_interval 10s, was mailed every 15 s, not every 10 s
+  verdict: normal-behaviour
+  evidence:
+    - "2026-10-16, review of commit 4decaae on lab na10: 168 of 184 gaps between Watchdog mails in Mailpit were 15 s"
+    - "Alertmanager sends a group only when it flushes it, every group_interval (5 s here), and mails a firing group again on a flush only once more than repeat_interval has passed since the last mail: 10 s has not passed at the second flush, so the mail waits for the third"
+    - "2026-10-16, lab na10, repeat_interval 6s: the gaps between the last eight Watchdog mails were all 10.0 s; with 10s put back, tests/live/observe/test_deadman.py::test_a_broken_mail_path_pages_on_the_second_channel failed with \"Watchdog mailed every [15.0, 15.0, 15.0, 15.0] s, not every 10 s\""
+  fixed_in: "decision 0022 (commit 1152e67): repeat_interval is every less group_interval plus 1 s, and the inventory check requires every to be a whole number of group_interval"
+
+- id: V-023
+  opened: 2026-10-16
+  version: prom/prometheus:v2.53.0, prom/alertmanager:v0.27.0
+  symptom: every fresh deploy and every power cycle of the NOC paged AlertPathSilent for about 5 s, though the mail path worked
+  verdict: normal-behaviour
+  evidence:
+    - "2026-10-16, review of commit 4decaae on lab na10, fresh deploy: AlertPathSilent fired 06:49:14 and resolved 06:49:19; Watchdog was active from 06:48:38 but its first mail arrived 06:49:44, and prometheus_notifications_dropped_total was 7. After the power drill's cycle the same, with 7 dropped. A restart of Prometheus alone paged nothing"
+    - "Prometheus drops what it sends before Alertmanager answers, and sends a firing alert again only after its resend delay (--rules.alert.resend-delay, default 1m). AlertPathSilent counted 30 s from the NOC's start"
+    - "2026-10-16, lab na10 at commit b0057ad, fresh labctl up at 09:36:45 UTC: the first Watchdog mail arrived 69.2 s after the pushgateway started, the gaps between the next mails were 10.0 s, and at 09:40:21 the pager had received nothing. After make power-drill's power cycle of the same lab (labctl.sh cycle, NOC back at 10:04:42), the first mail came 66.6 s after the start and the pager received nothing in the 131 s that followed"
+  fixed_in: "decision 0022 (commit 1152e67): AlertPathSilent counts from a minute after the NOC's start; tests/test_jobs.py::test_the_alert_path_is_not_due_before_the_first_resend"
+- id: V-025
+  opened: 2026-10-16
+  version: the lab host's kernel (Linux 6.18), prom/node-exporter:v1.8.2, frrouting/frr:v8.4.1 (iproute2 5.15)
+  symptom: h2 eth1's transmit drop counter stayed at 0 while its HTB queue dropped most of a burst
+  verdict: normal-behaviour
+  evidence:
+    - "2026-10-16, lab na11: 3000 datagrams of 200 bytes from h2 to r3 in 9 ms; r3 received 1098, `tc -s qdisc` on h2 counted 1902 dropped, node_network_transmit_drop_total{node=\"h2\",device=\"eth1\"} stayed 0"
+    - "The interface's tx_dropped counts packets the driver could not send, after the queue; a packet the queue refuses never reaches the driver. tests/live/observe/test_loss.py::test_a_microburst_the_average_hides_is_traced_to_its_queue checks both on every observe run"
+  workaround: the queue's own counter is collected (node_exporter's qdisc collector) and pages as QueueDrops (decision 0023)
+
+- id: V-026
+  opened: 2026-10-16
+  version: the lab host's kernel (Linux 6.18), frrouting/frr:v8.4.1 (Python 3 on Alpine)
+  symptom: send() succeeded for all 3000 datagrams of a burst from h2, and h2's Udp OutDatagrams rose by only the 1113 that arrived
+  verdict: normal-behaviour
+  evidence:
+    - "2026-10-16, lab na11, /proc/net/snmp on h2 around one burst: OutDatagrams +1113, SndbufErrors +1887; `tc -s qdisc` on h2 counted 1887 dropped; r3 received 1113"
+    - "A datagram the sender's own queue drops makes the kernel return ENOBUFS internally; without IP_RECVERR the socket hides it from send() and counts it under SndbufErrors instead of OutDatagrams (udp(7))"
+  workaround: the test counts what was sent with its own sender and what arrived with a receiver, never the sender's OutDatagrams; monitoring/coverage.yml says what OutDatagrams counts
+
+- id: V-027
+  opened: 2026-10-16
+  version: grafana/loki:3.1.1 (single binary, filesystem store, write-ahead log under /loki/wal)
+  symptom: lines the central store had answered with before a crash were gone after the next one, when the store had restarted a few minutes before
+  verdict: platform-bug
+  evidence:
+    - "2026-10-16, lab na11, Loki checkpointing every 5 minutes (its default): a line logged on r2 and found in the store at 03:16:05 was gone after Loki was killed and started; every line since Loki's previous start at 03:12 was gone with it, and loki_ingester_wal_duplicate_entries_total rose while loki_ingester_wal_recovered_entries_total stayed at 4354"
+    - "2026-10-16, lab na11, checkpointing every 30 s: a line logged 19 s after Loki started, and killed 1 s later before any checkpoint, was gone after the restart; a line logged after the first checkpoint (47 s after the start), and killed at once, was still there. What decides is whether a checkpoint was written between the line and the kill: the power drill's marker, logged about 10 s after the store restarts, survives because the drill cuts only after that checkpoint"
+    - "How much goes depends on the stream: a replayed line is dropped only if its count is not above the stream's count in the last checkpoint. With the 5-minute default every line since the restart went; in drill runs without the wait for the checkpoint, 4 of r2's last 111 lines and 15 of its last 120 went"
+    - "Loki 3.1.1 source: after a successful replay, ingesterRecoverer.Close() calls resetCounter() on every stream (pkg/ingester/recovery.go), and stream.Push drops a replayed record whose counter is not above the stream's (pkg/ingester/stream.go). The next replay starts from the last checkpoint's counters, so the records written since the reset are dropped as duplicates until a new checkpoint replaces that one. The first checkpoint comes one checkpoint_duration after the start and is written over 90% of another (pkg/ingester/checkpoint.go)"
+    - "Whether a later Loki release fixes it is not checked here"
+  workaround: Loki checkpoints every 30 s (templates/monitoring/loki.yaml.j2), so the window is about a minute after each restart; the power drill restarts the store first and cuts only after its first checkpoint (tests/live/test_power_event.py::test_evidence_outlives_a_power_cut). What is left is RISK-46
+
+- id: V-030
+  opened: 2026-10-16
+  version: ansible-core 2.21.5 (ansible>=10), busybox syslogd in frrouting/frr:v8.4.1
+  symptom: each router's syslog sent the store 2.4 to 3.6 MB a day over the benign workload, over the first 1 MiB budget, and nearly all of it was lines Ansible writes for each module it runs
+  verdict: normal-behaviour
+  evidence:
+    - "2026-10-16, lab na12, an 8-minute run of the benign workload (make drift and make apply every five minutes) with a 1 MiB syslog budget: r1 2.9, r2 3.6, r3 3.4 MB a day, fw1 0.6, h2 0.06"
+    - "2026-10-16, lab na12, the first 30-minute review (commit f82f429, 05:18:28Z to 05:48:57Z), read back from Loki: r1 97%, r2 94%, r3 98% and fw1 86% of their syslog bytes are lines tagged ansible-<module> ('Invoked with' and the module's arguments); the rest is mostly the heartbeat. Ansible's modules log each invocation to the target's syslog; decision 0019 relies on no_log to keep the password task's out"
+    - "2026-10-16, lab na12, the review in monitoring/fp-review.yml (commit b4771ab, 10:28:44Z, 1797 s), read back from Loki the same way: r1 97%, r2 94%, r3 98% and fw1 87%"
+    - "2026-10-16, lab na14, the merged wave 2 tree: one make drift and one make apply, twice, sent r2's syslog 25216 bytes in 191 lines (7.3 MB a day at five-minute pace), r1's 17128 and r3's 18758; 156 of r2's lines were vty-aaa command records, which the store also holds under accounting (14854 bytes), the rest mostly ansible-<module> lines"
+  workaround: "The syslog budget is sized to it: 16 MiB a day, about twice r2's 7.3 MB a day on the merged lab, where the accounting proxy's records add to Ansible's lines (decision 0026); the first was 8 MiB, 2.8 times r2's 3.0 MB a day in the first review. The lines are kept, because they are the routers' only record of which modules the operator's playbooks ran there and with what arguments. They could be cut where they are written: ansible-core's no_target_syslog (ansible.cfg [defaults], or the host variable ansible_no_target_syslog) stops Ansible writing them; busybox syslogd itself can't filter by message"
+
+- id: V-031
+  opened: 2026-10-16
+  version: prom/prometheus:v2.53.0, prom/alertmanager:v0.27.0, prom/node-exporter:v1.8.2
+  symptom: a queue overflow on h2 that also lost one of the NOC's pings of h2 paged nothing, though QueueDrops fired for h2 eth1
+  verdict: my-config
+  evidence:
+    - "2026-10-16, review of commit 4cf990e on lab na15: a burst of 450000 datagrams from h2, timed over the icmp job's scrape of h2, added 438411 queue drops; probe_success for h2 was 0 at that one scrape, CauseSeen for h2 fired from 3 s to about 80 s after the burst began, QueueDrops for h2 eth1 from 7 s to about 56 s, suppressed in Alertmanager all that time, and the pager received nothing for h2. The same burst 2.5 s away from every scrape of h2 paged QueueDrops 9.1 s after it"
+    - "Each QueueDrops listed its own node in deps (since the merge of build/w2b). The node's marker keeps firing 75 s after its ping answers again, longer than QueueDrops keeps firing after a burst, so the page was held back until it had resolved"
+    - "2026-10-16, lab na14, with the fix (commit f1bdd53): the same burst, timed over the icmp job's scrape of h2, took 0.99 s; probe_success for h2 was 0 at that one scrape and CauseSeen for h2 fired 4.3 s after the burst began, and QueueDrops for h2 eth1 paged 11.6 s after it and resolved at 61.6 s. quiet() for WebContentWrong on h2, which lists h2, waited 77.9 s, until that marker stopped firing"
+  fixed_in: "f1bdd53 (decision 0021): QueueDrops lists what is in front of its node, never the node itself; tests/test_dependencies.py::test_a_queue_drop_is_never_held_back_by_its_own_node"
+
+- id: V-032
+  opened: 2026-10-17
+  version: GitHub ubuntu-24.04 runner kernel (fs.protected_regular=2), frrouting/frr:v8.4.1 (Python 3 on Alpine)
+  symptom: frr-reload.py --reload as root on r1, r2 and r3 failed with Errno 13 on /var/log/frr/frr-reload.log, the CM tool's 0640 file, in a folder that was root's, setgid and sticky (3775)
+  verdict: my-config
+  evidence:
+    - "2026-10-17, CI run 38987583306 (commit 59e8890), job 'Deploy the lab and test it live': tests/live/test_access.py::test_the_cm_tool_reloads_after_root_did failed with {'r1 as root': \"PermissionError: [Errno 13] Permission denied: '/var/log/frr/frr-reload.log'\"}, the same for r2 and r3; the other 58 live tests passed. The sandbox, with fs.protected_regular=0, had passed the same test"
+    - "2026-10-17, sandbox set to fs.protected_regular=2, lab na17 at commit 59e8890: the same test failed the same way on r1, r2 and r3. As root on each, os.open of the file with O_WRONLY|O_APPEND worked and with O_CREAT added failed with Errno 13; on isp (folder root's, 0755, not sticky) both worked"
+    - "protected_regular (Documentation/admin-guide/sysctl/fs.rst): at 2 the kernel refuses an O_CREAT open of an existing regular file in a sticky folder that is group- or world-writable unless the file's owner is the opener or the folder's owner, root included. frr-reload.py's log handler opens its file for append with O_CREAT"
+    - "2026-10-17, the same lab with the folder made the CM tool's on r1 (install -d -o netlab -g netadmin -m 3775): root's O_CREAT open worked, and alice still could not rename the CM tool's file (Operation not permitted)"
+  fixed_in: "the commit after 59e8890 on build/wave2: access.sh makes /var/log/frr the CM tool's, still setgid and sticky, so the log's owner is the folder's owner; tests/live/test_access.py::test_the_cm_tool_reloads_after_root_did checks the folder's owner and mode. The CM tool can now delete or rename any file there and change the folder's mode"

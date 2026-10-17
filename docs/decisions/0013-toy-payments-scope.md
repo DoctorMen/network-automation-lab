@@ -64,6 +64,10 @@ web port plays the payment page.
   source). So every listed service and every ping into the segment is either in the register or
   refused. The live test probes each one, and proves each closed one answers from another device on
   LAN-B, so the block is policy.
+- **h2 also listens on 9100 for the NOC** (its node_exporter, decision 0023). It is not a service, so it is
+  never published; the tuples close it to every out-of-scope device. It runs as a sidecar, so its tuples
+  name it and the full lab's test probes them, the NOC's answer and r3's included
+  (`tests/live/observe/test_loss.py::test_the_servers_exporter_answers_the_noc_and_nobody_out_of_scope`).
 - **Clause wording** (1.3.1 inbound to the CDE restricted to what is necessary, 1.4.1-1.4.3 controls
   between trusted and untrusted networks and anti-spoofing, 11.4.5 penetration tests of segmentation
   controls) was checked against the sources above, which quote the standard, not against the PCI SSC

@@ -113,10 +113,20 @@ class Watch(threading.Thread):
         self.join()
 
 
+def read_any(path):
+    """A file's bytes. FRR writes files only root can read in each router's build/<router>/run (its /var/run/frr,
+    shared with its frr_exporter, decision 0018), so as an unprivileged user (the CI runner) those are read
+    through sudo; a file that can't be read either way fails the test, since an unread file isn't clean."""
+    try:
+        return path.read_bytes()
+    except PermissionError:
+        return subprocess.run(["sudo", "-n", "cat", "--", str(path)], capture_output=True, check=True).stdout
+
+
 def files_holding(values, *folders):
     needles = [v.encode() for v in values]
     return [str(p.relative_to(ROOT)) for folder in folders if folder.exists()
-            for p in folder.rglob("*") if p.is_file() and any(n in p.read_bytes() for n in needles)]
+            for p in folder.rglob("*") if p.is_file() and any(n in read_any(p) for n in needles)]
 
 
 def playbook(name):
@@ -124,7 +134,7 @@ def playbook(name):
 
 
 def test_no_secret_in_env_argv_logs_or_files(node, expected):
-    """While `make apply` puts back a hand change on r2 and `make drift` runs, no command line, environment, frr-reload log, container log, playbook output, build/ or backups/ file holds a BGP password in clear; the session stays up."""
+    """While `make apply` puts back a hand change on r2 and `make drift` runs, no command line, environment, routing daemons' syslog file, frr-reload log, container log, playbook output, build/ or backups/ file holds a BGP password in clear; the session stays up."""
     ends = sessions(expected)
     values = [secret(name) for name in {e["secret"] for e in ends}]
     routers = sorted({e["router"] for e in ends})
@@ -150,8 +160,9 @@ def test_no_secret_in_env_argv_logs_or_files(node, expected):
     hits.update(files_holding(values, BUILD, ROOT / "backups"))
     for router in routers:
         container = node(router).container
-        # FRR's own logs and scratch files: frr-reload.log, its reload-*.txt, the staged configs.
-        out = subprocess.run(["docker", "exec", "-i", container, "sh", "-c", "grep -rlsF -f - /var/log/frr /var/run/frr /tmp"],
+        # FRR's own logs and scratch files: the daemons' syslog lines (/var/log/messages, which also holds
+        # each Ansible module's "Invoked with" line), frr-reload.log, its reload-*.txt, the staged configs.
+        out = subprocess.run(["docker", "exec", "-i", container, "sh", "-c", "grep -rlsF -f - /var/log /var/run/frr /tmp"],
                              input="\n".join(values), capture_output=True, text=True).stdout
         hits.update(f"{container}: {line}" for line in out.split())
         logs = subprocess.run(["docker", "logs", container], capture_output=True, text=True)

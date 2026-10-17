@@ -1,5 +1,8 @@
-"""python -m netlab {validate,render,locate,finding,secrets} [--inventory PATH] [--out DIR] [--src DEVICE --dst ADDRESS]
-          finding [--bundle DIR] [--condition FILE] | finding --verify DIR"""
+"""python -m netlab {validate,render,locate,finding,secrets,nodes,images} [--inventory PATH] [--out DIR] [--src DEVICE --dst ADDRESS]
+          finding [--bundle DIR] [--condition FILE] | finding --verify DIR
+
+nodes prints the network's own nodes, comma-separated, for `containerlab deploy --node-filter` (the
+lab without the NOC's sidecars); images prints every image the full lab runs, one per line."""
 from __future__ import annotations
 
 import argparse
@@ -8,13 +11,13 @@ import sys
 from .inventory import InventoryError, load
 from .locate import locate, summary
 from .render import render_all
-from . import secrets
+from . import monitoring, secrets
 from .finding import verify as verify_bundle, write as write_bundle
 
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="netlab")
-    p.add_argument("command", choices=["validate", "render", "locate", "finding", "secrets"])
+    p.add_argument("command", choices=["validate", "render", "locate", "finding", "secrets", "nodes", "images"])
     p.add_argument("--inventory", default="inventory/network.yml")
     p.add_argument("--out", default="build")
     p.add_argument("--src", help="locate: a device we own to probe from")
@@ -30,6 +33,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if args.command == "validate":
         print(f"OK: {len(inv.devices)} devices, {len(inv.links)} links, no addressing problems")
+        return 0
+    if args.command == "nodes":
+        print(",".join(inv.devices))
+        return 0
+    if args.command == "images":
+        print("\n".join(dict.fromkeys([inv.platform["image"], *(s["image"] for s in monitoring.sidecars(inv).values())])))
         return 0
     if args.command == "locate":
         if not (args.src and args.dst):

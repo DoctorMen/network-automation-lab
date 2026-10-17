@@ -82,6 +82,14 @@ class Inventory:
         return self.raw.get("rollout", {})
 
     @property
+    def monitoring(self) -> dict:
+        return self.raw.get("monitoring", {})
+
+    @property
+    def logging(self) -> dict:
+        return self.raw.get("logging", {})
+
+    @property
     def devices(self) -> list[str]:
         return [*self.routers, *self.firewalls, *self.hosts]
 
@@ -254,6 +262,11 @@ def validate(inv: Inventory) -> list[str]:
             problems.append(f"{name}: wan_filter interface {wan['interface']} is not on any link")
     problems.extend(rtbh_problems(inv))
     problems.extend(scope_problems(inv))
+    problems.extend(monitoring_problems(inv))
+    from .access import problems as access_problems  # access.py imports this module
+    problems.extend(access_problems(inv))
+    from .nat import problems as nat_problems  # so does nat.py
+    problems.extend(nat_problems(inv))
     # A TCP MD5 entry names the two ends of one BGP session, and a secret by file name (not its value).
     for i, auth in enumerate(inv.raw.get("bgp_auth", [])):
         label = f"bgp_auth #{i + 1}"
@@ -355,4 +368,103 @@ def scope_problems(inv: Inventory) -> list[str]:
     for name in filters:
         if name not in systems:
             problems.append(f"scope: {name} filters traffic into the segment, so it must be in systems")
+    return problems
+
+
+def monitoring_problems(inv: Inventory) -> list[str]:
+    """The NOC's checks can only be generated from what the inventory really has (decisions 0018, 0019)."""
+    mon, logs = inv.monitoring, inv.logging
+    if not mon:
+        return []
+    problems = []
+    if mon.get("host") not in inv.hosts:
+        problems.append(f"monitoring: host {mon.get('host')!r} is not a host")
+    # A floating tag (or none) lets an upgrade in without a commit; the selection records name a version.
+    for name, image in (mon.get("images") or {}).items():
+        if not re.fullmatch(r"[a-z0-9./_-]+:v?\d[\w.-]*", str(image)):
+            problems.append(f"monitoring: image {name} {image!r} needs a pinned version tag")
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", str((mon.get("digests") or {}).get(name))):
+            problems.append(f"monitoring: image {name} has no digest (sha256:...) under digests")
+    path = mon.get("alert_path") or {}
+    for key, value in (("interval", mon.get("interval")), ("reboot_window", mon.get("reboot_window")),
+                       ("group_wait", mon.get("group_wait")), ("group_interval", mon.get("group_interval")),
+                       ("heartbeat", logs.get("heartbeat")), ("silent_after", logs.get("silent_after")),
+                       ("alert_path every", path.get("every")), ("alert_path silent_after", path.get("silent_after"))):
+        if not (isinstance(value, int) and value > 0):
+            problems.append(f"monitoring: {key} {value!r} must be a whole number of seconds")
+    # Unattended jobs (decision 0022): each name is a pushgateway group and a JobMissed rule.
+    names = [j.get("name") for j in mon.get("jobs") or []]
+    for j in mon.get("jobs") or []:
+        if not re.fullmatch(r"[a-z][a-z0-9-]*", str(j.get("name"))) or names.count(j.get("name")) > 1:
+            problems.append(f"monitoring: job name {j.get('name')!r} must be unique, lower case letters, digits and -")
+        if not all(isinstance(j.get(k), int) and j[k] > 0 for k in ("every", "grace")):
+            problems.append(f"monitoring: job {j.get('name')}: every and grace must be whole numbers of seconds")
+    for check in mon.get("web") or []:
+        host = inv.hosts.get(check.get("host"), {})
+        if check.get("port") not in host.get("services", []):
+            problems.append(f"monitoring: web check {check.get('host')}:{check.get('port')} has no listener in services")
+    if problems:
+        return problems
+    # A source is silent when its last line is older than silent_after. Shorter than the heartbeat plus two
+    # scrapes and a healthy source would trip it. NOT-3's bound is twice the heartbeat, and the alert needs
+    # up to three intervals, Alertmanager's group_wait and a second on top of silent_after to reach the pager.
+    beat, silent, interval, wait = logs["heartbeat"], logs["silent_after"], mon["interval"], mon["group_wait"]
+    if not beat + 2 * interval < silent <= 2 * beat - 3 * interval - wait - 1:
+        problems.append(f"logging: silent_after {silent} must be over heartbeat + 2 x interval ({beat + 2 * interval}) "
+                        f"and at most twice the heartbeat less 3 x interval, group_wait and 1 s ({2 * beat - 3 * interval - wait - 1})")
+    # Watchdog's mail goes out on Alertmanager's flushes, group_interval apart, so its period is a whole
+    # number of them; one late mail must not page.
+    if path["every"] % mon["group_interval"]:
+        problems.append(f"monitoring: alert_path every {path['every']} must be a multiple of group_interval "
+                        f"({mon['group_interval']}), since Alertmanager sends only on a flush")
+    if not path["silent_after"] > 2 * path["every"] + interval:
+        problems.append(f"monitoring: alert_path silent_after {path['silent_after']} must be over twice its every "
+                        f"plus one interval ({2 * path['every'] + interval})")
+    for app in logs.get("apps") or []:
+        label = f"logging: app {app.get('host')}/{app.get('name')}"
+        if app.get("port") not in inv.hosts.get(app.get("host"), {}).get("services", []):
+            problems.append(f"{label}: port {app.get('port')} has no listener in services")
+        checked = any((w.get("host"), w.get("port")) == (app.get("host"), app.get("port")) for w in mon.get("web") or [])
+        for kind in app.get("cut") or []:
+            if kind != "web-check":
+                problems.append(f"{label}: cut {kind!r} is not a kind netlab knows (web-check)")
+            elif not checked:
+                problems.append(f"{label}: cut web-check, but no web check watches {app.get('host')}:{app.get('port')}")
+        if app.get("cut"):
+            # Its forwarder sends one count line per heartbeat's worth of the checks it cuts: syslog's margin.
+            if not (isinstance(app.get("silent_after"), int) and beat + 2 * interval < app["silent_after"] <= 2 * beat - 3 * interval - 1):
+                problems.append(f"{label}: with a cut, its normal gap is the heartbeat, so silent_after must be over "
+                                f"{beat + 2 * interval} and at most {2 * beat - 3 * interval - 1}")
+        # Otherwise its normal gap is the web check's interval, so the same margin applies.
+        elif not (isinstance(app.get("silent_after"), int) and app["silent_after"] > 3 * interval):
+            problems.append(f"{label}: silent_after must be over 3 x interval ({3 * interval})")
+    return problems + budget_problems(inv)
+
+
+def budget_problems(inv: Inventory) -> list[str]:
+    """Every source has a daily ingest budget, and all of them together, for the whole retention, fit the
+    disk the NOC sets aside for raw lines (OROS NOT-5, decision 0026)."""
+    logs = inv.logging
+    budget = logs.get("budget")
+    if not budget:
+        return ["logging: no budget (store_mb, syslog_kb): every source needs an ingest budget"]
+    problems = [f"logging: budget {k} {budget.get(k)!r} must be a whole number over 0" for k in ("store_mb", "syslog_kb")
+                if not (isinstance(budget.get(k), int) and budget[k] > 0)]
+    problems += [f"logging: app {a.get('host')}/{a.get('name')} needs a budget_kb over 0" for a in logs.get("apps") or []
+                 if not (isinstance(a.get("budget_kb"), int) and a["budget_kb"] > 0)]
+    if problems:
+        return problems
+    from . import access, nat  # they import this module, so not at the top
+    from .monitoring import ingest_sources
+    sources = ingest_sources(inv)
+    # The translation log and the command records take their budget from nat_kb and accounting_kb.
+    problems = [f"logging: {s['node']}/{s['source']} needs a budget: set logging.budget.{s['source']}_kb over 0"
+                for s in sources if s["source"] in (nat.SOURCE, access.SOURCE) and s["budget"] <= 0]
+    if problems:
+        return problems
+    daily_kb = sum(s["budget"] for s in sources) // 1024
+    days = logs["retention"] / 24
+    if daily_kb * days > budget["store_mb"] * 1024:
+        problems.append(f"logging: the sources' budgets ({daily_kb} KB a day) for {days:g} days of retention need "
+                        f"{daily_kb * days / 1024:.0f} MB, over store_mb {budget['store_mb']}")
     return problems

@@ -36,10 +36,12 @@ class Node:
         self.name = name
         self.container = f"clab-{lab}-{name}"
 
-    def run(self, *cmd, check=True, timeout=30, input=None) -> subprocess.CompletedProcess:
+    def run(self, *cmd, check=True, timeout=30, input=None, user=None) -> subprocess.CompletedProcess:
         # -i passes stdin through, e.g. a script for `python3 -`. Without input, stdin stays closed.
+        # user: run as that account, the way Ansible's docker connection runs a task as ansible_user.
         interactive = ["-i"] if input is not None else []
-        return subprocess.run(["docker", "exec", *interactive, self.container, *cmd], input=input,
+        account = ["-u", user] if user else []
+        return subprocess.run(["docker", "exec", *interactive, *account, self.container, *cmd], input=input,
                               capture_output=True, text=True, check=check, timeout=timeout)
 
     def vtysh(self, command: str) -> str:

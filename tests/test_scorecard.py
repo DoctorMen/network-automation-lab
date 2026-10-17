@@ -2,6 +2,8 @@
 import re
 from pathlib import Path
 
+import yaml
+
 from netlab.records import names_a_test
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -43,3 +45,25 @@ def test_every_pass_names_a_test_that_exists():
             assert tests, f"{id_} passes without naming a test"
         missing = [t for t in tests if not names_a_test(t)]
         assert not missing, f"{id_} names tests that don't exist: {missing}"
+
+
+def test_the_risk_register_row_counts_the_register():
+    """JUS-4's figures are the register's own: its entries and accepted risks, which name a compensating test and
+    which say why there is none, which a detector ties to config lines and which it can't (in the row and in the
+    risk-register control), and how many `make risks` lists as not yet presented. A new entry fails this until the
+    row says so."""
+    register = yaml.safe_load((ROOT / "docs" / "risks.yml").read_text())
+    row = next(r[3] for r in scorecard_rows() if r[0] == "JUS-4")
+    untested = [e["id"] for e in register if str(e["compensating_control"]).startswith("none (")]
+    untied = [e["id"] for e in register if not e.get("detectors")]
+    pending = [e["id"] for e in register if e["presented_to"] == "pending"]
+    figures = re.search(r"records (\d+) entries, (\d+) accepted risks .*? (\d+) name a compensating test; (.*?) say why there is "
+                        r"none\. (\d+) are tied by a detector to the config lines they accept; (.*?) have no config line to tie\.", row)
+    assert figures, "JUS-4 no longer states the register's figures in the form this test reads"
+    entries, accepted, tested, no_test, tied, no_line = figures.groups()
+    assert (int(entries), int(accepted)) == (len(register), sum(e["kind"] == "accepted-risk" for e in register))
+    assert (int(tested), re.findall(r"RISK-\d+", no_test)) == (len(register) - len(untested), untested)
+    assert (int(tied), re.findall(r"RISK-\d+", no_line)) == (len(register) - len(untied), untied)
+    assert re.search(rf"`make risks` lists all {len(pending)} as not yet presented", row) and pending == [e["id"] for e in register]
+    control = next(c for c in yaml.safe_load((ROOT / "docs" / "controls.yml").read_text())["controls"] if c["id"] == "risk-register")
+    assert re.findall(r"RISK-\d+", re.search(r"a gap with no config line \((.*?)\)", control["fails_when"])[1]) == untied

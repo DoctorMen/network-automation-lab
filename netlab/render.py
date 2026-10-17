@@ -8,6 +8,7 @@ from pathlib import Path
 import yaml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
+from . import access, monitoring, nat
 from .inventory import Inventory, bgp_peer_address, segment_members
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -42,6 +43,7 @@ def render_router(inv: Inventory, name: str, env: Environment | None = None) -> 
         local_as=inv.asn(bgp["local_as"]) if bgp else None,
         bgp_neighbors=bgp_neighbors,
         rtbh=rtbh_role(inv, name),
+        nat_routes=nat.carrier_routes(inv, name),
     )
     return {
         "frr.conf": env.get_template("frr.conf.j2").render(**ctx),
@@ -105,10 +107,10 @@ def wan_filter(inv: Inventory, router: str) -> dict | None:
 def render_edge(inv: Inventory, name: str, env: Environment | None = None) -> str | None:
     """build/<router>/edge.sh: what the router enforces at its edges, beyond routing. None if nothing."""
     env = env or _env()
-    rp_filter, wan = rp_filter_interfaces(inv, name), wan_filter(inv, name)
-    if not (rp_filter or wan):
+    rp_filter, wan, translate = rp_filter_interfaces(inv, name), wan_filter(inv, name), nat.config(inv, name)
+    if not (rp_filter or wan or translate):
         return None
-    return env.get_template("edge.sh.j2").render(name=name, rp_filter=rp_filter, wan=wan)
+    return env.get_template("edge.sh.j2").render(name=name, rp_filter=rp_filter, wan=wan, nat=translate)
 
 
 def owned_addresses(inv: Inventory) -> dict[str, list[str]]:
@@ -126,12 +128,15 @@ def owned_addresses(inv: Inventory) -> dict[str, list[str]]:
 def segmentation(inv: Inventory) -> list[dict]:
     """The reachability the scope register promises (ATT-1): from every out-of-scope device, each
     device on the segment answers a service only if it is published, and a ping only if the register
-    lists that as an exception. `inside` is another device on the segment, which a closed one must answer."""
+    lists that as an exception. `inside` is another device on the segment, which a closed one must answer.
+    A server's node_exporter (decision 0023) is closed to all of them too; it is a sidecar, so its tuple names it,
+    and only the full lab's tests probe it (tests/live/observe/test_loss.py)."""
     scope = inv.raw.get("scope")
     if not scope:
         return []
     members = segment_members(inv, scope["segment"])
     excepted = {(e["src"], e["proto"]) for e in scope.get("exceptions") or []}
+    exporters = monitoring.servers(inv) if inv.monitoring else []
     tuples = []
     for src in scope.get("out_of_scope", []):
         for dst, address in members.items():
@@ -139,6 +144,9 @@ def segmentation(inv: Inventory) -> list[dict]:
             tuples += [{"src": src, "dst": dst, "address": address, "proto": "tcp", "port": port, "inside": inside,
                         "expect": "open" if port in host.get("published", []) else "closed"}
                        for port in host.get("services", [])]
+            if dst in exporters:
+                tuples.append({"src": src, "dst": dst, "address": monitoring.node_exporter_address(inv, dst), "proto": "tcp",
+                               "port": monitoring.PORTS["node"], "inside": inside, "expect": "closed", "sidecar": f"{dst}-node-exporter"})
             tuples.append({"src": src, "dst": dst, "address": address, "proto": "icmp", "inside": inside,
                            "expect": "open" if (src, "icmp") in excepted else "closed"})
     return tuples
@@ -186,9 +194,15 @@ def expected_state(inv: Inventory) -> dict:
         "rp_filter": {r: ifs for r in inv.routers if (ifs := rp_filter_interfaces(inv, r))},
         "segmentation": segmentation(inv),
         "rtbh": rtbh_triggers(inv),
+        # Each router's source NAT and the device that routes its outside address (netlab/nat.py, decision 0031).
+        "nat": nat.expected(inv),
         "operator": inv.operator,
         "owners": {d: inv.owner(d) for d in inv.devices},
         "platform": inv.platform,
+        # What the NOC watches and the alerts it can raise (netlab/monitoring.py, decision 0018).
+        "monitoring": monitoring.expected(inv),
+        # Who may administer the routers we own, and who the NOC expects to see (netlab/access.py, decision 0029).
+        "access": access.expected(inv),
     }
 
 
@@ -198,7 +212,9 @@ def ansible_inventory(inv: Inventory) -> str:
     routers = sorted(inv.routers, key=lambda r: r != inv.rollout.get("canary"))
     md5 = {r: sessions for r in inv.routers if (sessions := bgp_md5(inv, r))}
     hosts = {
-        "routers": {r: {"ansible_host": f"clab-{inv.lab_name}-{r}", **({"bgp_md5": md5[r]} if r in md5 else {})}
+        # Routers we own are changed under the CM tool's own account, through the accounting proxy (decision 0029).
+        "routers": {r: {"ansible_host": f"clab-{inv.lab_name}-{r}", **({"bgp_md5": md5[r]} if r in md5 else {}),
+                        **({"ansible_user": inv.raw["access"]["ansible_user"]} if r in access.routers(inv) else {})}
                     for r in routers},
         "firewalls": {f: {"ansible_host": f"clab-{inv.lab_name}-{f}"} for f in inv.firewalls},
         # Routers with an edge.sh: drift.yml compares their iptables rules the way it does the firewall's.
@@ -213,6 +229,18 @@ def ansible_inventory(inv: Inventory) -> str:
     }
     doc["all"]["children"]["routers"]["vars"] = inv.rollout  # canary, gate_timeout, vetting_delay, change_window
     return "# Generated by netlab.\n" + yaml.safe_dump(doc, sort_keys=False)
+
+
+def topology_monitoring(inv: Inventory) -> dict:
+    """What the topology template needs to start the NOC's parts: which routers get exporters, which
+    nodes run the log agent, each host's app ports, and the sidecars."""
+    if not inv.monitoring:
+        return {"exporters": [], "servers": [], "sources": [], "host": None, "apps": {}, "sidecars": {}, "ports": monitoring.PORTS}
+    apps = {}
+    for app in inv.logging.get("apps") or []:
+        apps.setdefault(app["host"], {})[app["port"]] = app["name"]
+    return {"exporters": monitoring.exporter_routers(inv), "servers": monitoring.servers(inv), "sources": monitoring.syslog_sources(inv),
+            "host": monitoring.host(inv), "apps": apps, "sidecars": monitoring.sidecars(inv), "ports": monitoring.PORTS}
 
 
 def render_all(inv: Inventory, out_dir: str | Path) -> list[Path]:
@@ -236,7 +264,12 @@ def render_all(inv: Inventory, out_dir: str | Path) -> list[Path]:
     for name, script in edge.items():
         write(f"{name}/edge.sh", script)
     write("vtysh.conf", "service integrated-vtysh-config\n")
-    write("topology.clab.yml", env.get_template("topology.clab.yml.j2").render(inv=inv, image=inv.platform["image"], edge=edge))
+    monitoring.render(inv, env, write, out)
+    access.render(inv, env, write, ROOT)
+    write("topology.clab.yml", env.get_template("topology.clab.yml.j2").render(
+        inv=inv, image=inv.platform["image"], edge=edge, mon=topology_monitoring(inv), access=access.routers(inv),
+        root_only_ports=sorted(set(access.routers(inv)) | set(monitoring.nat_logs(inv))),
+        unprivileged_port_start=access.UNPRIVILEGED_PORT_START))
     write("expected_state.json", json.dumps(expected_state(inv), indent=2) + "\n")
     write("ansible_inventory.yml", ansible_inventory(inv))
     return written

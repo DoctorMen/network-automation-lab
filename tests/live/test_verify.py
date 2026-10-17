@@ -46,8 +46,8 @@ def test_daemon_patch_without_restart_is_not_in_effect(node):
         assert patched.returncode == 1, "a daemon still running its replaced binary was not reported:\n" + patched.stdout
         assert "r3 daemons: not in effect: staticd still run a binary replaced on disk" in patched.stdout, patched.stdout
     finally:
-        # The way watchfrr restarts a daemon. Killing it and waiting for watchfrr works too, but
-        # watchfrr waits 60 s if it restarted that daemon in the last minute.
+        # The way watchfrr restarts a daemon. Killing it and waiting for watchfrr works too, but slower:
+        # watchfrr first waits its restart interval, 5 s, doubling for each restart in a row up to 60 s (V-011).
         r3.run("/usr/lib/frr/watchfrr.sh", "restart", "staticd", check=False)
     assert wait_for(lambda: verify("r3").returncode == 0, timeout=30, interval=1), verify("r3").stdout
 

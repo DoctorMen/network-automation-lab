@@ -1,0 +1,23 @@
+# Narrow silences (OROS DEC-4, decision 0020). `make silence` checks every entry and adds each one that has
+# not ended to Alertmanager; `make deploy` runs it, because a redeploy starts Alertmanager empty. Keep an
+# entry after it ends: this file is the record of what was silenced, when, by whom and why.
+#
+# An entry silences one object of one rule, picked out by that rule's own labels (see build/noc/rules.yml),
+# or one device for a maintenance window of at most 4 hours. It ends at most 7 days after it starts, and
+# cites a record that justifies it: a risk (RISK-n), a decision (0012), a verdict (V-005) or a ticket's
+# https URL. Matchers are equality only. netlab/silence.py refuses anything broader.
+#
+#   - alert: InterfaceFlapped
+#     labels: { node: r1, device: eth3 }
+#     starts: 2026-10-20T08:00:00Z
+#     ends: 2026-10-20T12:00:00Z
+#     reason: fw1's outside port is being recabled, so this flap is expected during the work
+#     ref: https://tickets.example.org/NOC-1234
+#     by: the on-call engineer's name
+#   - maintenance: r3
+#     starts: 2026-10-21T22:00:00Z
+#     ends: 2026-10-22T01:00:00Z
+#     reason: kernel upgrade and reboot, inside the agreed change window
+#     ref: https://tickets.example.org/CHG-5678
+#     by: the on-call engineer's name
+silences: []

@@ -46,6 +46,13 @@ routers:
     wan_filter:
       interface: eth3
       bogons: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]   # RFC 1918: never a real internet source
+    # Source NAT for the users (OROS FND-5, decision 0031): a connection LAN-A opens to the internet leaves
+    # from one address the carrier assigned us and routes to our link, never from r2's own BGP address.
+    # Only LAN-A: servers keep their addresses, and so does everything r2 itself sends. Each translation
+    # is logged to the NOC, so `make whois` names the inside host behind an outside complaint.
+    nat:
+      inside: [10.10.10.0/24]
+      address: 198.51.100.64
   r3:
     owner: campus NOC
     role: core
@@ -82,6 +89,23 @@ hosts:
   h1: { owner: campus NOC, interface: eth1, address: 10.10.10.10/24, gateway: 10.10.10.1, segment: LAN-A }
   # published: the ports the internet may reach (r2's WAN filter). h2:22 stays inside. Decision 0012.
   h2: { owner: campus NOC, interface: eth1, address: 10.20.20.10/24, gateway: 10.20.20.1, segment: LAN-B, services: [80, 22], published: [80] }
+  # The NOC's own LAN, routed and in-band like any other (decision 0018): monitoring reaches every
+  # device through the campus, and nothing in the lab has a management network to take a shortcut.
+  noc: { owner: campus NOC, interface: eth1, address: 10.30.30.10/24, gateway: 10.30.30.1, segment: NOC }
+
+# Who may log in to the routers we own and change them, each under an account of their own (OROS ACC-1,
+# ACC-2, CHG-6; decision 0029). Each account has the same uid on every router. People are people; agents
+# are tools, named for what runs as them. Every account is in `group`, the only one the accounting proxy
+# on each router lets through to FRR, and every command it relays goes to the NOC as it runs. The NOC pages
+# on an FRR session or a command by any account not listed here (UnexpectedAdmin), even one in the group.
+access:
+  group: { name: netadmin, gid: 2000 }
+  people:
+    - { name: alice, uid: 2001 }
+    - { name: bob, uid: 2002 }
+  agents:
+    - { name: netlab, uid: 2100, what: "the CM tool: make apply and make drift (Ansible)" }
+  ansible_user: netlab      # the account Ansible logs in as on these routers
 
 # Toy PCI DSS scope (OROS ATT-1, decision 0013). LAN-B stands in for a payments segment, kept small by
 # segmentation. Every device has a scope decision: `systems` are in scope, each with its clause, and
@@ -100,6 +124,7 @@ scope:
     r2:  { category: security-impacting, clause: "1.4.1, 1.4.2, 1.4.3", why: "filters the internet edge into LAN-B" }
     fw1: { category: security-impacting, clause: "1.3.1, 1.4.3", why: "filters LAN-A, the users, before anything reaches LAN-B" }
     r1:  { category: connected-to, clause: "11.4.5", why: "routes LAN-A's traffic to LAN-B and filters nothing, so the segmentation test covers its path" }
+    noc: { category: security-impacting, clause: "10.3.3, 10.7.2", why: "the central log store and alerting for every CDE system (h2, r3 send it their logs); it reaches LAN-B through the campus with nothing filtering it" }
   # Probed by the segmentation test. h1 reaches the published port like any internet client, plus the
   # exception below; whether that makes LAN-A connected-to is the open question for an assessor.
   out_of_scope: [h1, isp]
@@ -150,6 +175,104 @@ rollout:
 bgp_auth:
   - { routers: [r2, isp], secret: bgp-r2-isp }
 
+# What the NOC watches, and how (decisions 0018 and 0019). `netlab render` writes every scrape target,
+# alert rule and log source from this block and the rest of the file into build/noc/ and build/monitoring/:
+# - every router we own gets frr_exporter and node_exporter as sidecars in its own network namespace,
+#   listening on its loopback (the carrier's isp is watched from r2's side of the session);
+# - every router, firewall and server we own (a host with services) forwards its syslog to the
+#   collector and is a log source with its own last-seen check. h1 is a user's machine: it sends none;
+# - each BGP session, OSPF neighbor and BFD peer the inventory implies has its own alert, and so does
+#   each web check below, each router interface's flaps, and a reboot left pending past its window.
+monitoring:
+  host: noc
+  # Seconds between scrapes, and between rule evaluations. Short so CI sees an alert in seconds; a real
+  # NOC would run 30 to 60.
+  interval: 5
+  # Seconds Alertmanager holds a new alert before its first page, so a cause found in the same seconds
+  # (a router or link down) is there to hold it back (decision 0021).
+  group_wait: 5
+  # Seconds between Alertmanager's looks at each group of alerts; it sends only on one of them.
+  group_interval: 5
+  # Pinned images; each has a selection record in docs/selections/.
+  images:
+    prometheus: prom/prometheus:v2.53.0
+    alertmanager: prom/alertmanager:v0.27.0
+    blackbox: prom/blackbox-exporter:v0.25.0
+    frr_exporter: tynany/frr_exporter:v1.3.1
+    node_exporter: prom/node-exporter:v1.8.2
+    loki: grafana/loki:3.1.1
+    vector: timberio/vector:0.40.1-alpine
+    pushgateway: prom/pushgateway:v1.9.0
+    mailpit: axllent/mailpit:v1.20
+    netshoot: nicolaka/netshoot:v0.13      # conntrack, for a NAT router's translation log (decision 0031)
+  # What each tag resolved to when it was pulled (docker image inspect, RepoDigests). A tag can be re-pushed;
+  # tests/live/observe/test_noc.py fails if a sidecar runs anything else.
+  digests:
+    prometheus: sha256:075b1ba2c4ebb04bc3a6ab86c06ec8d8099f8fda1c96ef6d104d9bb1def1d8bc
+    alertmanager: sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5
+    blackbox: sha256:b04a9fef4fa086a02fc7fcd8dcdbc4b7b35cc30cdee860fdc6a19dd8b208d63e
+    frr_exporter: sha256:27ed1ddd2f106e26891b700289550e9aceb024a4d49e58f0e2cf5a61c39fc286
+    node_exporter: sha256:4032c6d5bfd752342c3e631c2f1de93ba6b86c41db6b167b9a35372c139e7706
+    loki: sha256:e689cc634841c937de4d7ea6157f17e29cf257d6a320f1c293ab18d46cfea986
+    vector: sha256:a29c5e3eeea49ea0a927d598f7e88624ff18ebd35df827772a337c96684c9ce5
+    pushgateway: sha256:98a458415f8f5afcfd45622d289a0aa67063563bec0f90d598ebc76783571936
+    mailpit: sha256:7eef0f38dbc85e4e264f2edf5d70fbb694826791e05cb2cae4fc9e3282f968f5
+    netshoot: sha256:a20c2531bf35436ed3766cd6cfe89d352b050ccc4d7005ce6400adf97503da1b
+  # The right content, not just a 200. h2 serves a listing of its root directory, and every listing
+  # has the same title, so the check needs an entry only the real one has.
+  web:
+    - { host: h2, port: 80, expect: 'href="etc/"' }
+  # Seconds a newer kernel may sit installed but not booted before PendingRebootOverdue fires.
+  reboot_window: 3600
+  # Jobs that run unattended (OROS NOT-4, decision 0022). Each one's last step reports its success to the
+  # NOC's pushgateway (`python -m netlab.observe success <job>`), and JobMissed pages once the last success
+  # is older than every + grace seconds: a job that fails, hangs or never starts all look the same.
+  # every matches the job's schedule in .github/workflows/ (ci.yml nightly, drills.yml weekly).
+  jobs:
+    - { name: drift, every: 86400, grace: 7200 }
+    - { name: backup, every: 86400, grace: 7200 }
+    - { name: restore-drill, every: 604800, grace: 7200 }
+    - { name: power-drill, every: 604800, grace: 7200 }
+  # The alert path's own heartbeat (NOT-4): Watchdog always fires and goes out by mail every `every`
+  # seconds (a whole number of group_interval) to the NOC's mailbox (Mailpit). AlertPathSilent pages over
+  # the webhook, the second channel, once no mail has arrived for silent_after seconds.
+  alert_path: { every: 10, silent_after: 30 }
+
+logging:
+  # Every log source sends a heartbeat line this often (seconds): its normal gap. SourceSilent fires
+  # once its last line at the collector is older than silent_after, which must stay under twice the gap
+  # (OROS NOT-3's bound).
+  heartbeat: 60
+  silent_after: 90
+  # On-box copy kept by busybox syslogd: KB before it rotates, and rotated files kept. Small on purpose,
+  # so the tests can prove the central store outlasts it.
+  on_box: { size_kb: 16, rotated: 1 }
+  # How long Loki keeps every line (hours).
+  retention: 720
+  # Ingest budget (OROS NOT-5, decision 0026): KB a day each source may send the store, counted at the
+  # collector. LogIngestOverBudget pages once a source's last 24 h passes its budget. netlab validate
+  # fails if every source at its full budget for the whole retention would not fit store_mb, the disk
+  # the NOC sets aside for raw lines. Sized from the benign workload (`make fp-review`), whose operator
+  # runs drift and apply every five minutes, at about twice the busiest source's pace (V-030). On the
+  # merged wave 2 lab one drift and one apply sent r2 25 KB of syslog and 15 KB of command records, about
+  # 7.3 and 4.3 MB a day at that pace; each command record also reaches the store as syslog, since
+  # syslogd forwards the box's copy. In the review committed in ff727a8 r2's translation
+  # log ran at 1962941 bytes a day, 94% of the 2 MiB it had then: h1's ping of the carrier every 10 s
+  # writes a translation line each.
+  budget:
+    store_mb: 3584
+    syslog_kb: 16384      # each router, firewall and server's syslog
+    nat_kb: 4096          # each NAT router's translation log (decision 0031)
+    accounting_kb: 8192   # each router's command records from its accounting proxy (decision 0029)
+  # Apps whose own log is forwarded as the app writes it, by a forwarder that doesn't run as root.
+  # h2's web server writes an access line per request. `cut` names the kinds of line its forwarder drops
+  # before they leave the host (decision 0026): web-check is the NOC's web check of this app (the check's
+  # request line from the NOC's address, answered 200), a line every interval and most of this log. The
+  # forwarder counts what it cuts and sends one line per heartbeat's worth, so that log's normal gap is the heartbeat.
+  # Uncut, the checks alone would spend about twice this log's budget.
+  apps:
+    - { host: h2, name: http, port: 80, silent_after: 90, budget_kb: 512, cut: [web-check] }
+
 # Point-to-point and LAN links. Each endpoint is device:interface@address.
 links:
   - [r1:eth1@10.0.12.0/31, r2:eth1@10.0.12.1/31]
@@ -159,3 +282,4 @@ links:
   - [fw1:eth2@10.0.100.2/30, r1:eth3@10.0.100.1/30]
   - [h1:eth1@10.10.10.10/24, fw1:eth1@10.10.10.1/24]
   - [h2:eth1@10.20.20.10/24, r3:eth3@10.20.20.1/24]
+  - [noc:eth1@10.30.30.10/24, r2:eth4@10.30.30.1/24]

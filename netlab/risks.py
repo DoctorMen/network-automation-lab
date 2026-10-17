@@ -96,6 +96,32 @@ DETECTORS = {
     "rollback-without-password": Detector("repo", "ansible/deploy.yml", r"frr-reload\.py .*--reload \{\{ fallback \}\}", None,
                                           "the rollback reloads a fallback with no password lines, so a BGP neighbor "
                                           "the failed change deleted comes back without its password"),
+    # The NOC (decision 0018) and the central log store (0019).
+    "exporter-plain-http": Detector("build", "topology.clab.yml", r"--web\.listen-address=(?!127\.0\.0\.1:)", r"--web\.config\.file",
+                                    "an exporter answering plain HTTP beyond its own host, with no TLS or password"),
+    "vty-socket-shared": Detector("build", "topology.clab.yml", r"^\s+- \S+/run:/var/run/frr:ro$", None,
+                                  "FRR's vty sockets shared with another container, which can send them config commands"),
+    "syslog-udp": Detector("build", "monitoring/agent.sh", r"^syslogd -R ", None,
+                           "syslog sent over UDP, with no acknowledgement, queue or authentication"),
+    "log-store-one-copy": Detector("build", "topology.clab.yml", r"^\s+- \S+/loki:/loki$", None,
+                                   "the central log store kept as one copy on the lab host's disk, with no backup"),
+    # The flight recorder and the store that outlives a reset (decision 0025).
+    "store-world-writable": Detector("repo", "netlab/monitoring.py", r"\.chmod\(0o777\)", None,
+                                     "the central log store's folder writable by every user on the lab host"),
+    "store-checkpoint-window": Detector("build", "noc/loki.yaml", r"^\s+checkpoint_duration: ", None,
+                                        "the central log store checkpointed on a timer, so lines since a restart wait for it"),
+    # Log volume at the source (decision 0026).
+    "log-cut-at-source": Detector("build", "*/forwarder.yaml", r'\.cut = "', None,
+                                  "a kind of log line cut at its source, so the store holds only a count of it"),
+    # Attribution (decisions 0029, 0030 and 0031).
+    "root-skips-accounting": Detector("build", "access/vtysh", r'^\[ "\$\(id -u\)" -eq 0 \] && exec /usr/bin/vtysh', None,
+                                      "root uses FRR's own sockets, past the accounting proxy"),
+    "shell-login-unrecorded": Detector("build", "access/access.sh", r"adduser -D .* -s /bin/sh ", None,
+                                       "an account with a shell whose login itself is recorded nowhere"),
+    "nat-log-start-only": Detector("build", "*/natlog.sh", r"^\s+conntrack -E -e NEW ", None,
+                                   "the translation log records when each translation began, not when it ended"),
+    "drift-play-as-root": Detector("repo", "ansible/drift.yml", r"^\s+ansible_user: root$", None,
+                                   "a playbook reads a router's kernel tables as root, which no record attributes"),
 }
 
 
