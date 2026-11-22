@@ -35,12 +35,20 @@ def test_every_job_reports_success_as_its_last_step():
 
 def test_every_window_matches_the_jobs_schedule():
     """A job's every is its workflow's cron: nightly (minute hour * * *) or weekly (minute hour * * day)."""
-    workflows = {p.name: p.read_text() for p in (ROOT / ".github" / "workflows").glob("*.yml")}
+    workflows = {p.name: yaml.load(p.read_text(), Loader=yaml.BaseLoader)
+                 for p in (ROOT / ".github" / "workflows").glob("*.yml")}
     for j in JOBS:
-        where = [name for name, text in workflows.items() if re.search(rf"run: make {j['name']}\b", text)]
-        assert where, f"no workflow runs make {j['name']}"
-        cron = yaml.safe_load(workflows[where[0]])[True]["schedule"][0]["cron"].split()
-        assert j["every"] == (7 * DAY if cron[4] != "*" else DAY), (j["name"], cron)
+        target = j["name"]
+        command = re.compile(rf"^[ \t]*make[ \t]+{re.escape(target)}(?:[ \t]|$)", re.MULTILINE)
+        schedules = [(name, schedule["cron"])
+                     for name, workflow in workflows.items()
+                     if any(command.search(step.get("run", ""))
+                            for job in workflow["jobs"].values() for step in job.get("steps", []))
+                     for schedule in workflow["on"].get("schedule", [])]
+        assert schedules, f"no scheduled workflow runs make {target}"
+        for name, cron in schedules:
+            day_of_week = cron.split()[4]
+            assert j["every"] == (DAY if day_of_week == "*" else 7 * DAY), (target, name, cron)
         assert 0 < j["grace"] < j["every"]
 
 
